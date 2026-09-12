@@ -1,0 +1,1 @@
+"""Inventory monitor regression tests."""

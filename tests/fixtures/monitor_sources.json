@@ -1,0 +1,38 @@
+[
+  {
+    "GroupName": "示例销售管理群",
+    "SenderName": "示例供货员",
+    "GroupId": "fixture-group-1",
+    "SenderId": "fixture-person-示例供货员",
+    "State": "fixture-source-1.json",
+    "Terms": "库存,调价",
+    "AllowReopen": true
+  },
+  {
+    "GroupName": "示例整机业务群",
+    "SenderName": "示例采购员",
+    "GroupId": "fixture-group-2",
+    "SenderId": "fixture-person-示例采购员",
+    "State": "fixture-source-2.json",
+    "Terms": "库存,调价",
+    "AllowReopen": false
+  },
+  {
+    "GroupName": "示例销售协同群",
+    "SenderName": "示例采购员",
+    "GroupId": "fixture-group-3",
+    "SenderId": "fixture-person-示例采购员",
+    "State": "fixture-source-3.json",
+    "Terms": "库存,调价",
+    "AllowReopen": false
+  },
+  {
+    "GroupName": "示例运营群",
+    "SenderName": "示例运营员",
+    "GroupId": "fixture-group-4",
+    "SenderId": "fixture-person-示例运营员",
+    "State": "fixture-source-4.json",
+    "Terms": "库存,调价",
+    "AllowReopen": false
+  }
+]
