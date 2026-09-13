@@ -100,17 +100,17 @@ def resolve_destination(service, setup=None):
     if len(candidates) != 1:
         raise ValueError('库存通知账号未唯一确定，请核对钉钉当前默认账号。')
     profile = candidates[0]['key']
-    result = setup.cli(['chat', '+chat-search', '--query', '牛马群', '--page-all', '--page-limit', '10'], profile=profile)
+    result = setup.cli(['chat', '+chat-search', '--query', '示例库存通知群', '--page-all', '--page-limit', '10'], profile=profile)
     if result.get('complete') is not True or result.get('partial') or result.get('hasMore') or result.get('failures'):
-        raise ValueError('牛马群搜索未完整完成，库存通知保持待发送。')
+        raise ValueError('示例库存通知群搜索未完整完成，库存通知保持待发送。')
     matches = {g['openConversationId']: g for g in result.get('chats', [])
-               if g.get('title', g.get('name')) == '牛马群' and g.get('openConversationId')}
+               if g.get('title', g.get('name')) == '示例库存通知群' and g.get('openConversationId')}
     if len(matches) != 1:
-        raise ValueError('牛马群未唯一匹配，库存通知保持待发送。')
+        raise ValueError('示例库存通知群未唯一匹配，库存通知保持待发送。')
     ident = next(iter(matches))
     if previous and previous.get('group_id') and previous['group_id'] != ident:
-        raise ValueError('牛马群标识发生变化，库存通知暂停，请核对原接收群。')
-    metadata = dict(name='牛马群', group_id=ident, profile=profile, verified_at=time.time())
+        raise ValueError('示例库存通知群标识发生变化，库存通知暂停，请核对原接收群。')
+    metadata = dict(name='示例库存通知群', group_id=ident, profile=profile, verified_at=time.time())
     with service.db() as db:
         service.put(db, 'destination', metadata)
     return metadata
@@ -191,7 +191,6 @@ def format_events(events, service, now=None):
             age_text = f'{age / 86400:.1f} 天前' if age >= 86400 else f'{age / 3600:.1f} 小时前'
             parts += [f"经理消息：{message.get('group', '')} · {message.get('sender', '')} · {local_time(message['created_at'])}（{age_text}）",
                       '\n'.join('> ' + line for line in message['text'].splitlines()),
-                      f"源消息 ID：{message['message_id']}；群 ID：{message.get('group_id', '')}；发送人 ID：{message.get('sender_id', '')}",
                       '经理消息仅作补充陈述，不构成 ERP 入库确认。']
         parts.append('---')
     return '\n\n'.join(parts)
@@ -367,6 +366,8 @@ class DeliveryHandle:
                 try:
                     if self.sender is None:
                         self.sender = RobotSender(self.service)
+                    from inventory_connection_alert import run_once as check_connection
+                    check_connection(self.service, self.sender)
                     DeliveryWorker(self.service, self.sender).run_once()
                     from inventory_daily import run_once
                     run_once(self.service, self.sender)

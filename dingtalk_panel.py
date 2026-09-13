@@ -84,8 +84,9 @@ class DingTalkPanel(tk.Frame):
         try:
             status = self.controller.status()
             sources = read_json(self.controller.root / 'monitor_sources.json', [])
-            labels = {'running': '正在监听', 'connecting': '正在连接', 'waiting': '等待打开钉钉', 'paused': '已停止', 'stopping': '正在停止', 'offline': '后台未连接'}
-            self.status_label.config(text=f"钉钉监控 · {labels.get(status['state'], status['state'])}  {status['ready']} / {len(sources)} 已连接",
+            labels = {'unconfigured': '待配置，请点击一键配置', 'running': '正在监听', 'connecting': '正在连接', 'waiting': '等待打开钉钉', 'paused': '已停止', 'stopping': '正在停止', 'offline': '后台未连接'}
+            label = labels.get(status['state'], status['state']) if sources else '未启用，需要时点击一键配置'
+            self.status_label.config(text=f"钉钉监控 · {label}  {status['ready']} / {len(sources)} 已连接",
                                      fg='#087B54' if status['state'] == 'running' else '#BA6415')
             runtime = {s['key']: s for s in status['sources']}
             from inventory_theme import sync_tree

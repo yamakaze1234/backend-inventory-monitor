@@ -59,7 +59,7 @@ class SupervisorTests(unittest.TestCase):
         event = dict(conversation_id='g', sender_open_dingtalk_id='u',
                      message_id='m', content='库存到货', create_time='now')
         self.assertTrue(should_forward(event, group_id='g', sender_id='u'))
-        self.assertIn('源消息ID：m', build_payload(event)['markdown']['text'])
+        self.assertNotIn('源消息ID', build_payload(event)['markdown']['text'])
 
 
 if __name__ == '__main__':

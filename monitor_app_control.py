@@ -105,6 +105,8 @@ def summarize_status(snapshot, *, now=None, alive=None):
     ready = sum(s['ready'] for s in sources)
     if not online:
         state = 'offline'
+    elif snapshot.get('configured') is False and not sources:
+        state = 'unconfigured'
     elif not snapshot.get('enabled', True):
         state = 'stopping' if any(s['live'] for s in sources) else 'paused'
     elif sources and ready == len(sources):
@@ -126,6 +128,8 @@ class Controller:
 
     def status(self):
         result = summarize_status(read_json(self.runtime / 'status.json', {}))
+        if result['state'] == 'unconfigured' and not read_json(self.runtime / 'control.json', {}).get('enabled', True):
+            result['state'] = 'paused'
         if not result['online'] and not read_json(self.runtime / 'control.json', {}).get('enabled', True):
             result['state'] = ('stopping' if result['supervisor_alive'] or
                                any(s['live'] for s in result['sources']) else 'paused')

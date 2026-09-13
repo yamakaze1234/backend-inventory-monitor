@@ -20,6 +20,7 @@ class Bridge:
         self.retry_at = 0
         self.failures = 0
         self.delivery = None
+        self.native = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -108,6 +109,25 @@ class Bridge:
             existing_scope = self.service.get(db, 'scope')
         if existing_scope and existing_scope != scope:
             raise ValueError('ERP 账号或仓库发生变化，已停止接收。')
+        if path == '/recovery-config':
+            with self.service.db() as db:
+                enabled = self.service.get(db, 'erp_native_enabled', False) is True
+                if existing_scope:
+                    previous = self.service.get(db, 'erp_native_request', {})
+                    self.service.put(db, 'erp_native_request', {'enabled':enabled,
+                        'client_id':client,'at':now,'state':previous.get('state','observe') if previous.get('client_id')==client else 'observe'})
+                native = self.service.get(db, 'erp_native_state', {})
+            return {'enabled':enabled,'status':native.get('status','waiting')}
+        if path == '/recovery':
+            state = body.get('state')
+            if state not in ('captcha', 'exhausted', 'retrying', 'autofill', 'native_ready'):
+                raise ValueError('自动恢复状态无效')
+            with self.service.db() as db:
+                self.service.put(db, 'erp_recovery', {'state': state, 'at': now})
+                if existing_scope:
+                    self.service.put(db, 'erp_native_request', {'enabled':self.service.get(db,'erp_native_enabled',False) is True,
+                        'client_id':client,'at':now,'state':state})
+            return {'ok': True}
         if path == '/poll':
             self.service.connection_update()
             with self.service.db() as db:
@@ -179,6 +199,8 @@ class Bridge:
         raise ValueError('未知库存操作。')
 
     def close(self):
+        if self.native:
+            self.native.close()
         if self.delivery:
             self.delivery.close()
         self.server.shutdown()

@@ -1,7 +1,7 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 [CmdletBinding()]
 param([string]$DwsPath = (Join-Path $env:USERPROFILE '.local/bin/dws.exe'),
-      [string]$OutputDirectory = 'dist/backend-inventory-monitor-v1.0', [switch]$VerifyExisting, [switch]$Rebuild)
+      [string]$OutputDirectory = 'dist/backend-inventory-monitor-v1.01', [switch]$VerifyExisting, [switch]$Rebuild)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
@@ -46,7 +46,7 @@ required_assets = {'dws.exe', 'inventory-setup.md', 'inventory-erp.user.js'}
 assert required_assets <= names, required_assets - names
 pyz = archive.open_embedded_archive('PYZ.pyz')
 modules = set(pyz.toc)
-required_modules = {'notification_robots', 'notification_robot_ui', 'inventory_theme', 'inventory_ui_check', 'inventory_daily', 'inventory_weekly', 'inventory_weekly_ui', 'inventory_report_preview', 'inventory_report_delivery', 'inventory_cache', 'inventory_cache_ui', 'inventory_recycle', 'inventory_ai', 'inventory_monitor', 'inventory_rules', 'inventory_warehouses', 'inventory_panel', 'inventory_bridge',
+required_modules = {'inventory_browser_recovery', 'inventory_connection_alert', 'notification_robots', 'notification_robot_ui', 'inventory_theme', 'inventory_ui_check', 'inventory_daily', 'inventory_weekly', 'inventory_weekly_ui', 'inventory_report_preview', 'inventory_report_delivery', 'inventory_cache', 'inventory_cache_ui', 'inventory_recycle', 'inventory_ai', 'inventory_monitor', 'inventory_rules', 'inventory_warehouses', 'inventory_panel', 'inventory_bridge',
                     'inventory_delivery', 'inventory_inbound', 'monitor_setup_service', 'monitor_portable_install',
                     'source_monitor_supervisor', 'pystray._win32', 'tkinter'}
 assert required_modules <= modules, required_modules - modules
@@ -57,17 +57,19 @@ print(json.dumps({'assets': sorted(required_assets), 'modules': sorted(required_
 '@
 $archiveEvidence = & py -3 -c $archiveCheck $executable
 if ($LASTEXITCODE -ne 0) { throw '打包归档依赖验证失败，请勿交付。' }
-foreach ($asset in @('inventory-setup.md', 'inventory-erp.user.js', '使用说明.md')) {
+foreach ($asset in @('inventory-setup.md', 'inventory-erp.user.js', '使用说明.md', 'prepare-environment.ps1', '一键准备运行环境.cmd')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $asset) -Destination (Join-Path $packageDirectory $asset)
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_LICENSES') -Destination $packageDirectory -Recurse -Force
+& py -3 -X utf8 (Join-Path $projectRoot 'build_user_guide.py') (Join-Path $packageDirectory '完整使用教程.html')
+if ($LASTEXITCODE -ne 0) { throw 'HTML 教程生成失败。' }
 $manifest = [ordered]@{
     created_at = (Get-Date -Format o)
     desktop_executed = $false
     runtime_data_included = $false
     archive_verification = ($archiveEvidence | ConvertFrom-Json)
     source_files = @(@('inventory_version.py', 'notification_robots.py', 'notification_robot_ui.py', 'inventory_theme.py', 'inventory_ui_check.py', 'inventory_daily.py', 'inventory_weekly.py', 'inventory_weekly_ui.py', 'inventory_report_preview.py', 'inventory_report_delivery.py', 'inventory_cache.py', 'inventory_cache_ui.py', 'inventory_recycle.py', 'inventory_ai.py', 'dingtalk_panel.py', 'inventory_app.py', 'test_inventory_ui_local.py', 'monitor_tray_app.py', 'inventory_panel.py', 'inventory_monitor.py',
-                      'inventory_rules.py', 'inventory_warehouses.py', 'inventory_bridge.py', 'inventory_delivery.py',
+                      'inventory_browser_recovery.py', 'inventory_connection_alert.py', 'build_user_guide.py', 'prepare-environment.ps1', '一键准备运行环境.cmd', 'inventory_rules.py', 'inventory_warehouses.py', 'inventory_bridge.py', 'inventory_delivery.py',
                       'inventory_inbound.py', 'source_monitor_supervisor.py', 'suhao_cost_monitor.py',
                       'monitor_app_control.py', 'monitor_setup_service.py', 'monitor_setup_wizard.py',
                       'monitor_portable_install.py', 'inventory-setup.md', 'inventory-erp.user.js',

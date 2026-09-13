@@ -59,14 +59,17 @@ def should_forward(
 
 
 def build_payload(event: dict[str, Any]) -> dict[str, Any]:
-    sender = _get(event, "sender", "示例供货员")
+    sender = str(_get(event, "sender", "") or "").strip()
     timestamp = _get(event, "createTime", "")
-    message_id = _get(event, "messageId", "")
     text = str(_get(event, "text", "") or "").strip()
+    reopen = sender == "示例供货员" and any(
+        marker in text for marker in ("重开成本表", "成本表重新开", "重新开表", "成本重新开")
+    )
+    title = "价格调整｜重开成本表" if reopen else "价格调整"
     source_group = _get(event, "conversationName", "") or os.environ.get("SOURCE_GROUP_NAME", "货源监控群")
     report = "\n\n".join(
         [
-            "# 价格调整｜重开成本表",
+            f"# {title}",
             f"来源群：{source_group}",
             f"发送人：{sender}",
             f"时间：{timestamp}",
@@ -74,13 +77,12 @@ def build_payload(event: dict[str, Any]) -> dict[str, Any]:
             "原消息：",
             text,
             "",
-            f"源消息ID：{message_id}",
             "同一源消息只发送一次。",
         ]
     )
     return {
         "msgtype": "markdown",
-        "markdown": {"title": "价格调整｜重开成本表", "text": report},
+        "markdown": {"title": title, "text": report},
         "at": {"isAtAll": False},
     }
 

@@ -40,6 +40,15 @@ def stop_dingtalk_and_wait(controller, timeout=15):
     raise TimeoutError('钉钉监听尚未确认停止，请稍后重试退出。')
 
 
+def start_configured_message_worker(controller):
+    """Inventory works independently until message sources are configured."""
+    from monitor_app_control import read_json
+    if not read_json(controller.root / 'monitor_sources.json', []):
+        return False
+    controller.ensure_current_worker()
+    return True
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -113,6 +122,8 @@ def main():
     # Acquire the collection port before changing any release state.
     try:
         bridge = start_bridge(service, live_delivery=False)
+        from inventory_browser_recovery import BrowserRecovery
+        bridge.native = BrowserRecovery(service).start()
     except OSError:
         messagebox.showerror('已有库存程序运行', '请关闭原库存程序后再打开正式版。', parent=root)
         root.destroy()
@@ -126,7 +137,7 @@ def main():
         with service.db() as db:
             service.put(db, 'daily_source_root', str(message_controller.root))
         try:
-            message_controller.ensure_current_worker()
+            start_configured_message_worker(message_controller)
         except RuntimeError as error:
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
         build_workspace(root, service, live=True, dingtalk_controller=message_controller)

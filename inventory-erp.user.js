@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公司大库重点产品采集
 // @namespace    local.inventory.monitor
-// @version      0.2.0
+// @version      0.4.0
 // @description  为本机钉钉货源监控提供只读库存快照，不修改 ERP 数据
 // @match        https://cqzs.3cerp.com/*
 // @grant        GM_xmlhttpRequest
@@ -86,20 +86,196 @@
       sku,warehouse:row.c_name,bill_code:String(row.c_billcode || ''),kind:String(row.c_type || ''),in_qty:inQty,created_at:created};
   }
 
+  function loginDecision({enabled, captcha, autofilled, attempts, lastAttempt, now, readyAt=0, rejected=false, requesting=false}) {
+    if (!enabled) return 'disabled';
+    if (captcha) return 'captcha';
+    if (rejected) return 'rejected';
+    if (now<readyAt) return 'settling';
+    if (requesting || (lastAttempt && now-lastAttempt<5000)) return 'cooldown';
+    if (attempts>=3) return 'exhausted';
+    if (!autofilled) return 'autofill';
+    return 'submit';
+  }
+
+  function browserFilled(element) {
+    if (!element || !element.getClientRects().length) return false;
+    // Inspect only browser autofill state, never access password/username values.
+    for (const selector of [':autofill', ':-webkit-autofill']) {
+      try { if (element.matches(selector)) return true; } catch (_) {}
+    }
+    return false;
+  }
+
+  function refreshRecoveryState(state) {
+    if (!state.enabled || (state.pending && state.refreshed)) return null;
+    return {...state,pending:true,refreshed:true,
+      attempts:state.pending?(state.attempts||0):0,
+      lastAttempt:state.pending?(state.lastAttempt||0):0};
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports={collectPages, normalizeRow, normalizeCatalogRow, normalizeJournal, normalizeWarehouseResponse};
+    module.exports={collectPages, normalizeRow, normalizeCatalogRow, normalizeJournal, normalizeWarehouseResponse, loginDecision, browserFilled, refreshRecoveryState};
     return;
   }
-  if (window.top!==window.self || location.pathname.includes('login')) return;
+  if (window.top!==window.self) return;
   if (window.__inventoryMonitorInstance) return;
   const pageWindow=typeof unsafeWindow==='undefined'?window:unsafeWindow;
   const clientId=crypto.randomUUID();
   let busy=false, nextPoll=0;
   const badge=document.createElement('button');
+  badge.setAttribute('data-inventory-client',clientId);
   badge.textContent='库存采集：未连接';
   badge.style.cssText='position:fixed;bottom:10px;right:18px;z-index:99999;background:#101C30;color:white;border:0;padding:9px 14px;font:13px Microsoft YaHei;cursor:pointer';
   badge.title='点击配置；数据只发送到本机库存监控程序';
   document.body.appendChild(badge);
+  const recoveryKey='inventory_auto_recovery';
+  const clickedMenus=new Set();
+  const searchedStockPages=new WeakSet();
+  let stockPageSeen=false;
+  let loginBusy=false;
+  // Browser-managed password fill can lag behind document-idle after refresh.
+  const loginReadyAt=Date.now()+10000;
+  let lastRecoveryReport=0;
+  let nativeStatus='waiting';
+  async function syncRecoverySetting(config) {
+    const setting=await local('/recovery-config',{client_id:clientId,
+      scope:location.origin+'|'+config.account+'|'+config.depot,warehouse:'公司大库'});
+    const saved=recovery();
+    if(saved.enabled!==setting.enabled) GM_setValue(recoveryKey,{...saved,enabled:setting.enabled===true});
+    nativeStatus=setting.status;
+  }
+  async function reportRecovery(state) {
+    const config=GM_getValue('inventory_connection',null);
+    if(!config || Date.now()-lastRecoveryReport<10000) return;
+    lastRecoveryReport=Date.now();
+    await local('/recovery',{client_id:clientId,scope:location.origin+'|'+config.account+'|'+config.depot,warehouse:'公司大库',state}).catch(()=>{});
+  }
+  function recovery() { return GM_getValue(recoveryKey,{enabled:false,attempts:0,lastAttempt:0,pending:false}); }
+  GM_registerMenuCommand('自动重登设置（在本机程序中开关）',()=>{
+    alert('请在本机库存监控程序中勾选或取消“自动重登（无人值守）”。设置会保存，普通库存监控不受影响。');
+  });
+  async function loginTick() {
+    if (loginBusy || location.pathname!=='/login.jsp') return;
+    loginBusy=true;
+    try {
+      const attempt=async()=>{
+        const config=GM_getValue('inventory_connection',null);
+        if(config) await syncRecoverySetting(config);
+        const state=recovery();
+        if (state.enabled && GM_getValue('inventory_connection',null)) {
+          const refreshed=refreshRecoveryState(state);
+          if(refreshed) {
+            // Save before navigation, so the new document cannot refresh in a loop.
+            GM_setValue(recoveryKey,refreshed);
+            badge.textContent='库存采集：重登前刷新页面';
+            location.reload();
+            return;
+          }
+        }
+        const verification=document.querySelector('#verifydiv');
+        const code=document.querySelector('#verifycode');
+        const captcha=Boolean((verification && verification.getClientRects().length) || (code && code.getClientRects().length));
+        const message=document.querySelector('#msg');
+        const rejected=Boolean(message && message.getClientRects().length && /密码.*(?:错误|不正确)|(?:账号|账户|用户).*(?:错误|不存在|锁定|禁用)|登录.*频繁/.test(message.innerText));
+        const action=loginDecision({enabled:state.enabled && Boolean(GM_getValue('inventory_connection',null)),captcha,
+          rejected,requesting:Boolean(pageWindow.jQuery && pageWindow.jQuery.active>0),
+          autofilled:browserFilled(document.querySelector('#username')) && browserFilled(document.querySelector('#password')),
+          attempts:0,lastAttempt:0,now:Date.now(),readyAt:loginReadyAt});
+        const hints={disabled:'自动重登未启用或未配置库存连接',captcha:'出现验证码，请人工登录',rejected:'登录被拒绝，请检查账号状态或密码',exhausted:'已点击 3 次，请人工检查登录',autofill:'等待浏览器自动填充账号密码',cooldown:'等待登录结果（点击至少间隔 5 秒）',settling:'刷新后等待浏览器填充（还需 '+Math.max(1,Math.ceil((loginReadyAt-Date.now())/1000))+' 秒）'};
+        if(action!=='submit') {
+          badge.textContent='库存采集：'+hints[action];
+          if(['captcha','exhausted','autofill','rejected'].includes(action)) await reportRecovery(action==='rejected'?'exhausted':action);
+          return;
+        }
+        const button=document.querySelector('#loginbtn');
+        if(!button || button.disabled || !button.getClientRects().length) return;
+        badge.textContent='库存采集：'+({exhausted:'本机重登已尝试 3 次，请人工检查',wrong_tab:'请切到 ERP 完成本机绑定',browser_unavailable:'本机浏览器连接不可用',manual_required:'需要人工验证'}[nativeStatus] || '等待本机程序点击登录');
+        await reportRecovery('native_ready');
+      };
+      // Origin-scoped lock prevents multiple tabs submitting the same saved login.
+      if (!navigator.locks) { badge.textContent='库存采集：浏览器不支持自动重登锁，请人工登录'; return; }
+      await navigator.locks.request('inventory-erp-auto-login',{ifAvailable:true},async lock=>{if(lock) await attempt();});
+    } catch (_) { badge.textContent='库存采集：请打开新版本机程序并检查自动重登开关'; }
+    finally { loginBusy=false; }
+  }
+  if (location.pathname==='/login.jsp') {
+    const loginTimer=setInterval(loginTick,1000);
+    window.__inventoryMonitorInstance={stop(){clearInterval(loginTimer);badge.remove();delete window.__inventoryMonitorInstance;}};
+    loginTick();
+    return;
+  }
+
+  function beginRecovery() {
+    const state=recovery();
+    if (!state.enabled) return;
+    const refreshed=refreshRecoveryState(state);
+    if(refreshed) {
+      GM_setValue(recoveryKey,refreshed);
+      badge.textContent='库存采集：重登前刷新页面';
+      location.reload();
+      return;
+    }
+    GM_setValue(recoveryKey,{...state,pending:true});
+    location.assign('/login.jsp');
+  }
+
+  function restoreInventoryPage(config) {
+    const state=recovery();
+    if (!state.enabled || !accountVisible(config.account)) return false;
+    // Restore after a browser refresh too: pending may have been cleared by
+    // the previous successful snapshot. Never derive the account from login inputs.
+    const stockFrames=frames().filter(win=>win.location.pathname==='/pages/stock/stock_list.jsp');
+    // Inventory may be an inactive ERP tab. Never reopen/focus its menu after
+    // seeing it in this document, including when the user later closes that tab.
+    if(stockFrames.length) stockPageSeen=true;
+    else if(stockPageSeen) return false;
+    // Only navigate visible inventory menus and select a known warehouse filter.
+    for (const win of stockFrames) {
+      for (const select of win.document.querySelectorAll('select')) {
+        if(!select.getClientRects().length) continue;
+        const option=[...select.options].find(o=>o.textContent.trim()==='公司大库' && o.value===config.depot);
+        if(option && select.value!==option.value) { searchedStockPages.delete(win.document); select.value=option.value; select.dispatchEvent(new win.Event('change',{bubbles:true})); return true; }
+      }
+      if(win.mini) for(const id of ['depot_id','depotIds','depotId']) {
+        const control=win.mini.get(id);
+        if(!control || !control.el || !control.el.getClientRects().length || typeof control.getData!=='function') continue;
+        const options=control.getData();
+        const valueField=control.valueField||'id', textField=control.textField||'text';
+        const option=Array.isArray(options) && options.find(o=>String(o[valueField])===config.depot && o[textField]==='公司大库');
+        if(option && String(control.getValue())!==config.depot) { searchedStockPages.delete(win.document); control.setValue(config.depot); control.fire('valuechanged'); return true; }
+      }
+      try {
+        if(warehouseProof()===config.depot && !searchedStockPages.has(win.document)) {
+          const control=win.mini && win.mini.get('depot_id');
+          const toolbar=control && control.el && control.el.closest('.mini-toolbar');
+          const buttons=toolbar ? [...toolbar.querySelectorAll('a.mini-button,button')].filter(el=>el.getClientRects().length && el.textContent.trim()==='搜索') : [];
+          if(buttons.length!==1) return true;
+          buttons[0].click();
+          searchedStockPages.add(win.document);
+          return true;
+        }
+      } catch (_) {}
+    }
+    try { if(warehouseProof()===config.depot) return false; } catch (_) {}
+    // MiniUI options load asynchronously. Keep waiting for the existing frame.
+    if(stockFrames.length) return true;
+    // Live ERP uses div dropdown items, not links/spans. Invoke its existing
+    // inventory-menu handler; it opens the stock tab without touching ERP data.
+    const stockMenus=[...document.querySelectorAll('.menu-item .dropdown-item[title="分库库存"]')]
+      .filter(el=>el.textContent.trim()==='分库库存');
+    if(stockMenus.length===1 && !clickedMenus.has('分库库存')) {
+      clickedMenus.add('分库库存');
+      stockMenus[0].click();
+      return true;
+    }
+    for(const label of ['分库库存','库房管理']) {
+      if(clickedMenus.has(label)) continue;
+      const elements=[...document.querySelectorAll('a,span')].filter(el=>el.getClientRects().length && el.textContent.trim()===label);
+      const leaves=elements.filter(el=>!elements.some(other=>other!==el && el.contains(other)));
+      if(leaves.length===1) { clickedMenus.add(label); leaves[0].click(); return true; }
+    }
+    return true;
+  }
 
   function frames(win=pageWindow, depth=0) {
     const out=[win];
@@ -182,6 +358,13 @@
     try {
       const config=GM_getValue('inventory_connection',null);
       if (!config) { badge.textContent='库存采集：点击连接'; return; }
+      await syncRecoverySetting(config);
+      if(frames().some(win=>win.location.pathname==='/login.jsp')) { beginRecovery(); return; }
+      if(restoreInventoryPage(config)) {
+        badge.textContent='库存采集：正在恢复公司大库页面';
+        nextPoll=Date.now()+2000;
+        return;
+      }
       const depot=warehouseProof();
       if (depot!==config.depot || !accountVisible(config.account)) throw new Error('账号或仓库不匹配，采集已暂停');
       identity={client_id:clientId, scope:location.origin+'|'+config.account+'|'+depot,warehouse:'公司大库'};
@@ -205,8 +388,11 @@
         const response=await fetch('/pages/stock/searchDeoptStockList.htm',{
           method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','X-Requested-With':'XMLHttpRequest'},
           body,signal:AbortSignal.timeout(30000)});
-        if (!response.ok || response.redirected || !response.headers.get('content-type')?.includes('json'))
-          throw new Error('ERP 登录失效或库存请求失败');
+        if (!response.ok || response.redirected || !response.headers.get('content-type')?.includes('json')) {
+          const error=new Error('ERP 登录失效或库存请求失败');
+          error.loginExpired=response.redirected && new URL(response.url).origin===location.origin && new URL(response.url).pathname==='/login.jsp';
+          throw error;
+        }
         return response.json();
       });
       const rows=raw.map(normalizeCatalogRow);
@@ -248,13 +434,19 @@
       if (accepted.retry) { badge.textContent='库存采集：设置已更新，等待重新采集'; return; }
       const unknown=rows.filter(r=>r.stock_unknown).length;
       badge.textContent='库存采集：已更新'+(unknown?'，'+unknown+' 件商品库存未知':'');
+      const recovered=recovery();
+      if(recovered.pending || recovered.attempts) GM_setValue(recoveryKey,{...recovered,pending:false,refreshed:false,attempts:0,lastAttempt:0});
     } catch(error) {
       badge.textContent='库存采集：'+error.message;
       if(identity) await local('/error',{client_id:clientId}).catch(()=>{});
+      if(error.loginExpired) beginRecovery();
       nextPoll=Date.now()+60000;
-    } finally { busy=false; }
+    } finally {
+      if(nextPoll<=Date.now()) nextPoll=Date.now()+20000;
+      busy=false;
+    }
   }
-  const timer=setInterval(tick,20000);
+  const timer=setInterval(tick,2000);
   window.__inventoryMonitorInstance={stop(){clearInterval(timer);badge.remove();delete window.__inventoryMonitorInstance;}};
   tick();
 })();

@@ -19,6 +19,22 @@ def run(output_directory):
     with tempfile.TemporaryDirectory(prefix='inventory-frozen-ui-') as temporary:
         service = InventoryService(temporary)
         controller = Controller({'workspace': temporary, 'portable': True})
+        from inventory_app import start_configured_message_worker
+        from unittest.mock import patch
+        with patch.object(controller, 'ensure_current_worker') as launch:
+            assert start_configured_message_worker(controller) is False
+            launch.assert_not_called()
+        from inventory_connection_alert import run_once as check_connection
+        from unittest.mock import Mock
+        alert_service = InventoryService(Path(temporary) / 'connection-alert-check')
+        alert_sender = Mock()
+        alert_sender.send.return_value = {'status': 'sent'}
+        alert_service.connection_update('', now=100)
+        assert check_connection(alert_service, alert_sender, now=100) is False
+        assert check_connection(alert_service, alert_sender, now=170) is False
+        assert check_connection(alert_service, alert_sender, now=470) is True
+        assert check_connection(alert_service, alert_sender, now=200) is False
+        alert_sender.send.assert_called_once()
         from notification_robots import RobotStore
         store = RobotStore(temporary)
         first = store.save('运营部机器人（示例）', 'https://oapi.dingtalk.com/robot/send?access_token=offline-fixture-1', ['inventory', 'daily', 'messages'])
@@ -36,6 +52,7 @@ def run(output_directory):
             for module in ('monitor', 'search', 'config', 'settings', 'daily', 'dingtalk'):
                 panel.show_module(module)
                 root.update()
+                ImageGrab.grab(window=int(root.frame(), 16)).save(output / f'frozen-page-{module}.png')
             row = dict(sku='OFFLINE-5070', goods_id='88102', name='示例 RTX 5070 分库产品', stock=0, able=0, purchase=0)
             service.accept_snapshot('offline-catalog', [row], scope='offline-ui:2')
             request = service.request_warehouses(row['sku'], row['goods_id'])
@@ -74,6 +91,7 @@ def run(output_directory):
                     return []
             wizard = SetupWizard(root, controller, service=SetupFixture())
             root.update()
+            ImageGrab.grab(window=int(wizard.win.frame(), 16)).save(output / 'frozen-setup-wizard.png')
             wizard.close()
             panel.show_module('settings')
             root.update()
@@ -99,6 +117,6 @@ def run(output_directory):
             if errors:
                 raise RuntimeError('; '.join(errors))
             (output / 'frozen-ui-check.json').write_text(json.dumps(dict(passed=True, pages=6,
-                wizard=True, robot_pause_resume=True, robot_editor=True, warehouse_settings=True, warehouse_qty=20, report_preview=True, cache_cleanup=True, live_services=False), ensure_ascii=False, indent=2), encoding='utf-8')
+                wizard=True, robot_pause_resume=True, robot_editor=True, warehouse_settings=True, warehouse_qty=20, report_preview=True, cache_cleanup=True, inventory_only_no_message_worker=True, erp_outage_one_shot=True, live_services=False), ensure_ascii=False, indent=2), encoding='utf-8')
         finally:
             root.destroy()

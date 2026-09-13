@@ -111,6 +111,9 @@ class InventoryPanel(tk.Frame):
         self.alerts = {key: tk.BooleanVar(self, True) for key in ALERTS}
         self.search = tk.StringVar(self)
         self.notice = tk.StringVar(self)
+        with service.db() as db:
+            native_enabled = service.get(db, 'erp_native_enabled', False)
+        self.native_enabled = tk.BooleanVar(self, native_enabled)
         self._build()
         self.search.trace_add('write', lambda *_: self.refresh())
         self.new_product(reveal=False)
@@ -138,6 +141,16 @@ class InventoryPanel(tk.Frame):
         self.delivery_state.pack(fill='x', pady=(0, 5))
         self.connection_detail = self.label(self, fg='#BA6415', anchor='w', wraplength=960, justify='left', size=9)
         self.connection_detail.pack(fill='x', pady=(0, 6))
+        recovery_bar = tk.Frame(self, bg=BG)
+        recovery_bar.pack(fill='x', pady=(0, 6))
+        ttk.Style(self).configure('Recovery.TCheckbutton', background=BG, foreground=INK,
+                                  font=('Microsoft YaHei UI', 9))
+        ttk.Style(self).map('Recovery.TCheckbutton', background=[('active', BG), ('!active', BG)],
+                           foreground=[('disabled', MUTED), ('!disabled', INK)])
+        ttk.Checkbutton(recovery_bar, text='自动重登（无人值守）', style='Recovery.TCheckbutton', variable=self.native_enabled,
+                        command=self.toggle_native_recovery).pack(side='left')
+        self.native_status = self.label(recovery_bar, fg=MUTED, size=9)
+        self.native_status.pack(side='left', padx=12)
 
         footer = tk.Frame(self, bg=BG)
         self.monitor_footer = footer
@@ -679,7 +692,21 @@ class InventoryPanel(tk.Frame):
         else:
             self.notice.set('安装说明尚未随程序提供，请联系维护者补充 inventory-setup.md。')
 
+    def toggle_native_recovery(self):
+        with self.service.db() as db:
+            self.service.put(db, 'erp_native_enabled', self.native_enabled.get())
+            if self.native_enabled.get():
+                self.service.put(db, 'erp_native_state', {})
+        self.notice.set('自动重登已开启，请让浏览器停留在 ERP 页面完成首次绑定。' if self.native_enabled.get() else '自动重登已关闭，库存监控继续运行。')
+        self.refresh()
+
     def refresh(self):
+        with self.service.db() as db:
+            native = self.service.get(db, 'erp_native_state', {})
+        labels = {'wrong_tab':'请切到 ERP 页面完成绑定','browser_unavailable':'浏览器连接不可用，请检查 OpenCLI 扩展',
+                  'connected':'ERP 已绑定','waiting_fill':'等待浏览器填充','waiting_result':'等待登录结果',
+                  'clicking':'正在点击登录','manual_required':'需要人工验证','exhausted':'重试失败，等待人工检查'}
+        self.native_status.configure(text=labels.get(native.get('status'),'等待 ERP 连接') if self.native_enabled.get() else '已关闭，不操作登录页面')
         if self._after:
             self.after_cancel(self._after)
             self._after = None

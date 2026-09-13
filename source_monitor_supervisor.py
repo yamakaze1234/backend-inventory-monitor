@@ -25,7 +25,12 @@ PORTABLE_MODE = False
 
 
 def load_sources():
-    return json.loads((ROOT / 'monitor_sources.json').read_text(encoding='utf-8-sig'))
+    try:
+        content = (ROOT / 'monitor_sources.json').read_text(encoding='utf-8-sig')
+    except FileNotFoundError:
+        # First launch on a new computer precedes the setup wizard.
+        return []
+    return json.loads(content)
 
 
 def load_delivery_environment():
@@ -136,6 +141,8 @@ class Worker:
                         event = json.loads(line)
                         if isinstance(event, dict):
                             event.setdefault('conversationName', self.source['GroupName'])
+                            if _get(event, 'senderId') == self.source['SenderId']:
+                                event['sender'] = self.source.get('SenderName', '')
                             yield json.dumps(event, ensure_ascii=False)
                     except (ValueError, TypeError):
                         continue
@@ -195,7 +202,7 @@ def main(root=None, dws_executable=None):
         DWS_EXECUTABLE = dws_executable
         PORTABLE_MODE = True
     import msvcrt
-    RUNTIME.mkdir(exist_ok=True)
+    RUNTIME.mkdir(parents=True, exist_ok=True)
     # OS releases this lock when the supervisor exits, including abnormal exits.
     lock = (RUNTIME / 'supervisor.lock').open('a+b')
     if os.fstat(lock.fileno()).st_size == 0:
@@ -226,10 +233,11 @@ def main(root=None, dws_executable=None):
                 manager = Supervisor(active_sources)
             else:
                 enabled = False
+        enabled = enabled and bool(active_sources)
         manager.tick(client_running() if enabled and not manager.activated else False,
                      enabled=enabled, force_start=control.get('force_until', 0) > time.time())
         status = {'robot_protocol': 1, 'checked_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'pid': os.getpid(),
-                  'heartbeat': time.time(), 'enabled': enabled,
+                  'heartbeat': time.time(), 'enabled': enabled, 'configured': bool(active_sources),
                   'activated': manager.activated, 'sources': [
                       {'group': w.source['GroupName'], 'key': w.source['State'], 'status': w.status,
                        'pid': w.pid, 'attempts': w.attempts} for w in manager.workers]}

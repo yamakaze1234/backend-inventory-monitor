@@ -17,7 +17,7 @@ class FakeSetup:
 
     def cli(self, args, profile=None):
         assert profile == 'corp:user'
-        return dict(complete=True, chats=[dict(title='牛马群', openConversationId='cid-real')])
+        return dict(complete=True, chats=[dict(title='示例库存通知群', openConversationId='cid-real')])
 
 
 class DeliveryTests(unittest.TestCase):
@@ -69,7 +69,7 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(FakeSetup, 'profiles', return_value=[]):
             with self.assertRaises(ValueError):
                 resolve_destination(self.svc, FakeSetup())
-        with patch.object(FakeSetup, 'cli', return_value=dict(complete=True, chats=[dict(title='牛马群', openConversationId='a'), dict(title='牛马群', openConversationId='b')])):
+        with patch.object(FakeSetup, 'cli', return_value=dict(complete=True, chats=[dict(title='示例库存通知群', openConversationId='a'), dict(title='示例库存通知群', openConversationId='b')])):
             with self.assertRaises(ValueError):
                 resolve_destination(self.svc, FakeSetup())
         with patch.object(FakeSetup, 'cli', return_value=dict(complete=False, chats=[])):
@@ -236,7 +236,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('库存增加', body)
         self.assertIn('不等同于确认入库', body)
         self.assertNotIn('Asia/Shanghai', body)
-        self.assertIn('original', body)
+        self.assertNotIn('original', body)
+        self.assertNotIn('源消息 ID', body)
         self.assertIn('前', body)
 
     def test_authorized_message_callback_precedes_legacy_terms(self):
