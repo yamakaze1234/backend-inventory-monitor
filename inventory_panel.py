@@ -183,6 +183,7 @@ class InventoryPanel(tk.Frame):
         bar.pack(fill='x', pady=(0, 10))
         self.label(bar, '重点产品', size=14).pack(side='left', padx=(0, 12))
         self.button(bar, '+ 添加产品', self.choose_catalog, True).pack(side='right')
+        self.button(bar, '表格导入', self.open_import).pack(side='right', padx=(0, 8))
         actions = tk.Frame(left, bg='white')
         actions.pack(fill='x', pady=(0, 8))
         self.label(actions, '筛选产品', fg=MUTED, size=9).pack(side='left', padx=(0, 10))
@@ -191,7 +192,7 @@ class InventoryPanel(tk.Frame):
         self.empty.pack(fill='x', pady=(0, 6))
         wrap_label(self.empty)
         self.remove_button = self.button(actions, '删除关注', self.remove_selected)
-        self.remove_button.configure(state='disabled', fg='#B42332', pady=4)
+        self.remove_button.configure(fg='#B42332', pady=4)
         self.remove_button.pack(side='right', padx=(8, 0))
         edit_button = self.button(actions, '编辑配置', self.edit_selected)
         edit_button.configure(pady=4)
@@ -427,7 +428,6 @@ class InventoryPanel(tk.Frame):
 
     def select(self, *_):
         selected = self.tree.selection()
-        self.remove_button.configure(state='normal' if selected else 'disabled')
         if selected and selected[0] in self.rows:
             self.selected_sku = self.rows[selected[0]]['sku']
             self.load_product(self.rows[selected[0]])
@@ -438,19 +438,18 @@ class InventoryPanel(tk.Frame):
             self.notice.set('修改后点击保存生效；取消会还原当前产品。')
 
     def remove_selected(self):
-        selected = self.tree.selection()
-        if not selected or selected[0] not in self.rows:
-            self.notice.set('请先在左侧列表选中要删除关注的产品。')
-            return
-        result = self.service.remove_product(self.rows[selected[0]]['sku'])
-        self.new_product(reveal=False)
-        self.refresh()
-        self.remove_button.configure(state='disabled')
-        if result:
-            text = f"已删除关注：{result['name']}。可在右侧重新搜索添加。"
-            if result['in_flight']:
-                text += ' 已开始发送的通知可能仍会送达。'
-            self.notice.set(text)
+        from inventory_remove_ui import RemoveWindow
+        window = getattr(self, 'remove_window', None)
+        if window is not None and window.winfo_exists():
+            window.lift()
+            return window
+        def removed(results):
+            if self.selected_sku in {r['sku'] for r in results}:
+                self.new_product(reveal=False)
+            self.refresh()
+            self.notice.set(f'已删除 {len(results)} 个产品关注。')
+        self.remove_window = RemoveWindow(self, self.service, on_removed=removed)
+        return self.remove_window
 
     def cancel(self):
         product = next((p for p in self.service.products() if p['sku'] == self.selected_sku), None)
@@ -464,6 +463,15 @@ class InventoryPanel(tk.Frame):
         self.cancel()
         self.choose_catalog()
         self.notice.set('已取消未保存的修改，返回搜索产品。')
+
+    def open_import(self):
+        from inventory_import_ui import ImportWindow
+        window = getattr(self, 'import_window', None)
+        if window is not None and window.winfo_exists():
+            window.lift()
+            return window
+        self.import_window = ImportWindow(self, self.service, on_saved=self.refresh)
+        return self.import_window
 
     def save(self):
         try:

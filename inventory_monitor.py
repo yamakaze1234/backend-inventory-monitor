@@ -67,60 +67,78 @@ class InventoryService(WarehouseLookups):
         product = validate_product(product)
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            old = db.execute('SELECT data FROM products WHERE sku=?', (product['sku'],)).fetchone()
-            catalog = db.execute('SELECT data FROM catalog WHERE sku=?', (product['sku'],)).fetchone()
-            identity = str(json.loads(catalog[0]).get('goods_id', '')) if catalog else ''
-            previous_id = str(json.loads(old[0]).get('goods_id', '')) if old else ''
-            known_id = identity or previous_id
-            if product.get('goods_id') and known_id and product['goods_id'] != known_id:
-                raise ValueError('ERP 编号与采集商品不一致，请重新搜索选择产品。')
-            product['goods_id'] = known_id or product.get('goods_id', '')
-            previous = json.loads(old[0]) if old else None
-            self.validate_warehouse_selection(db, product, previous)
-            source_changed = previous is not None and source_key(previous) != source_key(product)
-            if source_changed:
-                db.execute('DELETE FROM snapshots WHERE sku=?', (product['sku'],))
-                db.execute('DELETE FROM journal_baselines WHERE sku=?', (product['sku'],))
-                self.put(db, 'last_skus', [sku for sku in self.get(db, 'last_skus', []) if sku != product['sku']])
-                for ident, data in db.execute("SELECT id,data FROM events WHERE status IN ('pending','failed')").fetchall():
-                    if json.loads(data).get('sku') == product['sku']:
-                        db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
-            snap = db.execute('SELECT data FROM snapshots WHERE sku=?', (product['sku'],)).fetchone()
-            db.execute('INSERT INTO products VALUES (?,?) ON CONFLICT(sku) DO UPDATE SET data=excluded.data',
-                       (product['sku'], json.dumps(product, ensure_ascii=False)))
-            if old and snap:
-                previous, snapshot = json.loads(old[0]), json.loads(snap[0])
-                fresh = 0 <= time.time() - snapshot['observed_at'] <= self.get(db, 'interval_seconds', 7200) + 300
-                if fresh and product['sku'] in self.get(db, 'last_skus', []) and previous['threshold'] != product['threshold'] and product['enabled']:
-                    self._risk_event(db, product, snapshot, snapshot, 'threshold_changed',
-                                     old_risk=inventory_risk(snapshot, previous['threshold']))
-                    snapshot['evaluated_threshold'] = product['threshold']
-                    db.execute('UPDATE snapshots SET data=? WHERE sku=?', (json.dumps(snapshot), product['sku']))
-            self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
-            self.put(db, 'next_check', 0)
+            return self._save_product(db, product)
+
+    def _save_product(self, db, product):
+        """Save inside the caller transaction, including snapshot/event reconciliation."""
+        old = db.execute('SELECT data FROM products WHERE sku=?', (product['sku'],)).fetchone()
+        catalog = db.execute('SELECT data FROM catalog WHERE sku=?', (product['sku'],)).fetchone()
+        identity = str(json.loads(catalog[0]).get('goods_id', '')) if catalog else ''
+        previous_id = str(json.loads(old[0]).get('goods_id', '')) if old else ''
+        known_id = identity or previous_id
+        if product.get('goods_id') and known_id and product['goods_id'] != known_id:
+            raise ValueError('ERP 编号与采集商品不一致，请重新搜索选择产品。')
+        product['goods_id'] = known_id or product.get('goods_id', '')
+        previous = json.loads(old[0]) if old else None
+        self.validate_warehouse_selection(db, product, previous)
+        source_changed = previous is not None and source_key(previous) != source_key(product)
+        if source_changed:
+            db.execute('DELETE FROM snapshots WHERE sku=?', (product['sku'],))
+            db.execute('DELETE FROM journal_baselines WHERE sku=?', (product['sku'],))
+            self.put(db, 'last_skus', [sku for sku in self.get(db, 'last_skus', []) if sku != product['sku']])
+            for ident, data in db.execute("SELECT id,data FROM events WHERE status IN ('pending','failed')").fetchall():
+                if json.loads(data).get('sku') == product['sku']:
+                    db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
+        snap = db.execute('SELECT data FROM snapshots WHERE sku=?', (product['sku'],)).fetchone()
+        db.execute('INSERT INTO products VALUES (?,?) ON CONFLICT(sku) DO UPDATE SET data=excluded.data',
+                   (product['sku'], json.dumps(product, ensure_ascii=False)))
+        if old and snap:
+            previous, snapshot = json.loads(old[0]), json.loads(snap[0])
+            fresh = 0 <= time.time() - snapshot['observed_at'] <= self.get(db, 'interval_seconds', 7200) + 300
+            if fresh and product['sku'] in self.get(db, 'last_skus', []) and previous['threshold'] != product['threshold'] and product['enabled']:
+                self._risk_event(db, product, snapshot, snapshot, 'threshold_changed',
+                                 old_risk=inventory_risk(snapshot, previous['threshold']))
+                snapshot['evaluated_threshold'] = product['threshold']
+                db.execute('UPDATE snapshots SET data=? WHERE sku=?', (json.dumps(snapshot), product['sku']))
+        self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
+        self.put(db, 'next_check', 0)
         return product
 
     def remove_product(self, sku):
-        """Remove a watch, retain its archived config and cancel unclaimed alerts."""
+        results = self.remove_products([sku])
+        return results[0] if results else None
+
+    def remove_products(self, skus, *, expected=None):
+        """Atomically remove reviewed watches; retain history and archived settings."""
+        skus = list(dict.fromkeys(skus))
+        if not skus:
+            return []
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT data FROM products WHERE sku=?', (sku,)).fetchone()
-            if row is None:
-                return None
-            product = json.loads(row[0])
-            self.put(db, 'removed_product:' + sku, dict(product=product, removed_at=time.time()))
-            db.execute('DELETE FROM products WHERE sku=?', (sku,))
-            self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
-            self.put(db, 'next_check', 0)
-            in_flight = 0
-            for ident, data, status in db.execute("SELECT id,data,status FROM events WHERE status IN ('pending','failed','sending')").fetchall():
-                if json.loads(data).get('sku') != sku:
-                    continue
-                if status == 'sending':
-                    in_flight += 1
-                else:
-                    db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
-            return dict(sku=sku, name=product['name'], in_flight=in_flight)
+            products = {}
+            for sku in skus:
+                row = db.execute('SELECT data FROM products WHERE sku=?', (sku,)).fetchone()
+                product = json.loads(row[0]) if row else None
+                if expected is not None and (product is None or expected.get(sku) != product):
+                    raise ValueError('勾选产品的设置已变化，请刷新清单后重新勾选。')
+                if product is not None:
+                    products[sku] = product
+            results = {sku: dict(sku=sku, name=p['name'], in_flight=0) for sku, p in products.items()}
+            for sku, product in products.items():
+                self.put(db, 'removed_product:' + sku, dict(product=product, removed_at=time.time()))
+                db.execute('DELETE FROM products WHERE sku=?', (sku,))
+            if products:
+                self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
+                self.put(db, 'next_check', 0)
+                for ident, data, status in db.execute("SELECT id,data,status FROM events WHERE status IN ('pending','failed','sending')").fetchall():
+                    sku = json.loads(data).get('sku')
+                    if sku not in products:
+                        continue
+                    if status == 'sending':
+                        results[sku]['in_flight'] += 1
+                    else:
+                        db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
+            return list(results.values())
 
     def set_enabled(self, enabled):
         with self.db() as db:

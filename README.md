@@ -1,12 +1,12 @@
 # 后台库存监控
 
-Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.01**。
+Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.02**。
 
 从已登录 ERP 的浏览器采集库存，在本地 SQLite 中保存产品配置、库存快照及提醒记录，通过钉钉群机器人发送通知。
 
 ## 下载使用
 
-到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.01-windows.zip`，解压后运行 `后台库存监控_正式版_v1.01.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
+到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.02-windows.zip`，解压后运行 `后台库存监控_正式版_v1.02.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
 
 1. 安装随包 `inventory-erp.user.js`，登录 ERP，按页面提示连接采集。
 2. 添加关注产品，选择库存依据、仓库及预警数量。
@@ -16,7 +16,16 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.01**�
 
 首次使用请看 [中文使用说明](使用说明.md)，库存口径和详细规则见 [功能说明](inventory-setup.md)。
 
-## v1.01 更新
+## v1.02 更新
+
+- 表格导入：支持 Excel / CSV，goodsid 精确匹配，预警值校验，总览确认后批量保存，统一使用公司大库可销数。
+- 批量删除关注：独立窗口逐项勾选、全选、取消全选，确认后删除并保留历史记录。
+- 普通到货、库存消息显示“货源情况”；指定成本表来源的重开消息显示“价格调整｜重开成本表”。
+- 两个新窗口沿用程序统一样式，提供小窗口操作验证。
+
+老用户可单独下载 EXE，退出旧程序后放到原目录运行，保留 `.local_inventory_ui_test` 和其他原有配置。若旧 EXE 文件名不同，更新快捷方式目标后再启动；不要同时运行两个版本。此次从 v1.01 升级无需更新采集脚本（仍为 0.4.0）。
+
+## v1.01 已有功能
 
 - 库存监控独立运行，钉钉监听按需配置，修复首次配置和子进程资源路径。
 - 本机“自动重登（无人值守）”开关；脚本 0.4.0 与 OpenCLI 浏览器点击配合，不读取密码。
@@ -25,7 +34,7 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.01**�
 
 Windows 11 x64 + Chrome 已实测，Windows 10 x64 尚未整套验收，Win7 不支持。Edge 自动重登未验收。一键准备不自动确认扩展安装或代填密码；普通库存监控不要求 Node/OpenCLI。
 
-[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.01/inventory-guide-v1.01.html) · [在线中文教程](使用说明.md)
+[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.02/inventory-guide-v1.02.html) · [在线中文教程](使用说明.md)
 
 ## 功能
 
@@ -75,7 +84,7 @@ py -3 -m pip install -r requirements-build.txt
 pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 ```
 
-默认输出为 `dist/backend-inventory-monitor-v1.01/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
+默认输出为 `dist/backend-inventory-monitor-v1.02/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
 
 ## 源码结构
 
@@ -96,6 +105,6 @@ pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 
 升级前从托盘退出程序，再替换 EXE 和采集脚本。保留程序目录的 `.local_inventory_ui_test/`，以及 `%LOCALAPPDATA%/DingTalkSourceMonitor/` 中原有数据；关闭窗口仅收起到托盘。
 
-本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.01 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
+本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.02 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
 
 第三方组件许可见 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。

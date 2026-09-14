@@ -143,6 +143,7 @@ class Worker:
                             event.setdefault('conversationName', self.source['GroupName'])
                             if _get(event, 'senderId') == self.source['SenderId']:
                                 event['sender'] = self.source.get('SenderName', '')
+                                event['cost_table_source'] = bool(self.source.get('AllowReopen', False))
                             yield json.dumps(event, ensure_ascii=False)
                     except (ValueError, TypeError):
                         continue

@@ -55,6 +55,37 @@ def run(output_directory):
                 ImageGrab.grab(window=int(root.frame(), 16)).save(output / f'frozen-page-{module}.png')
             row = dict(sku='OFFLINE-5070', goods_id='88102', name='示例 RTX 5070 分库产品', stock=0, able=0, purchase=0)
             service.accept_snapshot('offline-catalog', [row], scope='offline-ui:2')
+            from inventory_import import write_template
+            from openpyxl import load_workbook
+            import_path = Path(temporary) / '产品导入.xlsx'
+            write_template(import_path)
+            workbook = load_workbook(import_path)
+            workbook.active.cell(2, 1, '88102')
+            workbook.active.cell(2, 3, 10)
+            workbook.save(import_path)
+            workbook.close()
+            panel.show_module('monitor')
+            importer = panel.open_import()
+            importer.load_file(import_path)
+            root.update()
+            assert not service.products()
+            assert importer.plan['rows'][0]['product']['goods_id'] == '88102'
+            ImageGrab.grab(window=int(importer.frame(), 16)).save(output / 'frozen-product-import.png')
+            assert importer.confirm()
+            assert service.products()[0]['stock_basis'] == 'company_able'
+            assert service.products()[0]['threshold'] == 10
+            importer.destroy()
+            service.save_product(dict(sku='OFFLINE-CPU', goods_id='88103', name='示例 CPU 265K', threshold=20))
+            remover = panel.remove_selected()
+            assert not remover.checked
+            remover.select_all()
+            root.update()
+            assert len(remover.checked) == 2
+            ImageGrab.grab(window=int(remover.frame(), 16)).save(output / 'frozen-remove-watches.png')
+            with patch('inventory_remove_ui.messagebox.askyesno', return_value=True):
+                assert remover.confirm()
+            assert not service.products()
+            remover.destroy()
             request = service.request_warehouses(row['sku'], row['goods_id'])
             details = dict(goods_id='88102', complete=True, depots=[
                 dict(id='131', name='稀缺货源', stock=20, able=None, purchase=None),
@@ -117,6 +148,6 @@ def run(output_directory):
             if errors:
                 raise RuntimeError('; '.join(errors))
             (output / 'frozen-ui-check.json').write_text(json.dumps(dict(passed=True, pages=6,
-                wizard=True, robot_pause_resume=True, robot_editor=True, warehouse_settings=True, warehouse_qty=20, report_preview=True, cache_cleanup=True, inventory_only_no_message_worker=True, erp_outage_one_shot=True, live_services=False), ensure_ascii=False, indent=2), encoding='utf-8')
+                wizard=True, robot_pause_resume=True, robot_editor=True, warehouse_settings=True, warehouse_qty=20, product_import=True, batch_remove=True, report_preview=True, cache_cleanup=True, inventory_only_no_message_worker=True, erp_outage_one_shot=True, live_services=False), ensure_ascii=False, indent=2), encoding='utf-8')
         finally:
             root.destroy()
