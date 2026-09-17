@@ -296,7 +296,7 @@ class SqlWorker:
             self.failures = 0
             self.retry_at = 0
             missing = [p for p in products if p.get('goods_id') not in by_id] if due or full else []
-            self.message = f'查询完成：{len(rows)} 件商品，{warehouse_count} 条仓库记录；提醒沿用现有机器人配置。'
+            self.message = f'查询完成：{len(rows)} 件商品，{warehouse_count} 条仓库记录。'
             if missing:
                 self.message += f' {len(missing)} 个关注商品未查到，保留旧值并标为未知。'
             unresolved = []
