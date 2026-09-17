@@ -68,6 +68,8 @@ class BrowserRecovery:
             self.service.put(db, 'erp_native_state', state)
 
     def run_once(self, now=None):
+        if hasattr(self.service, 'collector_enabled') and not self.service.collector_enabled():
+            return
         now = time.time() if now is None else now
         with self.service.db() as db:
             request = self.service.get(db, 'erp_native_request', {})

@@ -6,7 +6,7 @@ import sys
 import time
 import tkinter as tk
 from tkinter import messagebox
-from inventory_monitor import InventoryService
+from inventory_sources import InventoryRuntimeService as InventoryService
 from inventory_bridge import start_bridge
 from test_inventory_ui_local import build_workspace
 from inventory_version import APP_TITLE
@@ -56,7 +56,11 @@ def main():
     parser.add_argument('--tray', action='store_true')
     parser.add_argument('--data-dir')
     parser.add_argument('--ui-check', action='store_true', help='Run an isolated, offline UI check and exit')
+    parser.add_argument('--sql-ui-check', action='store_true', help='Run isolated SQL/script acceptance and exit')
     args = parser.parse_args()
+    if args.sql_ui_check:
+        from inventory_sql_ui_check import run
+        return run(args.data_dir)
     if args.ui_check:
         from inventory_ui_check import run
         return run(args.data_dir)
@@ -140,7 +144,10 @@ def main():
             start_configured_message_worker(message_controller)
         except RuntimeError as error:
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
-        build_workspace(root, service, live=True, dingtalk_controller=message_controller)
+        panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller)
+        service.start_source()
+        if service.source_mode() == 'sql' and service.sql_worker.source is None:
+            panel.show_module('settings')
         tray.run_detached()
         root.after(150, process_commands)
         if args.tray:
@@ -154,6 +161,7 @@ def main():
                 message_controller.stop()
         finally:
             tray.stop()
+            service.close_source()
             bridge.close()
 
 

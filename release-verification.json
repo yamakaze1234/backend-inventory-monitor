@@ -1,0 +1,41 @@
+{
+  "version": "1.03",
+  "platform": "Windows 11 x64",
+  "python_tests": {
+    "passed": 243
+  },
+  "javascript_tests": {
+    "passed": 21
+  },
+  "sql_ui": {
+    "production_ui": "passed",
+    "sql_default": true,
+    "script_switch": true,
+    "product_filter": true,
+    "reminders_filtered": true,
+    "existing_delivery_mocked": true,
+    "real_messages_sent": false,
+    "live_sql_connected": false,
+    "pymssql": "2.4.1",
+    "callback_errors": []
+  },
+  "existing_ui": {
+    "passed": true,
+    "pages": 6,
+    "wizard": true,
+    "robot_pause_resume": true,
+    "robot_editor": true,
+    "warehouse_settings": true,
+    "warehouse_qty": 20,
+    "product_import": true,
+    "batch_remove": true,
+    "report_preview": true,
+    "cache_cleanup": true,
+    "inventory_only_no_message_worker": true,
+    "erp_outage_one_shot": true,
+    "live_services": false
+  },
+  "runtime_data_included": false,
+  "live_database_verified": false,
+  "external_notifications_sent": false
+}

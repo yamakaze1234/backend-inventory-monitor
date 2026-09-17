@@ -3,6 +3,7 @@ import json
 import re
 import time
 import uuid
+from sql_inventory_source import valid_warehouse_identity
 
 LOOKUP_TTL = 300
 
@@ -42,7 +43,7 @@ def normalize_details(details, goods_id):
         if not isinstance(depot, dict):
             raise ValueError('分库数据无效。')
         ident, name = str(depot.get('id', '')), str(depot.get('name', '')).strip()
-        if not re.fullmatch(r'[1-9][0-9]{0,19}', ident) or ident in seen or not name or len(name) > 100:
+        if not valid_warehouse_identity(ident, name) or ident in seen or not name or len(name) > 100:
             raise ValueError('分库身份缺失或重复。')
         seen.add(ident)
         depots.append(dict(id=ident, name=name, **{

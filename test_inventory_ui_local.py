@@ -77,6 +77,8 @@ def build_workspace(root, service, live=False, dingtalk_controller=None):
                ('↻  立即检查', lambda: (panel.show_module('monitor'), panel.check()))]
     if dingtalk_controller is not None:
         actions.insert(1, ('▤  钉钉监控', lambda: panel.show_module('dingtalk')))
+    if hasattr(service,'preview_events'):
+        actions.append(('▤  库存提醒记录', lambda: panel.show_module('events')))
     for index, (label, action) in enumerate(actions):
         button = tk.Button(nav, text=label, command=lambda i=index,a=action: navigate(i,a),
                            bg='#202D44' if index == 0 else '#101720', fg='white' if index == 0 else '#A6B3C8',
@@ -91,6 +93,7 @@ def build_workspace(root, service, live=False, dingtalk_controller=None):
                   'settings': ('采集设置', '连接公司大库的 ERP 库存采集。', 2)}
         titles['dingtalk'] = ('钉钉监控', '管理消息来源、连接状态和机器人转发。', 1)
         titles['daily'] = ('货源汇报', '一键生成货源周报，设置日报发送时段与 AI 整理。', 3)
+        titles['events'] = ('库存提醒记录', '按类型、仓库和时间查看变化，导出提醒或库存快照。', len(actions)-1)
         title, description, index = titles[module]
         if dingtalk_controller is not None and module in ('search', 'config', 'settings', 'daily'):
             index += 1

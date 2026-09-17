@@ -5,6 +5,11 @@ import uuid
 
 def run_once(service, sender, now=None):
     now = time.time() if now is None else now
+    sql_mode = hasattr(service,'source_mode') and service.source_mode() == 'sql'
+    if sql_mode and service.sql_worker.source is None:
+        return False
+    if sql_mode and not any(p['enabled'] for p in service.products()):
+        return False
     with service.db() as db:
         db.execute('BEGIN IMMEDIATE')
         if not service.get(db, 'enabled', True):
@@ -12,7 +17,8 @@ def run_once(service, sender, now=None):
         heartbeat = service.get(db, 'heartbeat', 0)
         error = bool(service.get(db, 'connection_error', ''))
         state = service.get(db, 'erp_connection_alert', {})
-        healthy = bool(heartbeat) and 0 <= now - heartbeat < 70 and not error
+        freshness = service.get(db,'interval_seconds',7200)+60 if sql_mode else 70
+        healthy = bool(heartbeat) and 0 <= now - heartbeat < freshness and not error
         if healthy:
             # A healthy observation rearms the next outage; no recovery push.
             if not state.get('armed') or state.get('waiting_since'):
@@ -25,7 +31,7 @@ def run_once(service, sender, now=None):
             state = dict(armed=True, waiting_since=now)
             service.put(db, 'erp_connection_alert', state)
         recovery = service.get(db, 'erp_recovery', {})
-        failed = recovery.get('state') in ('captcha', 'exhausted') and recovery.get('at', 0) >= state['waiting_since']
+        failed = not sql_mode and recovery.get('state') in ('captcha', 'exhausted') and recovery.get('at', 0) >= state['waiting_since']
         if not failed and now - state['waiting_since'] < 300:
             return False
         job = 'erp-disconnected:' + uuid.uuid4().hex
@@ -36,11 +42,13 @@ def run_once(service, sender, now=None):
         service.put(db, 'erp_connection_alert', state)
     from inventory_delivery import local_time
     reason = '自动重登需要人工验证或已达到重试上限。' if failed else '已等待自动恢复 5 分钟，ERP 连接仍未恢复（浏览器关闭时无法执行重试）。'
+    if sql_mode:
+        reason = '数据库查询失败或超过检查周期，等待重试 5 分钟仍未恢复。'
     body = '\n\n'.join([
         '# 库存监控 · ERP 连接断开', reason,
         '发现时间：' + local_time(now),
         '最近成功采集：' + (local_time(checked) if checked else '尚未完成'),
-        '库存数据可能已过期。请检查网络、ERP 登录和“分库库存 → 公司大库”页面，并保持浏览器及库存程序运行。',
+        '库存数据可能已过期。请检查数据库网络、查询账号及采集设置，并保持库存程序运行。' if sql_mode else '库存数据可能已过期。请检查网络、ERP 登录和“分库库存 → 公司大库”页面，并保持浏览器及库存程序运行。',
         '本次断连仅提醒一次；恢复连接后再次断开才重新提醒。',
     ])
     try:

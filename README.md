@@ -1,14 +1,14 @@
 # 后台库存监控
 
-Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.02**。
+Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.03**。
 
-从已登录 ERP 的浏览器采集库存，在本地 SQLite 中保存产品配置、库存快照及提醒记录，通过钉钉群机器人发送通知。
+默认直接查询 SQL Server 库存，也可选择 ERP 浏览器脚本采集；在本地 SQLite 保存关注产品、快照和提醒记录，继续通过原有钉钉机器人发送通知。
 
 ## 下载使用
 
-到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.02-windows.zip`，解压后运行 `后台库存监控_正式版_v1.02.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
+到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.03-windows.zip`，解压后运行 `后台库存监控_正式版_v1.03.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
 
-1. 安装随包 `inventory-erp.user.js`，登录 ERP，按页面提示连接采集。
+1. 在采集设置填写自己的 SQL Server 地址、端口、数据库和只读查询账号；如选择脚本查询，再安装 `inventory-erp.user.js` 并登录 ERP。
 2. 添加关注产品，选择库存依据、仓库及预警数量。
 3. 在采集设置中配置自己的钉钉机器人。
 4. 如需货源消息监听，在钉钉监控中登录并配置自己的群和人员。首次展示的名称均为示例，请替换。
@@ -16,14 +16,22 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.02**�
 
 首次使用请看 [中文使用说明](使用说明.md)，库存口径和详细规则见 [功能说明](inventory-setup.md)。
 
-## v1.02 更新
+## v1.03 更新
+
+- SQL 默认查询，支持切回浏览器脚本；保留原有机器人及播报格式。
+- 全商品目录包含零库存产品；新增关注排除停售、套餐及名称含星号的产品。
+- 按指定仓库监控库存与待入，待入 NULL 按 0，缺失仓库记录保留未知；切换来源首轮建立基线。
+- 库存提醒记录支持筛选和导出；保存密码使用当前 Windows 用户加密。
+- 同步已有日报修复：支持纯到货信息，生成失败有限重试，发送结果未知不重发。
+
+## v1.02 已有功能
 
 - 表格导入：支持 Excel / CSV，goodsid 精确匹配，预警值校验，总览确认后批量保存，统一使用公司大库可销数。
 - 批量删除关注：独立窗口逐项勾选、全选、取消全选，确认后删除并保留历史记录。
 - 普通到货、库存消息显示“货源情况”；指定成本表来源的重开消息显示“价格调整｜重开成本表”。
 - 两个新窗口沿用程序统一样式，提供小窗口操作验证。
 
-老用户可单独下载 EXE，退出旧程序后放到原目录运行，保留 `.local_inventory_ui_test` 和其他原有配置。若旧 EXE 文件名不同，更新快捷方式目标后再启动；不要同时运行两个版本。此次从 v1.01 升级无需更新采集脚本（仍为 0.4.0）。
+老用户可单独下载 EXE，退出旧程序后放到原目录运行，保留 `.local_inventory_ui_test` 和其他原有配置。若旧 EXE 文件名不同，更新快捷方式目标后再启动；不要同时运行两个版本。升级默认选择 SQL，需要填写连接信息或手动切回脚本；采集脚本仍为 0.4.0。
 
 ## v1.01 已有功能
 
@@ -34,7 +42,7 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.02**�
 
 Windows 11 x64 + Chrome 已实测，Windows 10 x64 尚未整套验收，Win7 不支持。Edge 自动重登未验收。一键准备不自动确认扩展安装或代填密码；普通库存监控不要求 Node/OpenCLI。
 
-[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.02/inventory-guide-v1.02.html) · [在线中文教程](使用说明.md)
+[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.03/inventory-guide-v1.03.html) · [在线中文教程](使用说明.md)
 
 ## 功能
 
@@ -46,6 +54,12 @@ Windows 11 x64 + Chrome 已实测，Windows 10 x64 尚未整套验收，Win7 不
 - 托盘运行、历史记录、缓存整理和统一滚动界面。
 
 ERP 采集桥接仅监听 `127.0.0.1:18763`。浏览器采集脚本针对现有 3cerp 页面；其他 ERP 需要适配。库存规则不依赖 AI，货源 AI 汇报需要自行配置接口。
+
+## SQL 部署与连接
+
+使用 Windows 11 x64 打包版，不需要另装 Python、DBX、SQL Server 客户端或 ODBC 驱动。保持电脑唤醒和程序运行，确保可访问管理员提供的数据库地址及端口。SQL 查询无需 ERP 网页、Node.js、OpenCLI 或浏览器无人值守；提醒播报需要网络和机器人配置。
+
+当前 SQL 适配 `[库存].[库存查询]` 和 `[库存].[分库库存]`，账号需要这两个对象的查询权限。字段要求、首次配置和“缺少仓库记录”的解释见 [中文使用说明](使用说明.md)。不同 ERP 表结构需先适配，公开版不提供数据库地址、账号或数据。
 
 ## 开发运行
 
@@ -84,7 +98,7 @@ py -3 -m pip install -r requirements-build.txt
 pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 ```
 
-默认输出为 `dist/backend-inventory-monitor-v1.02/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
+默认输出为 `dist/backend-inventory-monitor-v1.03/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
 
 ## 源码结构
 
@@ -105,6 +119,6 @@ pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 
 升级前从托盘退出程序，再替换 EXE 和采集脚本。保留程序目录的 `.local_inventory_ui_test/`，以及 `%LOCALAPPDATA%/DingTalkSourceMonitor/` 中原有数据；关闭窗口仅收起到托盘。
 
-本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.02 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
+本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.03 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
 
 第三方组件许可见 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。

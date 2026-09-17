@@ -92,6 +92,13 @@ class Bridge:
 
     def handle(self, path, body):
         now = time.time()
+        if hasattr(self.service, 'collector_enabled') and not self.service.collector_enabled():
+            self.lease = None
+            if path == '/poll':
+                return {'check_id':None, 'next_check':now+60, 'source_mode':'sql'}
+            if path in ('/recovery-config', '/recovery', '/error'):
+                return {'ok':True, 'enabled':False, 'status':'sql_mode'}
+            raise ValueError('当前使用 SQL 查询，脚本结果不写入库存。')
         client, scope = str(body.get('client_id', '')), str(body.get('scope', ''))
         if not client or len(client)>100:
             raise ValueError('采集会话标识缺失')
@@ -109,6 +116,10 @@ class Bridge:
             existing_scope = self.service.get(db, 'scope')
         if existing_scope and existing_scope != scope:
             raise ValueError('ERP 账号或仓库发生变化，已停止接收。')
+        if not existing_scope and hasattr(self.service, 'collector_enabled'):
+            with self.service.db() as db:
+                self.service.put(db,'scope',scope)
+                self.service.put(db,'script_bound_scope',scope)
         if path == '/recovery-config':
             with self.service.db() as db:
                 enabled = self.service.get(db, 'erp_native_enabled', False) is True
@@ -136,10 +147,13 @@ class Bridge:
             if self.lease and self.lease['expires_at'] > now:
                 return {'check_id':None, 'next_check':status['next_check'], 'busy':True}
             self.lease = None
+            if hasattr(self.service, 'prepare_script_lookup'):
+                self.service.prepare_script_lookup()
             lookup = self.service.pending_warehouse_request()
             exceptions = [dict(sku=p['sku'], goods_id=p.get('goods_id', ''), warehouse_id=p['warehouse_id'],
                                warehouse_name=p['warehouse_name']) for p in status['products']
-                          if p['enabled'] and p.get('stock_basis') == 'warehouse_stock']
+                          if p['enabled'] and p.get('stock_basis') == 'warehouse_stock'
+                          and not p.get('warehouse_id','').startswith('sqlname:')]
             if (lookup or exceptions) and 'warehouse_details_v1' not in body.get('capabilities', []):
                 message = '分库特例需要新版采集脚本，请安装 inventory-erp.user.js 0.2.0 或更新版本。'
                 self.service.connection_update(message)

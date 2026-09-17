@@ -142,6 +142,7 @@ class InventoryPanel(tk.Frame):
         self.connection_detail = self.label(self, fg='#BA6415', anchor='w', wraplength=960, justify='left', size=9)
         self.connection_detail.pack(fill='x', pady=(0, 6))
         recovery_bar = tk.Frame(self, bg=BG)
+        self.recovery_bar = recovery_bar
         recovery_bar.pack(fill='x', pady=(0, 6))
         ttk.Style(self).configure('Recovery.TCheckbutton', background=BG, foreground=INK,
                                   font=('Microsoft YaHei UI', 9))
@@ -533,6 +534,10 @@ class InventoryPanel(tk.Frame):
         table.columnconfigure(0, weight=1)
         candidates = {}
         def refresh_results(*_):
+            sql_mode = hasattr(self.service,'source_mode') and self.service.source_mode()=='sql'
+            for key,title in zip(('able','purchase','stock'),('总可销','总待入','总库存') if sql_mode else ('可销','待入','实际')):
+                tree.heading(key,text=title)
+            quantity_fields = ('catalog_able','catalog_purchase','catalog_stock') if sql_mode else ('able','purchase','stock')
             matches = self.service.catalog(query.get().strip(), limit=None, mode=self.catalog_mode.get())
             total = len(self.service.catalog(limit=None))
             tree.delete(*tree.get_children())
@@ -541,13 +546,15 @@ class InventoryPanel(tk.Frame):
                 sku = product['sku']
                 candidates[sku] = product
                 tree.insert('', 'end', iid=sku, values=(product.get('goods_id', '—'), product['name'],
-                    *[product.get(key) if product.get(key) is not None else '—' for key in ('able', 'purchase', 'stock')]))
+                    *[product.get(key) if product.get(key) is not None else '—' for key in quantity_fields]))
             if not total:
                 summary.config(text='尚无完整采集目录，请先连接 ERP 并完成采集。')
             else:
-                checked = self.service.status().get('checked_at')
+                catalog_status = self.service.status()
+                checked = catalog_status.get('catalog_checked_at') if sql_mode else catalog_status.get('checked_at')
                 stamp = time.strftime('%m-%d %H:%M', time.localtime(checked)) if checked else '未知'
-                summary.config(text=f'已采集 {total:,} 件 · 匹配 {len(matches):,} 件 · 显示前 200 件 · 库存快照 {stamp}')
+                excluded = '\n已排除停售、套餐及名称含星号的商品。' if hasattr(self.service,'source_mode') else ''
+                summary.config(text=f'可添加 {total:,} 件 · 匹配 {len(matches):,} 件 · 显示前 200 件 · 库存快照 {stamp}' + excluded + ('列表显示总量，监控按所选仓库。' if sql_mode else ''))
         def choose(*_):
             selected = tree.selection()
             if not selected:
@@ -640,6 +647,9 @@ class InventoryPanel(tk.Frame):
                     settings_window = settings_canvas.create_window((0, 0), window=settings_content, anchor='nw')
                     settings_canvas.bind('<Configure>', lambda e: settings_canvas.itemconfigure(settings_window, width=e.width))
                     settings_content.bind('<Configure>', lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox('all')))
+                    if hasattr(self.service, 'source_mode'):
+                        from inventory_source_ui import build_section as build_source_section
+                        self.source_panel = build_source_section(settings_content, self.service, self.refresh)
                     from inventory_cache_ui import build_section as build_cache_section
                     self.cache_panel = build_cache_section(settings_content, self.service)
                     interval_card = section(settings_content, '监控周期', '按设定周期检查公司大库；也可随时点击“立即检查”。')
@@ -671,6 +681,7 @@ class InventoryPanel(tk.Frame):
                             self.notice.set(str(error))
                     self.button(interval_row, '保存周期', save_interval, True).pack(side='right', padx=(18, 0))
                     erp_card = section(settings_content, 'ERP 采集连接', '保持 ERP 分库库存页面打开，采集完成后库存会自动更新。')
+                    self.script_setup_card = erp_card.master
                     instructions = '1. 在 ERP 浏览器启用 inventory-erp.user.js。\n2. 登录 ERP，打开分库库存，选择公司大库。\n3. 点击右下角“库存采集：点击连接”，核对账号。\n4. 返回库存监控，点击“立即检查”。'
                     instructions_label = self.label(erp_card, instructions, justify='left', anchor='w')
                     instructions_label.pack(fill='x')
@@ -683,7 +694,15 @@ class InventoryPanel(tk.Frame):
                     self.robot_panel.pack(fill='x')
                 else:
                     self.robot_panel.refresh()
+                if hasattr(self.service,'source_mode'):
+                    if self.service.source_mode()=='sql':self.script_setup_card.pack_forget()
+                    elif not self.script_setup_card.winfo_manager():self.script_setup_card.pack(fill='x',pady=(0,16))
                 target = self.settings_page
+            elif module == 'events':
+                if not hasattr(self,'event_page'):
+                    from inventory_event_ui import EventPanel
+                    self.event_page = EventPanel(self.body,self.service)
+                target = self.event_page
             else:
                 target = self.product_page
                 chosen, other = (self.search_page, self.config_page) if module == 'search' else (self.config_page, self.search_page)
@@ -720,6 +739,14 @@ class InventoryPanel(tk.Frame):
             self._after = None
         try:
             status = self.service.status()
+            sql_mode = status.get('source_mode') == 'sql'
+            if hasattr(self,'script_setup_card') and hasattr(self.service,'source_mode'):
+                if sql_mode:self.script_setup_card.pack_forget()
+                elif not self.script_setup_card.winfo_manager():self.script_setup_card.pack(fill='x',pady=(0,16))
+            if sql_mode:
+                self.recovery_bar.pack_forget()
+            elif not self.recovery_bar.winfo_manager():
+                self.recovery_bar.pack(fill='x',pady=(0,6),after=self.delivery_state)
             self.refresh_warehouses()
             if getattr(self, '_catalog_checked', None) != status.get('checked_at'):
                 self._catalog_checked = status.get('checked_at')
@@ -735,9 +762,11 @@ class InventoryPanel(tk.Frame):
                 }.get(state, ('ERP 状态未知', '#D99A42'))
                 self.sidebar_erp_status.config(text='●  ' + connection_label, fg=shade)
             text = {'waiting': '等待 ERP', 'online': 'ERP 在线', 'stale': '数据过期', 'error': 'ERP 连接异常'}.get(state, '等待 ERP')
-            self.connection.config(text='● ' + text + ('' if status['enabled'] else ' · 监控已暂停'), fg='#087B54' if state == 'online' else '#BA6415')
+            self.connection.config(text='● ' + ('SQL · ' if sql_mode else '') + text + ('' if status['enabled'] else ' · 监控已暂停'), fg='#087B54' if state == 'online' else '#BA6415')
             self.delivery_state.config(text=delivery_summary(status))
             detail = str(status.get('connection_error') or '')
+            if sql_mode:
+                detail = detail or status.get('source_message','')
             if state != 'online' and status.get('checked_at'):
                 detail = (detail + ' · ' if detail else '') + '下列数量保留自上次成功检查，当前库存尚未确认。'
             self.connection_detail.config(text=detail)
@@ -745,7 +774,7 @@ class InventoryPanel(tk.Frame):
                 self.connection_detail.pack(fill='x', pady=(0, 6), after=self.delivery_state)
             else:
                 self.connection_detail.pack_forget()
-            self.inbound_note.config(text='' if status.get('inbound_verified') else '入库单据尚未接入，等待 ERP 采集')
+            self.inbound_note.config(text='SQL：待入按所选仓库读取；库存增加是两次检查间净增加，不核验入库单。' if sql_mode else ('' if status.get('inbound_verified') else '入库单据尚未接入，等待 ERP 采集'))
             self.pause_button.config(text='暂停库存监控' if status['enabled'] else '启用库存监控')
             fmt = lambda value: time.strftime('%m-%d %H:%M:%S', time.localtime(value)) if value else '—'
             self.timestamps.config(text=f"最近成功检查：{fmt(status.get('checked_at'))}    下次检查：{fmt(status.get('next_check'))}    每 {status.get('interval_seconds', 7200) // 60} 分钟 · 按产品预警依据")

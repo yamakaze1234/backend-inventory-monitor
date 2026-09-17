@@ -1,6 +1,7 @@
 """Pure inventory policy. No network, credentials, or ERP side effects."""
 import math
 import re
+from sql_inventory_source import valid_warehouse_identity
 
 ALERTS = dict(inbound=True, pending_inbound=True, low=True, oversold=True, negative_stock=True, recovery=True)
 RISK_TEXT = {'normal': '正常', 'low': '低库存', 'oversold': '超售', 'negative_stock': '负库存', 'unknown': '待检查', 'disabled': '已停用'}
@@ -46,7 +47,7 @@ def validate_product(data):
     depot_id, depot_name = '', ''
     if basis == 'warehouse_stock':
         depot_id, depot_name = str(data.get('warehouse_id', '')).strip(), str(data.get('warehouse_name', '')).strip()
-        if not re.fullmatch(r'[1-9][0-9]{0,19}', depot_id) or not depot_name or len(depot_name) > 100:
+        if not valid_warehouse_identity(depot_id, depot_name) or not depot_name or len(depot_name) > 100:
             raise ValueError('请刷新分库列表并选择一个真实分库。')
     return dict(sku=sku, goods_id=str(data.get('goods_id', '')).strip(), name=name, category=category, threshold=int(threshold),
                 stock_basis=basis, warehouse_id=depot_id, warehouse_name=depot_name,

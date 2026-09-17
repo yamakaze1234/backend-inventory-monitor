@@ -193,7 +193,7 @@ class InventoryService(WarehouseLookups):
         kind = 'recovery' if before in ('oversold', 'negative_stock') and new_risk not in ('oversold', 'negative_stock') or new_risk == 'normal' else new_risk
         self._event(db, p, kind, old, current, cause)
 
-    def accept_snapshot(self, check_id, rows, *, scope, warehouse='公司大库', complete=True, observed_at=None, journals=None, warehouse_details=None, config_revision=None):
+    def accept_snapshot(self, check_id, rows, *, scope, warehouse='公司大库', complete=True, observed_at=None, journals=None, warehouse_details=None, config_revision=None, preserve_catalog=False):
         observed = time.time() if observed_at is None else quantity(observed_at)
         if not complete or warehouse != '公司大库' or not scope or not check_id or not isinstance(rows, list):
             raise ValueError('库存检查不完整或公司大库身份不匹配，已保留上次数据。')
@@ -218,6 +218,9 @@ class InventoryService(WarehouseLookups):
                                stock=quantity(row.get('stock')), observed_at=observed)
             if row.get('goods_id'):
                 mapped[sku]['goods_id'] = str(row['goods_id'])
+        for row in rows:
+            mapped[str(row['sku']).strip()].update({k: row[k] for k in
+                ('catalog_stock', 'catalog_able', 'catalog_purchase', 'catalog_source', 'warehouse_missing') if k in row})
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             if config_revision is not None and config_revision != self.get(db, 'config_revision', 0):
@@ -251,13 +254,17 @@ class InventoryService(WarehouseLookups):
                 stock_field = 'warehouse_stock' if special else 'stock'
                 if not receipt_emitted and old and current.get(stock_field) is not None and old.get(stock_field) is not None and current[stock_field] > old[stock_field]:
                     self._event(db, p, 'stock_increase', old, current, 'inventory_changed')
-                if not special and current['purchase'] > 0 and (old is None or current['purchase'] > old['purchase']):
+                purchase_field = 'warehouse_purchase' if special else 'purchase'
+                pending = current.get(purchase_field)
+                previous_pending = old.get(purchase_field) if old else None
+                if (not special or scope.startswith('sql:')) and pending is not None and pending > 0 and (previous_pending is None or pending > previous_pending):
                     self._event(db, p, 'pending_inbound', old, current, 'purchase_changed')
                 current['evaluated_threshold'] = p['threshold']
                 db.execute('INSERT OR REPLACE INTO snapshots VALUES (?,?)', (p['sku'], json.dumps(current, ensure_ascii=False)))
             # Catalog is a lookup aid; missing watched products stay unknown in this check.
-            db.execute('DELETE FROM catalog')
-            db.executemany('INSERT INTO catalog VALUES (?,?)', [(sku, json.dumps(r, ensure_ascii=False)) for sku, r in mapped.items()])
+            if not preserve_catalog:
+                db.execute('DELETE FROM catalog')
+            db.executemany('INSERT OR REPLACE INTO catalog VALUES (?,?)', [(sku, json.dumps(r, ensure_ascii=False)) for sku, r in mapped.items()])
             db.execute('INSERT INTO checks VALUES (?,?)', (check_id, observed))
             for key, value in dict(scope=scope, checked_at=observed, next_check=observed+self.get(db, 'interval_seconds', 7200),
                                    last_skus=sorted(valid_skus), heartbeat=time.time(), connection_error='',

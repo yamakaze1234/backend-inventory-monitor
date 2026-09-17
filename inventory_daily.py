@@ -7,6 +7,17 @@ from datetime import datetime, timezone, timedelta
 
 DEFAULTS = dict(enabled=False, times=['11:00', '16:00'], format='supply')
 TZ = timezone(timedelta(hours=8))
+MAX_GENERATION_ATTEMPTS = 3
+GENERATION_RETRY_SECONDS = 300
+
+
+class ReportGenerationError(ValueError):
+    """Fixed, credential-free diagnostic for a pre-delivery failure."""
+
+    def __init__(self, stage):
+        self.stage = stage
+        super().__init__('货源历史采集失败，未发送。' if stage == 'collection'
+                         else 'AI 整理或内容校验失败，未发送。')
 
 def settings(service):
     with service.db() as db:
@@ -33,7 +44,10 @@ def render(service, config, now=None):
     with service.db() as db:
         source_root = service.get(db, 'daily_source_root', str(default_data_dir()))
     from inventory_history import collect
-    collect(source_root, now)
+    try:
+        collect(source_root, now)
+    except Exception:
+        raise ReportGenerationError('collection') from None
     path = Path(source_root) / 'inventory.sqlite3'
     rows=[]
     if path.exists():
@@ -41,7 +55,10 @@ def render(service, config, now=None):
             rows=[json.loads(r[0]) for r in db.execute('SELECT data FROM messages WHERE created>=? AND created<=? ORDER BY created', (start,now))]
     parts=['# 货源情况 | '+today.strftime('%Y-%m-%d'), '截至今日 '+today.strftime('%H:%M')]
     from inventory_ai import summarize
-    summary = summarize(service, rows, now)
+    try:
+        summary = summarize(service, rows, now)
+    except Exception:
+        raise ReportGenerationError('ai') from None
     if summary is None:
         return None
     parts.append(summary)
@@ -59,11 +76,21 @@ def run_once(service, sender, now=None):
     key = 'daily_supply:' + local.strftime('%Y-%m-%d') + ':' + max(due)
     with service.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        if service.get(db,key): return
-        service.put(db,key,dict(status='sending',at=now))
+        prior = service.get(db,key)
+        if prior and not (prior.get('status') == 'failed'
+                          and prior.get('retryable_generation') is True
+                          and prior.get('attempts', MAX_GENERATION_ATTEMPTS) < MAX_GENERATION_ATTEMPTS
+                          and now >= prior.get('retry_at', float('inf'))):
+            return
+        attempts = prior['attempts'] + 1 if prior else 1
+        # Retry the original report window. Legacy records are never replayed.
+        report_at = prior['report_at'] if prior else now
+        service.put(db,key,dict(status='sending',at=now,attempts=attempts,report_at=report_at))
     delivery_started = False
+    retryable_generation = False
+    stage = 'generation'
     try:
-        body = render(service,config,now)
+        body = render(service,config,report_at)
         if body is None:
             result = {'status':'skipped', 'reason':'截至发送时暂无可汇总的货源消息，本时段不发送。'}
         elif len(body.encode('utf-8')) > 18000:
@@ -79,9 +106,19 @@ def run_once(service, sender, now=None):
                     result['reason'] = '本时段没有启用的接收机器人，已跳过。'
             else:
                 result = sender(body)
-    except Exception:
-        result = {'status':'unknown' if delivery_started else 'failed', 'reason':'货源采集或 AI 整理失败，未发送。' if not delivery_started else '发送结果未知。'}
+    except Exception as error:
+        retryable_generation = not delivery_started and attempts < MAX_GENERATION_ATTEMPTS
+        reason = '货源采集或 AI 整理失败，未发送。'
+        if isinstance(error, ReportGenerationError):
+            stage, reason = error.stage, str(error)
+        result = {'status':'unknown' if delivery_started else 'failed',
+                  'reason':'发送结果未知。' if delivery_started else reason}
     record = dict(status=result.get('status','unknown'), at=now, reason=result.get('reason',''), recipients=result.get('recipients', []))
+    record.update(attempts=attempts, report_at=report_at,
+                  retryable_generation=retryable_generation,
+                  retry_at=now + GENERATION_RETRY_SECONDS * attempts if retryable_generation else 0)
+    if record['status'] == 'failed' and not delivery_started:
+        record['stage'] = stage
     with service.db() as db:
         service.put(db,key,record)
         service.put(db,'daily_last',record)
@@ -113,7 +150,7 @@ def build_page(parent, service):
     time_label.pack(fill='x',pady=(20,8))
     time_label.bind('<Configure>',lambda e:time_label.configure(wraplength=max(1,e.width)))
     ttk.Entry(card,textvariable=at,font=('Microsoft YaHei UI',12)).pack(fill='x')
-    help_label=tk.Label(card,text='默认 11:00、16:00，可添加或修改多个时段。\n截至发送时没有可汇总货源消息，则跳过该时段。\n汇总当日截至发送时的货源消息，并保留发送人、群和时间。\n成本表重开提醒不进入日报。工具需保持运行。\n每个时段只发送一次；错过多个时段，仅补发最近一档。\n未知投递结果不自动重发；数量和到货时间以来源原文为准。',bg='white',fg=MUTED,justify='left',anchor='w',font=('Microsoft YaHei UI',10))
+    help_label=tk.Label(card,text='默认 11:00、16:00，可添加或修改多个时段。\n截至发送时没有可汇总货源消息，则跳过该时段。\n汇总当日截至发送时的货源消息，并保留发送人、群和时间。\n成本表重开提醒不进入日报。工具需保持运行。\n每个时段只发送一次；错过多个时段，仅补发最近一档。\n生成失败在 5 分钟、10 分钟后各重试一次；到下一时段或次日不再重试旧时段。\n未知投递结果不自动重发；数量和到货时间以来源原文为准。',bg='white',fg=MUTED,justify='left',anchor='w',font=('Microsoft YaHei UI',10))
     help_label.pack(fill='x',pady=20)
     help_label.bind('<Configure>',lambda e:help_label.configure(wraplength=max(1,e.width)))
     notice=tk.StringVar(frame,'')
@@ -121,6 +158,10 @@ def build_page(parent, service):
     if last:
         labels={'sent':'已发送','failed':'失败','unknown':'结果未知','sending':'发送中','skipped':'已跳过','partial':'部分机器人发送成功'}
         notice.set('最近日报：'+labels.get(last['status'],last['status'])+' '+datetime.fromtimestamp(last['at'],TZ).strftime('%Y-%m-%d %H:%M:%S'))
+        if last.get('reason'):
+            notice.set(notice.get()+'\n'+last['reason'])
+        if last.get('retryable_generation') and last.get('retry_at'):
+            notice.set(notice.get()+'\n计划重试：'+datetime.fromtimestamp(last['retry_at'],TZ).strftime('%Y-%m-%d %H:%M:%S'))
     def save():
         try:
             save_settings(service,dict(enabled=enabled.get(),times=at.get().strip()))

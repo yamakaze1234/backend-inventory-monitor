@@ -178,6 +178,7 @@ def prepare_import(service, rows):
     with service.db() as db:
         db.execute('BEGIN')
         catalog = [json.loads(r[0]) for r in db.execute('SELECT data FROM catalog')]
+        if hasattr(service,'filter_catalog'):catalog=service.filter_catalog(catalog)
         existing = [json.loads(r[0]) for r in db.execute('SELECT data FROM products')]
         return dict(inputs=[dict(r) for r in rows], rows=preview_rows(rows, catalog, existing),
                     revision=service.get(db, 'config_revision', 0), checked_at=service.get(db, 'checked_at', 0))
@@ -190,6 +191,7 @@ def confirm_import(service, plan):
         if service.get(db, 'config_revision', 0) != plan['revision']:
             raise ValueError('产品设置已变化，请刷新总览后重新确认。')
         catalog = [json.loads(r[0]) for r in db.execute('SELECT data FROM catalog')]
+        if hasattr(service,'filter_catalog'):catalog=service.filter_catalog(catalog)
         existing = [json.loads(r[0]) for r in db.execute('SELECT data FROM products')]
         current = preview_rows(plan['inputs'], catalog, existing)
         products = [r['product'] for r in current if r['product']]
