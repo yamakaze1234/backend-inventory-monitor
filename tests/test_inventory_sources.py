@@ -25,7 +25,7 @@ class Connector:
     def execute(self,query,params=None):
         self.queries.append(query)
         if self.fail:raise RuntimeError('private test-only diagnostic')
-        self.batch=copy.deepcopy(self.rows) if '分库库存' in query else [dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',总数量=8,可销数=8,待入=0)]
+        self.batch=copy.deepcopy(self.rows) if '分库库存' in query else copy.deepcopy(getattr(self, 'catalog', [dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',总数量=8,可销数=8,待入=0)]))
     def fetchmany(self,n):
         rows,self.batch=self.batch,[];return rows
     def close(self):self.closed+=1
@@ -149,6 +149,78 @@ class SourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):self.service.configure_sql(dict(SETTINGS,user='different'),'',remember=True,connector=self.connector)
         with self.service.db() as db:
             self.assertNotIn('fixture-only',str(db.execute('SELECT data FROM meta').fetchall()))
+
+
+    def sparse(self, pending=50):
+        self.connector.rows=[]
+        self.connector.catalog=[dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',总数量=0,可销数=0,待入=pending)]
+        self.connect();self.watch();self.poll()
+
+    def test_unassigned_pending_independent_of_missing_stock_and_persistent(self):
+        self.sparse()
+        self.assertFalse(self.service.status()['events'])
+        p=self.service.status()['products'][0]
+        self.assertIsNone(p['monitor_qty']);self.assertEqual(p['pending_quantity'],50)
+        self.assertEqual(p['pending_source'],'erp_total')
+        self.poll();self.assertFalse(self.service.status()['events'])
+        self.connector.catalog[0]['待入']=60;self.poll()
+        event=self.service.status()['events'][0]
+        self.assertEqual(event['warehouse'],'仓库未确认')
+        self.assertEqual(event['after']['purchase'],60)
+        self.assertEqual(event['before']['purchase'],50)
+        body=format_events([event],self.service)
+        self.assertIn('ERP 总待入：60 件 · 仓库未确认',body)
+        self.assertNotIn('公司大库',body)
+        self.assertNotIn('可销库存：',body)
+        restarted=InventoryRuntimeService(self.temp.name)
+        restarted.configure_sql(SETTINGS,'fixture-only',connector=self.connector)
+        restarted.sql_worker.step(self.now+31)
+        self.assertEqual(len(restarted.status()['events']),1)
+
+    def test_total_to_warehouse_rebases_without_duplicate_then_alerts_increase(self):
+        self.sparse();self.connector.catalog[0]['待入']=60;self.poll()
+        self.connector.rows=[raw(0,60)];self.poll()
+        pending=lambda:[e for e in self.service.status()['events'] if e['kind']=='pending_inbound']
+        self.assertEqual(len(pending()),1)
+        self.connector.rows[0]['分库待入']=65;self.poll()
+        self.assertEqual(len(pending()),2)
+        self.assertEqual(pending()[0]['warehouse'],'公司大库')
+        self.assertEqual(pending()[0]['after']['purchase'],65)
+
+    def test_total_null_does_not_zero_baseline_or_repeat_old_pending(self):
+        self.sparse();self.connector.catalog[0]['待入']=None;self.poll()
+        self.assertIsNone(self.service.status()['products'][0]['pending_quantity'])
+        self.connector.catalog[0]['待入']=50;self.poll()
+        self.assertFalse(self.service.status()['events'])
+        self.connector.catalog[0]['待入']=0;self.poll()
+        self.connector.catalog[0]['待入']=5;self.poll()
+        self.assertEqual(len(self.service.status()['events']),1)
+
+    def test_known_warehouse_pending_zero_wins_over_positive_total(self):
+        self.connector.catalog=[dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',总数量=8,可销数=8,待入=50)]
+        self.connect();self.watch();self.poll()
+        self.assertEqual(self.service.status()['products'][0]['pending_source'],'warehouse')
+        self.assertEqual(self.service.status()['products'][0]['pending_quantity'],0)
+        self.connector.catalog[0]['待入']=100;self.poll()
+        self.assertFalse(self.service.status()['events'])
+
+    def test_unassigned_pending_respects_alert_opt_out_and_source_switch(self):
+        self.sparse();p=self.service.products()[0];p['alerts']['pending_inbound']=False
+        self.service.save_product(p)
+        self.connector.catalog[0]['待入']=60;self.poll()
+        self.assertFalse(self.service.status()['events'])
+        self.service.use_script();self.service.configure_sql(SETTINGS,'fixture-only',connector=self.connector)
+        self.service.sql_worker.step(self.now+31)
+        self.assertFalse(self.service.status()['events'])
+
+    def test_known_pending_is_monitored_when_stock_quantity_is_unknown(self):
+        self.connector.rows=[dict(raw(0,10),分库数=None,分库可销数=None)]
+        self.connect();self.watch();self.poll()
+        self.connector.rows[0]['分库待入']=20;self.poll()
+        p=self.service.status()['products'][0]
+        self.assertIsNone(p['monitor_qty'])
+        self.assertEqual(p['pending_quantity'],20)
+        self.assertEqual(self.service.status()['events'][0]['after']['purchase'],20)
 
 
 if __name__=='__main__':unittest.main()

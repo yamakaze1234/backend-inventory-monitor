@@ -1,12 +1,12 @@
 # 后台库存监控
 
-Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.03**。
+Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.04**。
 
 默认直接查询 SQL Server 库存，也可选择 ERP 浏览器脚本采集；在本地 SQLite 保存关注产品、快照和提醒记录，继续通过原有钉钉机器人发送通知。
 
 ## 下载使用
 
-到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.03-windows.zip`，解压后运行 `后台库存监控_正式版_v1.03.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
+到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.04-windows.zip`，解压后运行 `后台库存监控_正式版_v1.04.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
 
 1. 在采集设置填写自己的 SQL Server 地址、端口、数据库和只读查询账号；如选择脚本查询，再安装 `inventory-erp.user.js` 并登录 ERP。
 2. 添加关注产品，选择库存依据、仓库及预警数量。
@@ -16,7 +16,13 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.03**�
 
 首次使用请看 [中文使用说明](使用说明.md)，库存口径和详细规则见 [功能说明](inventory-setup.md)。
 
-## v1.03 更新
+## v1.04 更新
+
+- 缺少分库待入时，独立监测 ERP 总待入并标注“仓库未确认”，不会替代所选仓库库存。
+- 库存未知也能监测待入；首次读取建立基线，后续出现或增加才提醒。
+- 分库待入恢复后优先使用分库值，切换口径不重复播报旧待入；保留仓库、阈值及机器人配置。
+
+## v1.03 已有功能
 
 - SQL 默认查询，支持切回浏览器脚本；保留原有机器人及播报格式。
 - 全商品目录包含零库存产品；新增关注排除停售、套餐及名称含星号的产品。
@@ -42,7 +48,7 @@ Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.03**�
 
 Windows 11 x64 + Chrome 已实测，Windows 10 x64 尚未整套验收，Win7 不支持。Edge 自动重登未验收。一键准备不自动确认扩展安装或代填密码；普通库存监控不要求 Node/OpenCLI。
 
-[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.03/inventory-guide-v1.03.html) · [在线中文教程](使用说明.md)
+[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.04/inventory-guide-v1.04.html) · [在线中文教程](使用说明.md)
 
 ## 功能
 
@@ -98,7 +104,7 @@ py -3 -m pip install -r requirements-build.txt
 pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 ```
 
-默认输出为 `dist/backend-inventory-monitor-v1.03/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
+默认输出为 `dist/backend-inventory-monitor-v1.04/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
 
 ## 源码结构
 
@@ -119,6 +125,6 @@ pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
 
 升级前从托盘退出程序，再替换 EXE 和采集脚本。保留程序目录的 `.local_inventory_ui_test/`，以及 `%LOCALAPPDATA%/DingTalkSourceMonitor/` 中原有数据；关闭窗口仅收起到托盘。
 
-本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.03 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
+本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.04 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
 
 第三方组件许可见 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。

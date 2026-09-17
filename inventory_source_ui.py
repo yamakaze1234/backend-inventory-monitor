@@ -32,7 +32,7 @@ class SourceSettings(tk.Frame):
         button(actions,'应用来源 / 连接',self.apply,primary=True).pack(side='left')
         self.refresh_button=button(actions,'刷新完整商品目录',self.refresh_catalog)
         self.refresh_button.pack(side='left',padx=10)
-        note=tk.Label(self,text='SQL 无需打开 ERP 网页。切换来源后首轮建立基线，机器人和播报设置沿用原配置。',bg='white',fg=MUTED,anchor='w',justify='left')
+        note=tk.Label(self,text='SQL 无需打开 ERP 网页。缺少分库待入时额外监测 ERP 总待入，并标注“仓库未确认”。切换来源首轮建立基线。',bg='white',fg=MUTED,anchor='w',justify='left')
         note.pack(fill='x',pady=(12,0));wrap_label(note)
         self.message=tk.StringVar(self)
         tk.Label(self,textvariable=self.message,bg='white',fg=INK,wraplength=820,justify='left',anchor='w').pack(fill='x',pady=(8,0))

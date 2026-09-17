@@ -497,7 +497,8 @@ class InventoryPanel(tk.Frame):
 
     def check(self):
         self.service.request_check()
-        self.notice.set('已请求立即检查；等待已登录的 ERP 采集页面响应。')
+        sql_mode = hasattr(self.service, 'source_mode') and self.service.source_mode() == 'sql'
+        self.notice.set('已请求立即检查，等待 SQL 查询完成。' if sql_mode else '已请求立即检查；等待已登录的 ERP 采集页面响应。')
         self.refresh()
 
     def build_catalog(self, parent):
@@ -774,7 +775,7 @@ class InventoryPanel(tk.Frame):
                 self.connection_detail.pack(fill='x', pady=(0, 6), after=self.delivery_state)
             else:
                 self.connection_detail.pack_forget()
-            self.inbound_note.config(text='SQL：待入按所选仓库读取；库存增加是两次检查间净增加，不核验入库单。' if sql_mode else ('' if status.get('inbound_verified') else '入库单据尚未接入，等待 ERP 采集'))
+            self.inbound_note.config(text='SQL：待入优先所选仓库；标“总”的为 ERP 总待入，仓库未确认。库存增加为快照净变化。' if sql_mode else ('' if status.get('inbound_verified') else '入库单据尚未接入，等待 ERP 采集'))
             self.pause_button.config(text='暂停库存监控' if status['enabled'] else '启用库存监控')
             fmt = lambda value: time.strftime('%m-%d %H:%M:%S', time.localtime(value)) if value else '—'
             self.timestamps.config(text=f"最近成功检查：{fmt(status.get('checked_at'))}    下次检查：{fmt(status.get('next_check'))}    每 {status.get('interval_seconds', 7200) // 60} 分钟 · 按产品预警依据")
@@ -787,7 +788,10 @@ class InventoryPanel(tk.Frame):
                 label, risk = product_risk_label(p, state)
                 qty = lambda key: '—' if p.get(key) is None else str(p[key])
                 marker = {'low': '● ', 'oversold': '● ', 'negative_stock': '● ', 'normal': '○ ', 'unknown': '— ', 'disabled': '— '}.get(risk, '')
-                values = (f"{p['name']}\n{p.get('goods_id') or '编号待采集'} · {p.get('warehouse_name', '') + ' · 库存' if p.get('stock_basis') == 'warehouse_stock' else '公司大库 · 可销'}", qty('monitor_qty' if p.get('stock_basis') == 'warehouse_stock' else 'able'), qty('warehouse_purchase' if p.get('stock_basis') == 'warehouse_stock' else 'purchase'), p['threshold'], marker + label)
+                pending_text = qty('warehouse_purchase' if p.get('stock_basis') == 'warehouse_stock' else 'purchase')
+                if p.get('pending_source') == 'erp_total' and p.get('pending_quantity') is not None:
+                    pending_text = f"{p['pending_quantity']:g}（总）"
+                values = (f"{p['name']}\n{p.get('goods_id') or '编号待采集'} · {p.get('warehouse_name', '') + ' · 库存' if p.get('stock_basis') == 'warehouse_stock' else '公司大库 · 可销'}", qty('monitor_qty' if p.get('stock_basis') == 'warehouse_stock' else 'able'), pending_text, p['threshold'], marker + label)
                 table_rows.append((iid, values, (risk,)))
             sync_tree(self.tree, table_rows)
             events = status.get('events', [])[:6]

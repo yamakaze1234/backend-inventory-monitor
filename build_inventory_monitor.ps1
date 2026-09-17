@@ -1,7 +1,7 @@
 ﻿#requires -Version 7.0
 [CmdletBinding()]
 param([string]$DwsPath = (Join-Path $env:USERPROFILE '.local/bin/dws.exe'),
-      [string]$OutputDirectory = 'dist/backend-inventory-monitor-v1.03', [switch]$VerifyExisting, [switch]$Rebuild)
+      [string]$OutputDirectory = 'dist/backend-inventory-monitor-v1.04', [switch]$VerifyExisting, [switch]$Rebuild)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot

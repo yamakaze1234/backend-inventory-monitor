@@ -62,12 +62,62 @@ class SqlInventoryService(InventoryService):
     def _save_product(self, db, product):
         if not db.execute('SELECT 1 FROM products WHERE sku=?', (product.get('sku'),)).fetchone():
             self._ensure_addable(db, product)
+            db.execute('DELETE FROM meta WHERE key=?', ('sql_pending:' + product['sku'],))
         return super()._save_product(db, product)
 
     def _event(self, db, product, kind, before, after, cause):
+        if kind == 'pending_inbound' and str(self.get(db, 'scope', '')).startswith('sql:'):
+            return  # SQL pending has its own baseline, including products without stock rows.
         if product['sku'] in self.get(db, 'source_baseline_skus', []):
             return
         super()._event(db, product, kind, before, after, cause)
+
+    def accept_auxiliary_observations(self, db, rows, details, scope):
+        if not scope.startswith('sql:'):
+            return
+        for raw, in db.execute('SELECT data FROM products').fetchall():
+            product = json.loads(raw)
+            row = rows.get(product['sku'])
+            if not product['enabled'] or not row or row.get('goods_id') != product.get('goods_id'):
+                continue
+            target = product.get('warehouse_name') if product.get('stock_basis') == 'warehouse_stock' else '公司大库'
+            depot = next((d for d in details.get(product['sku'], {}).get('depots', []) if d['name'] == target), None)
+            quantity = depot.get('purchase') if depot else None
+            mode = 'warehouse'
+            if quantity is None:
+                mode, quantity = 'erp_total', row.get('catalog_purchase')
+            key = 'sql_pending:' + product['sku']
+            previous = self.get(db, key)
+            identity = [scope, product['goods_id'], product.get('stock_basis', 'company_able'), target]
+            current = dict(identity=identity, mode=mode, quantity=quantity, observed_at=row['observed_at'])
+            if quantity is None:
+                # Display unavailable data explicitly; retain the last comparable baseline.
+                self.put(db, key, dict(previous or current, available=False, checked_at=row['observed_at']))
+                continue
+            comparable = (previous and previous.get('identity') == identity and previous.get('mode') == mode
+                          and previous.get('quantity') is not None)
+            if comparable and quantity > 0 and quantity > previous['quantity']:
+                special = product.get('stock_basis') == 'warehouse_stock'
+                def observation(value, observed):
+                    result = dict(row, observed_at=observed, pending_source=mode, pending_quantity=value,
+                                  selected_warehouse=target, stock_basis=product.get('stock_basis', 'company_able'))
+                    if mode == 'erp_total':
+                        result.update(stock_basis='company_able', warehouse_name='仓库未确认',
+                                      able=None, stock=None, purchase=value)
+                    elif special:
+                        result.update(warehouse_name=target, warehouse_id=product['warehouse_id'],
+                                      warehouse_purchase=value, warehouse_stock=depot.get('stock'),
+                                      warehouse_able=depot.get('able'), monitor_qty=depot.get('stock'))
+                    else:
+                        result['purchase'] = value
+                    return result
+                after = observation(quantity, row['observed_at'])
+                before = observation(previous['quantity'], previous['observed_at'])
+                event_product = dict(product, warehouse_name='仓库未确认' if mode == 'erp_total' else target)
+                # Stock may still be missing. This pending baseline is independent of stock baseline suppression.
+                InventoryService._event(self, db, event_product, 'pending_inbound', before, after,
+                                        'unassigned_purchase_changed' if mode == 'erp_total' else 'purchase_changed')
+            self.put(db, key, dict(current, available=True, checked_at=row['observed_at']))
 
     def status(self):
         result = super().status()
@@ -75,6 +125,14 @@ class SqlInventoryService(InventoryService):
             last = self.get(db, 'sql_last_success', 0)
             result['catalog_checked_at'] = self.get(db, 'sql_catalog_updated', 0)
             result['known_warehouses'] = self.get(db, 'sql_known_warehouses', [])
+            for product in result['products']:
+                pending = self.get(db, 'sql_pending:' + product['sku'], {})
+                product['pending_source'] = pending.get('mode')
+                product['pending_quantity'] = pending.get('quantity') if pending.get('available') else None
+                product['pending_observed_at'] = pending.get('observed_at', 0)
+                if pending.get('mode') == 'warehouse':
+                    field = 'warehouse_purchase' if product.get('stock_basis') == 'warehouse_stock' else 'purchase'
+                    product[field] = product['pending_quantity']
         result['connection_error'] = self._sql_session_error
         if self._sql_session_error:
             result['connection'] = 'error'
@@ -250,7 +308,11 @@ class SqlWorker:
                     if not any(d['name'] == target for d in depots):
                         unresolved.append(p)
             if unresolved:
-                self.message += f' {len(unresolved)} 个关注商品未返回所选库房记录，数量待核验；未用总览数量替代。'
+                self.message += f' {len(unresolved)} 个关注商品缺少所选库房记录，库存待核验。'
+            with s.db() as db:
+                total_pending = sum(1 for p in products if (state := s.get(db, 'sql_pending:' + p['sku'], {})).get('mode') == 'erp_total' and state.get('available') and (state.get('quantity') or 0) > 0)
+            if total_pending:
+                self.message += f' {total_pending} 件商品另有 ERP 总待入（仓库未确认），独立监测变化。'
         except Exception as error:
             self.failures += 1
             self.retry_at = now + min(1800, 60 * 2 ** min(self.failures-1, 5))

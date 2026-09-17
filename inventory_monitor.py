@@ -193,6 +193,9 @@ class InventoryService(WarehouseLookups):
         kind = 'recovery' if before in ('oversold', 'negative_stock') and new_risk not in ('oversold', 'negative_stock') or new_risk == 'normal' else new_risk
         self._event(db, p, kind, old, current, cause)
 
+    def accept_auxiliary_observations(self, db, rows, details, scope):
+        pass
+
     def accept_snapshot(self, check_id, rows, *, scope, warehouse='公司大库', complete=True, observed_at=None, journals=None, warehouse_details=None, config_revision=None, preserve_catalog=False):
         observed = time.time() if observed_at is None else quantity(observed_at)
         if not complete or warehouse != '公司大库' or not scope or not check_id or not isinstance(rows, list):
@@ -262,6 +265,7 @@ class InventoryService(WarehouseLookups):
                 current['evaluated_threshold'] = p['threshold']
                 db.execute('INSERT OR REPLACE INTO snapshots VALUES (?,?)', (p['sku'], json.dumps(current, ensure_ascii=False)))
             # Catalog is a lookup aid; missing watched products stay unknown in this check.
+            self.accept_auxiliary_observations(db, mapped, warehouse_details or {}, scope)
             if not preserve_catalog:
                 db.execute('DELETE FROM catalog')
             db.executemany('INSERT OR REPLACE INTO catalog VALUES (?,?)', [(sku, json.dumps(r, ensure_ascii=False)) for sku, r in mapped.items()])

@@ -66,13 +66,25 @@ def run(output_directory):
         assert '待入库' in panel.event_page.text.get('1.0','end')
         assert '当前有 10 件待到货' in panel.event_page.text.get('1.0','end')
         capture('reminder-filter.png')
+        service.save_product(dict(sku='DEMO102',goods_id='102',name='零库存商品（模拟数据）',threshold=0))
+        catalog[1]['待入']=50
+        service.request_check();service.sql_worker.step(time.time()+93)
+        product=next(p for p in service.status()['products'] if p['sku']=='DEMO102')
+        assert product['pending_quantity']==50 and product['monitor_qty'] is None
+        panel.show_module('monitor');panel.refresh();capture('unassigned-pending.png')
+        catalog[1]['待入']=60
+        service.request_check();service.sql_worker.step(time.time()+124)
+        pending=next(e for e in service.status()['events'] if e['sku']=='DEMO102')
+        assert pending['warehouse']=='仓库未确认'
+        from inventory_delivery import format_events
+        assert 'ERP 总待入：60 件 · 仓库未确认' in format_events([pending],service)
         panel.show_module('settings');panel.source_panel.mode.set('脚本查询');panel.source_panel.show_mode();panel.source_panel.apply()
         panel.show_module('settings');panel.refresh();capture('script-settings.png')
         assert service.source_mode()=='script' and panel.recovery_bar.winfo_manager()
         assert panel.script_setup_card.winfo_manager()
         assert not errors,errors
         result=dict(production_ui='passed',sql_default=True,script_switch=True,product_filter=True,
-                    reminders_filtered=True,existing_delivery_mocked=True,real_messages_sent=False,
+                    reminders_filtered=True,unassigned_pending=True,existing_delivery_mocked=True,real_messages_sent=False,
                     live_sql_connected=False,pymssql=pymssql.__version__,callback_errors=errors)
         (output/'sql-ui-verification.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
         return result

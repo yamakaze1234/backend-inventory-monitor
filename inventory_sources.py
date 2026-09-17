@@ -34,6 +34,7 @@ class InventoryRuntimeService(SqlInventoryService):
                        (old_scope or old_mode, time.time()))
             db.execute('DELETE FROM snapshots')
             db.execute('DELETE FROM journal_baselines')
+            db.execute("DELETE FROM meta WHERE key LIKE 'sql_pending:%'")
             skus = [r[0] for r in db.execute('SELECT sku FROM products')]
             for key, value in dict(inventory_source_mode=mode, scope=scope, source_baseline_skus=skus,
                                    checked_at=0, next_check=0, last_skus=[], heartbeat=0, connection_error='',

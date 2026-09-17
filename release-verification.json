@@ -1,8 +1,8 @@
 {
-  "version": "1.03",
+  "version": "1.04",
   "platform": "Windows 11 x64",
   "python_tests": {
-    "passed": 243
+    "passed": 249
   },
   "javascript_tests": {
     "passed": 21
@@ -13,6 +13,7 @@
     "script_switch": true,
     "product_filter": true,
     "reminders_filtered": true,
+    "unassigned_pending": true,
     "existing_delivery_mocked": true,
     "real_messages_sent": false,
     "live_sql_connected": false,
@@ -37,5 +38,5 @@
   },
   "runtime_data_included": false,
   "live_database_verified": false,
-  "external_notifications_sent": false
+  "external_test_notifications_sent": false
 }

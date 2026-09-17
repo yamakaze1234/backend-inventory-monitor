@@ -137,7 +137,7 @@ def format_events(events, service, now=None):
     now = time.time() if now is None else now
     order = {'negative_stock': 0, 'oversold': 0, 'out_of_stock': 0, 'low': 1, 'inbound': 2, 'stock_increase': 2, 'pending_inbound': 2, 'recovery': 3}
     labels = dict(negative_stock='负库存', oversold='超售', out_of_stock='库存归零预警', low='低库存', inbound='确认入库', stock_increase='库存增加', pending_inbound='待入库提醒', recovery='风险恢复')
-    parts = ['# 库存提醒' if any(_warehouse(e.get('after') or {}) for e in events) else '# 公司大库 · 库存提醒']
+    parts = ['# 库存提醒' if any(_warehouse(e.get('after') or {}) or (e.get('after') or {}).get('pending_source') == 'erp_total' for e in events) else '# 公司大库 · 库存提醒']
     products = {p['sku']: p for p in service.products()}
     markers = {'negative_stock': '🟥', 'oversold': '🟥', 'out_of_stock': '🟥', 'low': '🟧', 'inbound': '🟦', 'stock_increase': '🟦', 'pending_inbound': '🟪', 'recovery': '🟩'}
     last_heading = None
@@ -162,6 +162,12 @@ def format_events(events, service, now=None):
             parts.append('**分库库存已降至 0，请检查相关配置和商品链接。**' if _warehouse(current) else '**可销库存已降至 0，请检查相关配置，并下架相关商品链接。**')
         if goods_id:
             parts.append(f"商品编号：{goods_id}")
+        if current.get('pending_source') == 'erp_total':
+            parts += [f"**ERP 总待入：{_quantity(current, 'purchase')} 件 · 仓库未确认**",
+                      f"上次总待入：{_quantity(previous, 'purchase')} 件",
+                      f"采集时间：{local_time(event['observed_at'])}",
+                      '此数量来自库存查询总览，不代表所选仓库待入，也不代表已入库。', '---']
+            continue
         if _warehouse(current):
             parts += [f"**{current.get('warehouse_name') or event.get('warehouse') or '指定分库'} · 库存：{_quantity(current, 'monitor_qty')}　｜　预警值：{event['threshold']}**",
                       f"分库待入库：{_quantity(current, 'warehouse_purchase')}",
@@ -221,6 +227,8 @@ def format_inventory_report(status, refresh_pending=False):
         else:
             parts += [f"**可销库存：{qty('able')}　｜　预警值：{product['threshold']}**",
                   f"实际库存：{qty('stock')}　·　待入库：{qty('purchase')}"]
+        if product.get('pending_source') == 'erp_total' and product.get('pending_quantity') is not None:
+            parts.append(f"ERP 总待入：{product['pending_quantity']} 件 · 仓库未确认（不替代分库待入）")
     return '\n\n'.join(parts)
 
 
