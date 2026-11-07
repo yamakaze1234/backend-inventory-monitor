@@ -5,6 +5,7 @@ import ctypes
 import json
 import sys
 import time
+import threading
 import tkinter as tk
 from tkinter import messagebox
 from inventory_sources import InventoryRuntimeService as InventoryService
@@ -50,12 +51,56 @@ def start_configured_message_worker(controller):
     return True
 
 
+def stop_order_bot_and_wait(bot, timeout=90):
+    """等待原匹配后端结束当前批次，不通过结束进程打断 ERP 写入。"""
+    bot.action('stop')
+    deadline=time.monotonic()+timeout
+    while not bot.action('finish-stop').get('stopped'):
+        if time.monotonic()>=deadline:
+            raise TimeoutError('订单工作进程尚未安全停止')
+        time.sleep(1)
+
+
+def clear_update_restore_flags(service):
+    """补偿或启动恢复只消费一次，不能在用户后续暂停后重新启用旧意图。"""
+    with service.db() as db:
+        values={key:service.get(db,key,False) for key in ('update_restore_order_bot','update_restore_order_owned','update_restore_messages')}
+        for key in values:
+            service.put(db,key,False)
+    return values
+
+
+def restore_update_services(service, controller, console):
+    """恢复失败仍保留工作台，并显示需手动处理的服务，不循环重启。"""
+    values=clear_update_restore_flags(service)
+    failures=[]
+    if values['update_restore_messages']:
+        try:
+            controller.start()
+        except Exception:
+            failures.append('钉钉监听未恢复，请在钉钉监控页检查并启动')
+    if values['update_restore_order_bot']:
+        try:
+            console.bot.action('start')
+            console.owns_bot=values['update_restore_order_owned']
+        except Exception:
+            failures.append('订单机器人未恢复，请在订单匹配页检查并启动')
+    if failures:
+        console.updater.state.update(phase='error',error='；'.join(failures))
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--worker', action='store_true')
     parser.add_argument('--tray', action='store_true')
     parser.add_argument('--data-dir')
+    # 保留原生界面回退入口；更新回执仅在本机服务与窗口装配成功后写入。
+    parser.add_argument('--legacy-ui', action='store_true', help='使用原生管理界面')
+    parser.add_argument('--console-preview-data', type=Path, help='独立数据目录中的 ReUI 离线验收')
+    parser.add_argument('--console-headless', action='store_true', help='不打开窗口的候选包验收')
+    parser.add_argument('--console-preview-seconds', type=int, default=0, help='隔离验收自动退出秒数')
+    parser.add_argument('--update-health', type=Path, help='更新辅助程序的启动回执路径')
     parser.add_argument('--ui-check', action='store_true', help='Run an isolated, offline UI check and exit')
     parser.add_argument('--sql-ui-check', action='store_true', help='Run isolated SQL/script acceptance and exit')
     parser.add_argument('--refactor-check', action='store_true', help='离线验证重构界面，不启动采集或通知')
@@ -63,6 +108,10 @@ def main():
     parser.add_argument('--offline-demo', action='store_true', help='使用独立模拟数据体验重构界面')
     parser.add_argument('--douyin-erp-check', help='只读复核整机快照的 ERP 配件，保存相邻结果文件，不发送消息')
     args = parser.parse_args()
+    if args.console_preview_data:
+        from inventory_console import preview
+        return preview(args.console_preview_data, desktop=not args.console_headless,
+                       duration=max(0,args.console_preview_seconds) or None, check_host=args.console_headless)
     if args.browser_check:
         from inventory_browser_check import run
         if not args.data_dir:
@@ -125,18 +174,26 @@ def main():
     root.hide_to_tray = root.withdraw
     root.protocol('WM_DELETE_WINDOW', root.withdraw)
     exiting = False
+    console = None
+    installing = False
     def process_commands():
-        nonlocal exiting
+        nonlocal exiting, installing
         while not commands.empty():
             command = commands.get()
             if command == 'exit' and not exiting:
                 exiting = True
+                if console is not None:
+                    console.closing = True
                 root.title('正在停止钉钉监控…')
                 tray.title = '正在停止钉钉监控…'
                 root.withdraw()
-                import threading
                 def stop_worker():
                     try:
+                        if console is not None:
+                            # 等正在执行的启动操作返回后再判断接管状态，消除退出与启动竞态。
+                            with console.action_lock:
+                                if console.owns_bot:
+                                    stop_order_bot_and_wait(console.bot)
                         stop_dingtalk_and_wait(message_controller)
                         commands.put('exit-ready')
                     except Exception:
@@ -147,13 +204,69 @@ def main():
                 return
             elif command == 'exit-failed':
                 exiting = False
+                if console is not None:
+                    console.closing = False
                 root.title(APP_TITLE)
                 tray.title = '后台库存监控'
                 root.deiconify()
                 messagebox.showerror('暂未退出', '钉钉监控尚未确认停止，请稍后重试退出，或在“钉钉监控”页检查状态。', parent=root)
             elif command == 'show' and not exiting:
+                if console is not None and not args.legacy_ui:
+                    console.open()
+                else:
+                    root.deiconify()
+                    root.lift()
+            elif command.startswith('native:') and not exiting:
+                panel.show_module(command.partition(':')[2])
                 root.deiconify()
                 root.lift()
+            elif command == 'install-update' and not exiting:
+                exiting = installing = True
+                console.closing = True
+                def prepare_update():
+                    restore_bot = False
+                    restore_messages = False
+                    console.action_lock.acquire()
+                    try:
+                        console.updater.state['phase'] = 'preparing'
+                        state = console.bot.snapshot()
+                        if state.get('active', 0):
+                            raise ValueError('订单任务仍在处理中，请完成或核验后更新')
+                        restore_bot = bool(state.get('available') and state.get('serviceEnabled'))
+                        if state.get('available') and (restore_bot or state.get('workerOnline')):
+                            # 先关闭接单入口，再等原执行进程结束，避免检查与替换之间插入新任务。
+                            stop_order_bot_and_wait(console.bot)
+                        if console.bot.snapshot().get('active', 0):
+                            raise ValueError('仍有排队或待核验订单任务，取消安装')
+                        restore_messages = message_controller.status().get('state') in ('running','connecting','waiting')
+                        stop_dingtalk_and_wait(message_controller)
+                        with service.db() as db:
+                            service.put(db, 'update_restore_order_bot', restore_bot)
+                            service.put(db, 'update_restore_order_owned', console.owns_bot)
+                            service.put(db, 'update_restore_messages', restore_messages)
+                        console.updater.install()
+                        commands.put('exit-ready')
+                    except Exception as error:
+                        clear_update_restore_flags(service)
+                        recovery_errors=[]
+                        if restore_bot:
+                            try:
+                                console.bot.action('start')
+                            except Exception:
+                                recovery_errors.append('订单机器人未恢复，请手动检查')
+                        if restore_messages:
+                            try:
+                                message_controller.start()
+                            except Exception:
+                                recovery_errors.append('钉钉监听未恢复，请手动检查')
+                        console.updater.state.update(phase='error', error='；'.join([str(error),*recovery_errors]))
+                        commands.put('update-failed')
+                    finally:
+                        console.action_lock.release()
+                threading.Thread(target=prepare_update, daemon=True, name='inventory-update-shutdown').start()
+            elif command == 'update-failed':
+                exiting = installing = False
+                console.closing = False
         root.after(150, process_commands)
     # Acquire the collection port before changing any release state.
     try:
@@ -177,6 +290,12 @@ def main():
         except RuntimeError as error:
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
         panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller)
+        from inventory_console import InventoryConsole
+        console = InventoryConsole(service, native_action=lambda module: commands.put(
+            module if module == 'install-update' else 'native:' + module))
+        # 从原生管理窗口也可回到统一工作台，不另起库存或匹配服务。
+        panel.open_console = console.open
+        tk.Button(root, text='返回统一工作台', command=console.open).pack(side='bottom', fill='x')
         service.start_source()
         from profit_monitor import ProfitMonitor, CoordinatedProfitSource
         from notification_robots import store_for_service
@@ -191,9 +310,22 @@ def main():
         if not args.tray:
             # 先让布局与图片进入就绪状态，再由事件循环显示完整窗口。
             root.update_idletasks()
-            root.after_idle(root.deiconify)
+            root.after_idle(root.deiconify if args.legacy_ui else console.open)
+        # 与网页操作共用串行锁，恢复线程不能越过已经开始的退出流程。
+        def restore_services():
+            with console.action_lock:
+                if not console.closing:
+                    restore_update_services(service, message_controller, console)
+        threading.Thread(target=restore_services, daemon=True, name='restore-update-services').start()
         from inventory_delivery import start_delivery
         bridge.delivery = start_delivery(service, live=True)
+        if args.update_health:
+            import re
+            from inventory_version import VERSION
+            # 随机回执名避免重试更新时误认上一轮留下的健康标记。
+            if (args.update_health.resolve().parent == (service.root / 'updates').resolve()
+                    and re.fullmatch(r'healthy-[a-f0-9]{32}\.txt', args.update_health.name)):
+                root.after_idle(lambda: args.update_health.write_text(VERSION, encoding='utf-8'))
         root.mainloop()
     finally:
         try:
@@ -205,6 +337,8 @@ def main():
             if hasattr(service, 'profit_monitor'):
                 service.profit_monitor.stop()
             bridge.close()
+            if console is not None:
+                console.close()
 
 
 if __name__ == '__main__':
