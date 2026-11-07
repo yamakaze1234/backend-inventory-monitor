@@ -14,11 +14,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', e=>errors.push(e.message));
     // 界面验收不访问发布站；真实签名与下载失败由后端测试覆盖。
-    await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,native:true}}));
-    // 模拟宿主消息接口，仅核验网页边界与切换；真实 Win32 生命周期单独隔离验证。
-    await page.addInitScript(()=>{window.nativeMessages=[];window.chrome={...window.chrome,webview:{postMessage:message=>window.nativeMessages.push(message)}};});
-    const modules=[];
-    await page.route('**/api/native',route=>{modules.push(route.request().postDataJSON().module);return route.fulfill({json:{message:'业务页面已就绪'}});});
+    await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,business:true}}));
     await page.goto(url);
     const icon=await page.request.get(new URL('/app-icon.ico',url).href);
     assert.equal(icon.status(),200);
@@ -30,16 +26,18 @@ async function main() {
     const nav=[['douyin','抖店库存'],['dingtalk','钉钉监控'],['profit','ERP 价格监控'],['daily','货源汇报'],['events','库存提醒记录'],['monitor','管理监控商品'],['settings','连接与通知设置']];
     for(const [module,title] of nav){
       await page.getByRole('button',{name:title,exact:true}).click();
-      await page.locator(`[data-native-module="${module}"]`).waitFor();
-      await page.waitForFunction(()=>window.nativeMessages.at(-1)?.visible===true);
+      await page.locator(`[data-business-module="${module}"]`).waitFor();
+      await page.getByRole('combobox',{name:'业务分区'}).waitFor();
+      assert.equal(await page.locator('[data-native-module]').count(),0);
+      assert.equal(await page.getByRole('alert').count(),0);
       assert.equal(await page.getByRole('heading',{level:1}).innerText(),title);
-      const box=await page.locator(`[data-native-module="${module}"]`).boundingBox();
+      const box=await page.locator(`[data-business-module="${module}"]`).boundingBox();
       assert.ok(box.x>=256&&box.width>900,'业务页留在右侧内容区');
     }
-    assert.deepEqual(modules,nav.map(item=>item[0]));
+    const modules=nav.map(item=>item[0]);
     assert.equal(page.context().pages().length,1,'切换业务页不得打开新页面');
     await page.getByRole('button',{name:'库存监控',exact:true}).click();
-    await page.waitForFunction(()=>window.nativeMessages.at(-1)?.visible===false);
+
 
     await page.getByText('1–25 / 共 120 条').waitFor();
     assert.equal(await page.locator('tbody tr').count(),25);
@@ -68,7 +66,7 @@ async function main() {
     await page.getByRole('button',{name:'软件更新',exact:true}).click();
     await page.getByRole('button',{name:'检查更新',exact:true}).waitFor();
     assert.deepEqual(errors,[]);
-    fs.writeFileSync(path.join(out,'browser-verification.json'),JSON.stringify({passed:true,rowsPerPage:25,orders:83,mobile:dimensions,embeddedModules:modules,iconMatches:true,updateInFooter:true,errors},null,2));
+    fs.writeFileSync(path.join(out,'browser-verification.json'),JSON.stringify({passed:true,rowsPerPage:25,orders:83,mobile:dimensions,reuiBusinessModules:modules,iconMatches:true,updateInFooter:true,errors},null,2));
     console.log('浏览器验证通过：分页、搜索、详情、深色、390px 布局及更新入口。');
   } finally { await browser.close(); }
 }

@@ -366,7 +366,11 @@ class DouyinRuntime:
             if isinstance(operation, dict) and operation.get('reply'):
                 operation['reply'].put(dict(ok=False, message='该店铺已移出监控'))
             return
-        if isinstance(operation, dict) and operation.get('kind') == 'connect':
+        if isinstance(operation, dict) and operation.get('kind') == 'save_setting':
+            # 设置实际落盘后才回执，候选工作台退出保护据此等待。
+            self.execute(operation['operation'], ident)
+            operation['reply'].put(dict(ok=True, message='本店设置已保存'))
+        elif isinstance(operation, dict) and operation.get('kind') == 'connect':
             self.execute('login', ident)
             operation['reply'].put(dict(ok=True, message='本店连接已校验，可返回抖店页面立即检查'))
         elif isinstance(operation, dict) and operation.get('kind') == 'browser_settings':

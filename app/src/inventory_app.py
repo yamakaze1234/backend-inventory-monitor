@@ -180,18 +180,6 @@ def main():
         nonlocal exiting, installing
         while not commands.empty():
             command = commands.get()
-            if isinstance(command, tuple):
-                module, done, result = command
-                try:
-                    if exiting:
-                        raise ValueError('程序正在退出')
-                    panel.show_module(module)
-                    root.update_idletasks()
-                except Exception:
-                    result.append('业务页面加载失败，请重试')
-                finally:
-                    done.set()
-                continue
             if command == 'exit' and not exiting:
                 exiting = True
                 if console is not None:
@@ -204,6 +192,10 @@ def main():
                         if console is not None:
                             # 等正在执行的启动操作返回后再判断接管状态，消除退出与启动竞态。
                             with console.action_lock:
+                                deadline=time.monotonic()+180
+                                while console.business and console.business.busy():
+                                    if time.monotonic()>deadline:raise TimeoutError('业务操作尚未结束')
+                                    time.sleep(.2)
                                 if console.owns_bot:
                                     stop_order_bot_and_wait(console.bot)
                         stop_dingtalk_and_wait(message_controller)
@@ -224,7 +216,7 @@ def main():
                     root.deiconify()
                 else:
                     console.open()
-                messagebox.showerror('暂未退出', '钉钉监控尚未确认停止，请稍后重试退出，或在“钉钉监控”页检查状态。', parent=root)
+                messagebox.showerror('暂未退出', '业务任务或钉钉监控尚未确认结束，请查看任务状态后重试退出。', parent=root)
             elif command == 'show' and not exiting:
                 if console is not None and not args.legacy_ui:
                     console.open()
@@ -239,6 +231,7 @@ def main():
                     restore_messages = False
                     console.action_lock.acquire()
                     try:
+                        if console.business and console.business.busy():raise ValueError('业务操作尚未结束，稍后更新')
                         console.updater.state['phase'] = 'preparing'
                         state = console.bot.snapshot()
                         if state.get('active', 0):
@@ -300,37 +293,14 @@ def main():
             start_configured_message_worker(message_controller)
         except RuntimeError as error:
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
-        panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller, embedded=not args.legacy_ui)
+        # 默认主界面完全由 React / ReUI 承载；Tk 只保留托盘事件循环和显式旧版回退。
+        panel = build_workspace(root,service,live=True,dingtalk_controller=message_controller) if args.legacy_ui else None
+        from douyin_inventory_runtime import DouyinRuntime
+        runtime = panel.ensure_douyin_runtime() if panel else DouyinRuntime(service,live=True)
+        from inventory_business import BusinessConsole
         from inventory_console import InventoryConsole
-        def native_action(module):
-            if module == 'install-update':
-                commands.put(module)
-                return
-            done=threading.Event()
-            result=[]
-            commands.put((module,done,result))
-            if not done.wait(15):
-                raise ValueError('业务页面加载超时，请重试')
-            if result:
-                raise ValueError(result[0])
-        native_hwnd=0
-        if not args.legacy_ui:
-            # 先在屏幕外完成 Tk 控件映射，再由宿主接管显示，不暴露独立管理窗口。
-            root.overrideredirect(True)
-            root.minsize(1,1)
-            root.attributes('-alpha',0)
-            root.geometry('1080x780+-20000+-20000')
-            root.deiconify()
-            root.update()
-            user32=ctypes.windll.user32
-            user32.GetParent.restype=ctypes.c_void_p
-            user32.GetParent.argtypes=[ctypes.c_void_p]
-            user32.ShowWindow.argtypes=[ctypes.c_void_p,ctypes.c_int]
-            native_hwnd=user32.GetParent(root.winfo_id())
-            user32.ShowWindow(native_hwnd,0)
-            root.attributes('-alpha',1)
-        console = InventoryConsole(service,native_action=native_action,native_hwnd=native_hwnd)
-        panel.open_console = console.open
+        business=BusinessConsole(service,message_controller,runtime)
+        console=InventoryConsole(service,native_action=commands.put,business=business)
         service.start_source()
         from profit_monitor import ProfitMonitor, CoordinatedProfitSource
         from notification_robots import store_for_service
@@ -338,7 +308,7 @@ def main():
             source_provider=lambda: CoordinatedProfitSource(service.sql_worker),
             robots=store_for_service(service))
         service.profit_monitor.start()
-        if service.source_mode() == 'sql' and service.sql_worker.source is None:
+        if panel is not None and service.source_mode() == 'sql' and service.sql_worker.source is None:
             panel.show_module('settings')
         tray.run_detached()
         root.after(150, process_commands)
@@ -374,6 +344,8 @@ def main():
             bridge.close()
             if console is not None:
                 console.close()
+                if console.business and console.business.douyin:
+                    console.business.douyin.close()
 
 
 if __name__ == '__main__':

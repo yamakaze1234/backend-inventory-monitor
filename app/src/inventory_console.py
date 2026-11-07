@@ -19,10 +19,10 @@ from project_paths import UI_ROOT
 
 
 class InventoryConsole:
-    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0, native_hwnd=0):
+    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0, business=None):
         self.service = service
         self.native_action = native_action
-        self.native_hwnd = native_hwnd
+        self.business = business
         self.bot = bot or OrderBotAdapter()
         self.updater = updater or InventoryUpdater(service.root)
         self.assets = Path(assets or UI_ROOT / 'console').resolve()
@@ -71,6 +71,15 @@ class InventoryConsole:
                         if not self.trusted():
                             return self.reply(403,{'error':'来源不允许'})
                         query = parse_qs(route.query)
+                        if route.path == '/api/business/idle':
+                            return self.reply(200,dict(state='idle'))
+                        if route.path == '/api/business/job' and outer.business:
+                            return self.reply(200,outer.business.job(query.get('id',[''])[0]))
+                        if route.path == '/api/business/download' and outer.business:
+                            path=outer.business.reviewed(query.get('key',[''])[0],'download')
+                            return self.reply(200,path.read_bytes(),'application/octet-stream')
+                        if route.path.startswith('/api/business/view/') and outer.business:
+                            return self.reply(200,outer.business.snapshot(route.path.rsplit('/',1)[-1],{k:v[0] for k,v in query.items()}))
                         if route.path == '/api/inventory':
                             return self.reply(200,outer.inventory())
                         if route.path == '/api/orders':
@@ -84,7 +93,7 @@ class InventoryConsole:
                         if route.path == '/api/info':
                             with outer.service.db() as db:
                                 auto = outer.service.get(db,'console_auto_update_check',True)
-                            return self.reply(200,dict(version=VERSION,autoCheck=auto,native=bool(outer.native_hwnd)))
+                            return self.reply(200,dict(version=VERSION,autoCheck=auto,business=outer.business is not None))
                         return self.reply(404,{'error':'接口不存在'})
                     if route.path == '/app-icon.ico':
                         return self.reply(200,(UI_ROOT/'monitor_assets/monitor.ico').read_bytes(),'image/x-icon')
@@ -103,7 +112,7 @@ class InventoryConsole:
                 self.connection.settimeout(15)
                 try:
                     length=int(self.headers.get('Content-Length','0'))
-                    if not 0 < length <= 32768:
+                    if not 0 < length <= (2_000_000 if urlsplit(self.path).path == '/api/business/action' else 32768):
                         return self.reply(413,{'error':'请求体大小无效'})
                     body=json.loads(self.rfile.read(length))
                     if not isinstance(body,dict):
@@ -140,6 +149,8 @@ class InventoryConsole:
     def action(self,path,body):
         if self.closing:
             raise ValueError('程序正在安全退出，暂不接收新操作')
+        if path == '/api/business/action' and self.business:
+            return self.business.submit(body.get('module'),body.get('action'),body.get('values'),body.get('requestId'))
         if path == '/api/orders/action':
             if self.updater.state['phase'] in ('preparing','installing'):
                 raise ValueError('更新安装中，暂不接收新任务')
@@ -173,12 +184,6 @@ class InventoryConsole:
             self.service.set_enabled(body['enabled'])
             self.cached=None
             return {'message':'库存监控开关已保存'}
-        if path == '/api/native':
-            module=body.get('module')
-            if module not in {'monitor','daily','profit','dingtalk','events','douyin','settings'} or not self.native_action:
-                raise ValueError('此运行方式不支持原生管理页')
-            self.native_action(module)
-            return {'message':'业务页面已就绪'}
         if path == '/api/update/preferences':
             if not isinstance(body.get('autoCheck'),bool):
                 raise ValueError('更新偏好无效')
@@ -188,6 +193,8 @@ class InventoryConsole:
         if path == '/api/update/check':
             return self.update_job(self.updater.check)
         if path == '/api/update/install':
+            if self.business and self.business.busy():
+                raise ValueError('业务操作尚未结束，请等待结果后更新')
             if not self.native_action:
                 raise ValueError('此运行方式不能安装更新')
             # 先冻结原匹配服务并等它确认停止，再退出库存程序；不强杀 ERP 工作进程。
@@ -231,7 +238,7 @@ class InventoryConsole:
         host=UI_ROOT/'console-host/InventoryConsoleHost.exe'
         if not host.is_file():
             raise ValueError('桌面窗口资源缺失，请先构建 console-host')
-        self.window=subprocess.Popen([str(host),self.url+'/#'+self.token,str(os.getpid()),str(self.native_hwnd)],
+        self.window=subprocess.Popen([str(host),self.url+'/#'+self.token,str(os.getpid())],
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
 
     def close(self):
@@ -241,8 +248,25 @@ class InventoryConsole:
 
 def preview(root,desktop=False,duration=None,check_host=False):
     """隔离演示可用于浏览器验收，不连接真实 ERP 或订单队列。"""
-    from inventory_monitor import InventoryService
-    service=InventoryService(root)
+    from inventory_sources import InventoryRuntimeService
+    from inventory_business import BusinessConsole
+    from douyin_inventory_runtime import DouyinRuntime
+    from types import SimpleNamespace
+    service=InventoryRuntimeService(root)
+    service.offline_preview=True
+    runtime=DouyinRuntime(service,live=False)
+    controller=SimpleNamespace(root=Path(root),status=lambda:dict(state='paused',ready=0,sources=[]))
+    business=BusinessConsole(service,controller,runtime,offline=True)
+    with service.db() as db:service.put(db,'daily_source_root',str(Path(root).resolve()))
+    if not runtime.store.stores():
+        from douyin_scope import MACHINE_SCOPE
+        for index,name in enumerate(('英特尔旗舰店（样例）','技嘉旗舰店（样例）','乔思伯旗舰店（样例）')):
+            ident=runtime.store.add_store(name)
+            runtime.store.rebase(ident,confirmed=True)
+            config=runtime.store.store(ident)
+            runtime.store.accept(ident,config['revision'],[dict(product_id=str(90000+index),product_name=name+'整机',monitor_scope=MACHINE_SCOPE,
+                skus=[dict(sku_id=str(91000+index),sku_name='标准配置',export_sellable=0,components={'现货可售':0,'预售库存':0,'阶梯库存':0},
+                    erp=dict(state='配件齐全',parts=[],shortages=[],unknown=[]))])],complete=True,notify=False)
     class DemoBot:
         def snapshot(self,page=0,size=25):
             rows=[dict(id=f'demo-{i}',kind='order',number=f'10987654321000{i:04}',shop=['76','32','33'][i%3],
@@ -256,7 +280,7 @@ def preview(root,desktop=False,duration=None,check_host=False):
     if not service.products():
         for i in range(120):
             service.save_product(dict(sku=f'DEMO-{i:04}',name=['英特尔处理器','技嘉显卡','乔思伯机箱'][i%3]+f' · 样例 {i+1}',threshold=5,enabled=True))
-    server=InventoryConsole(service,bot=DemoBot())
+    server=InventoryConsole(service,bot=DemoBot(),business=business)
     address=server.url+'/#'+server.token
     (Path(root)/'preview-url.txt').write_text(address,encoding='utf-8')
     # 打包窗口程序没有 stdout；仅源码验收输出本地预览地址。
@@ -276,6 +300,8 @@ def preview(root,desktop=False,duration=None,check_host=False):
         pass
     finally:
         server.close()
+        runtime.close()
+        service.close_source()
 
 
 if __name__=='__main__':

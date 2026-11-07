@@ -24,7 +24,7 @@ a = Analysis(
            (str(root / 'THIRD_PARTY_LICENSES' / 'WebView2-LICENSE.txt'), 'licenses'),
            (str(ui / 'monitor_assets' / 'monitor.ico'), 'monitor_assets')],
     hiddenimports=['pystray._win32', 'inventory_monitor', 'inventory_rules',
-                   'inventory_console', 'order_bot_adapter', 'inventory_updater',
+                   'inventory_business', 'inventory_business_actions', 'inventory_business_views', 'inventory_console', 'order_bot_adapter', 'inventory_updater',
                    'profit_monitor', 'erp_price_monitor', 'profit_manifest', 'profit_rules', 'profit_panel',
                    'inventory_panel', 'inventory_bridge', 'inventory_delivery', 'inventory_inbound', 'source_monitor_supervisor', 'monitor_portable_install', 'monitor_setup_service'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],

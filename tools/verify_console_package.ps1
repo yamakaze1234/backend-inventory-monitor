@@ -5,7 +5,7 @@ $ErrorActionPreference='Stop'
 $candidatePath=(Resolve-Path $Candidate).Path
 $sample=Join-Path (Get-Location) ('outputs/订单整合验收/package-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $sample -Force | Out-Null
-$process=Start-Process -FilePath $candidatePath -ArgumentList @('--console-preview-data',('"'+$sample+'"'),'--console-headless','--console-preview-seconds','45') -WindowStyle Hidden -PassThru
+$process=Start-Process -FilePath $candidatePath -ArgumentList @('--console-preview-data',('"'+$sample+'"'),'--console-headless','--console-preview-seconds','60') -WindowStyle Hidden -PassThru
 $deadline=[DateTime]::UtcNow.AddSeconds(30)
 while (!(Test-Path (Join-Path $sample 'preview-url.txt'))) {
     if ($process.HasExited -or [DateTime]::UtcNow -gt $deadline) {throw '候选隔离服务未正常启动'}
@@ -14,6 +14,8 @@ while (!(Test-Path (Join-Path $sample 'preview-url.txt'))) {
 $url=Get-Content (Join-Path $sample 'preview-url.txt') -Raw
 node tools/verify_console_ui.cjs $url
 if ($LASTEXITCODE -ne 0) {throw '候选前端验收失败'}
+node tools/verify_business_ui.cjs $url
+if ($LASTEXITCODE -ne 0) {throw '候选业务页面验收失败'}
 if (!$process.WaitForExit(60000)) {throw '候选未按隔离验收时限退出'}
 $process.Refresh()
 if ($process.ExitCode -ne 0) {throw "候选退出异常：$($process.ExitCode)"}

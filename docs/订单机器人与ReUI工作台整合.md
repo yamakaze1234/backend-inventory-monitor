@@ -36,14 +36,12 @@ Python 新增测试：`test_order_console.py`、`test_inventory_updater.py`；�
 
 独立工作树构建可通过 `tools/build_inventory_monitor.ps1` 的 `-DependencyRoot` 复用既有 Python 打包依赖，通过 `-IndependentRoot` 指定既有独立工具源码位置。参数只解析构建依赖，不迁移现用业务数据。
 
-ReUI 来源：[分页示例](https://reui.io/preview/base/components/c-data-grid-1?ref=mcp)、[Frame](https://reui.io/components/frame?ref=mcp)、[Badge](https://reui.io/components/badge?ref=mcp)。保留官方组件样式，业务层不添加入场动画。业务页以原生控件嵌入右侧，尚未把每个表单重写为 React，真实 ERP 写入、群投递、生产升级通道未作为本轮隔离验证的通过项。
+ReUI 来源：[分页示例](https://reui.io/preview/base/components/c-data-grid-1?ref=mcp)、[Frame](https://reui.io/components/frame?ref=mcp)、[Badge](https://reui.io/components/badge?ref=mcp)。保留官方组件样式，业务层不添加入场动画。七个业务模块由 React/ReUI 渲染，通过显式操作白名单复用原领域服务；默认不再装配或嵌入 Tk 业务页面。旧界面仅保留显式 `--legacy-ui` 兼容入口。
 
-不使用电脑操作的候选包验收可传 `--console-preview-data <独立目录> --console-headless --console-preview-seconds 60`。该模式不创建窗口，自动退出，并验证包内 WebView2 宿主运行库。
+不使用电脑操作的候选验收传 `--console-preview-data <独立目录> --console-headless --console-preview-seconds 60`。该模式不创建桌面窗口，不连接生产 ERP、AI、浏览器采集或发送消息；自动退出并验证包内 WebView2 宿主运行库。
 
-## 同窗业务页与图标
+## 统一业务页与图标
 
-软件更新固定在左下角导航页脚，版本号与主题切换位于其下方。业务导航选中后，右侧标题与内容同步切换，桌面宿主按内容区边界嵌入原生业务页；保留原有表单、查询和操作。旧管理侧栏与重复标题隐藏，文件选择和确认等操作仍使用相应对话框。
+软件更新固定在左下角导航页脚。所有业务模块选中后直接显示在右侧，表单、明细和确认使用统一组件。系统文件选择框仅用于用户主动选择文件；不再创建独立业务窗口。宿主只承载 WebView2、文件选择和外部链接，原生嵌入通道已移除。
 
-宿主在关闭前隐藏并脱离业务控件，后台服务和表单状态保留，托盘再次打开可重新嵌入。网页切回库存、订单或更新页时隐藏原生内容；窗口尺寸、侧栏和缩放变化同步右侧边界。跨进程嵌入只接受本机主程序所属窗口，不接收网页指定的窗口句柄。实现参考 [Microsoft SetParent 文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent)。
-
-页面标识和 favicon、Tk 窗口、托盘、桌面宿主及候选 EXE 均使用 `app/ui/monitor_assets/monitor.ico`。宿主与主程序使用相同应用标识。`tools/verify_native_embedding.py` 只使用屏幕外透明的隔离控件检查尺寸同步、脱离和重开，不进行桌面点击、键盘输入或真实业务操作。
+页面标识和 favicon、兼容窗口、托盘、桌面宿主及候选 EXE 均使用 `app/ui/monitor_assets/monitor.ico`。宿主与主程序使用相同应用标识。当前验收见 [ReUI 业务重构候选验收](ReUI业务重构候选验收.md)；此前同窗嵌入记录仅为历史证据。
