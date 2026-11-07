@@ -62,9 +62,7 @@ def build_payload(event: dict[str, Any]) -> dict[str, Any]:
     sender = str(_get(event, "sender", "") or "").strip()
     timestamp = _get(event, "createTime", "")
     text = str(_get(event, "text", "") or "").strip()
-    source_flag = _get(event, "cost_table_source", None)
-    is_cost_source = source_flag is True if source_flag is not None else sender == "示例供货员"
-    reopen = is_cost_source and any(
+    reopen = sender == "示例供货员" and any(
         marker in text for marker in ("重开成本表", "成本表重新开", "重新开表", "成本重新开")
     )
     title = "价格调整｜重开成本表" if reopen else "货源情况"

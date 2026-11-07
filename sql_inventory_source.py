@@ -9,7 +9,28 @@ FIELDS = ('goods_id', '库房', '商品编码', '商品名称', '分库数', '�
 SELECT = 'SELECT ' + ', '.join('[' + f + ']' for f in FIELDS) + ' FROM [库存].[分库库存]'
 CATALOG_FIELDS = ('goods_id', '商品编码', '商品名称', '总数量', '可销数', '待入')
 CATALOG_SELECT = 'SELECT ' + ', '.join('[' + f + ']' for f in CATALOG_FIELDS) + ' FROM [库存].[库存查询]'
+COST_SELECT = 'SELECT [goods_id], [库房], [库存成本] FROM [库存].[分库库存]'
 MAX_ROWS = 100000
+
+
+class SqlReadError(ValueError):
+    """Transport/query failure, distinct from invalid returned data."""
+
+
+def isolate_duplicates(raw, issues, legacy_text=None):
+    legacy_text = detect_legacy_text(raw) if legacy_text is None else legacy_text
+    seen, bad = set(), {}
+    for row in raw:
+        gid = str(row.get('goods_id', ''))
+        warehouse = row.get('库房')
+        if legacy_text:
+            warehouse = decode_legacy_text(warehouse)
+        key = (gid, str(warehouse or '').strip())
+        if key in seen:
+            bad[gid] = dict(goods_id=gid, reason='同一商品和库房出现重复记录', warehouse=key[1])
+        seen.add(key)
+    issues.update(bad)
+    return [r for r in raw if str(r.get('goods_id', '')) not in bad]
 
 # These warehouse names were verified against the user's DBX exports and beta
 # cache. Recognition selects a reversible transport correction, never fuzzy IDs.
@@ -65,9 +86,11 @@ def numeric(value, field, null_zero=False):
     return int(value) if value.is_integer() else value
 
 
-def normalize(raw, legacy_text=None):
+def normalize(raw, legacy_text=None, issues=None):
     """Return company catalog plus all-warehouse details; names are local keys."""
     legacy_text = detect_legacy_text(raw) if legacy_text is None else legacy_text
+    if issues is not None:
+        raw = isolate_duplicates(raw, issues, legacy_text)
     groups, keys, skus = {}, set(), {}
     for original in raw:
         row = dict(original)
@@ -108,15 +131,17 @@ def normalize(raw, legacy_text=None):
     return catalog, details
 
 
-def normalize_bundle(bundle, legacy_text=None):
+def normalize_bundle(bundle, legacy_text=None, issues=None):
     """Full directory is independent from the sparse per-warehouse relation."""
     raw = bundle['warehouses']
     legacy_text = detect_legacy_text(raw) if legacy_text is None else legacy_text
-    warehouse_rows, details = normalize(raw, legacy_text=legacy_text)
+    warehouse_rows, details = normalize(raw, legacy_text=legacy_text, issues=issues)
     by_id = {r['goods_id']: r for r in warehouse_rows}
     codes = {r['sku']: r['goods_id'] for r in warehouse_rows}
     seen, result = set(), []
     for original in bundle['catalog']:
+        if issues is not None and str(original.get('goods_id', '')) in issues:
+            continue
         row = dict(original)
         if not all(f in row for f in CATALOG_FIELDS):
             raise ValueError('库存查询目录缺少必要字段，保留原目录。')
@@ -167,6 +192,39 @@ class SqlSource:
         warehouses, catalog = self._read_queries([SELECT, CATALOG_SELECT], goods_ids)
         return dict(warehouses=warehouses, catalog=catalog)
 
+    def read_profit_costs(self, goods_ids):
+        """Read cost without changing inventory rows or substituting cached values."""
+        from profit_rules import cents
+        ids = sorted(set(goods_ids))
+        if len(ids) > 100000 or any(not isinstance(g, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', g) for g in ids):
+            raise ValueError('利润检测商品编号无效或超限')
+        costs, failed = {}, []
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start+500]
+            try:
+                rows = self._read_queries([COST_SELECT], batch)[0]
+                seen = set()
+                partial = {}
+                for row in rows:
+                    key = str(row.get('goods_id') or '')
+                    if key not in batch:
+                        raise ValueError('局部成本查询返回范围外编号')
+                    warehouse = row.get('库房')
+                    if self.legacy_text:
+                        warehouse = decode_legacy_text(warehouse)
+                    if warehouse != '公司大库':
+                        continue
+                    if key in seen:
+                        raise ValueError('公司大库同商品出现重复成本')
+                    seen.add(key)
+                    value = cents(row.get('库存成本'))
+                    if value is not None:
+                        partial[key] = value
+                costs.update(partial)
+            except Exception:
+                failed.extend(batch)
+        return dict(costs=costs, failed=failed)
+
     def _read_queries(self, queries, goods_ids=None):
         if goods_ids is not None:
             goods_ids = sorted(set(str(x) for x in goods_ids))
@@ -211,7 +269,7 @@ class SqlSource:
             raise
         except Exception:
             # Driver exceptions can contain login parameters. Never persist/render them.
-            raise ValueError('数据库连接或查询失败。请核对网络、账号权限和数据库名；原数据保留。') from None
+            raise SqlReadError('数据库连接或查询失败。请核对网络、账号权限和数据库名；原数据保留。') from None
         finally:
             if connection is not None:
                 connection.close()

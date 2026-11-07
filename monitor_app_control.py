@@ -165,7 +165,8 @@ class Controller:
         if not status['supervisor_alive']:
             self.ensure_task()
             return
-        if status['online'] and snapshot.get('robot_protocol', 0) >= 1:
+        # 企业机器人需要新版路由；先收到暂停回执，再沿用已有升级流程替换后台。
+        if status['online'] and snapshot.get('robot_protocol', 0) >= 2:
             return
         if not self.settings.get('portable'):
             raise RuntimeError(WORKER_UPGRADE_ERROR)

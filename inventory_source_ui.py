@@ -17,7 +17,7 @@ class SourceSettings(tk.Frame):
         selector.bind('<<ComboboxSelected>>',lambda _:self.show_mode())
         self.sql_form = tk.Frame(self,bg='white')
         self.fields = {}
-        defaults = dict(server='',port='1433',database='ERP',user='',password='')
+        defaults = dict(server='prod.cq360.top',port='1433',database='ERP',user='',password='')
         for i,(key,label) in enumerate([('server','服务器'),('port','端口'),('database','数据库'),('user','查询账号'),('password','密码')]):
             tk.Label(self.sql_form,text=label,bg='white',fg=INK,anchor='w').grid(row=i,column=0,sticky='w',padx=(0,20),pady=5)
             self.fields[key] = tk.StringVar(self,str(saved.get(key,defaults[key])) if key!='password' else '')

@@ -143,7 +143,6 @@ class Worker:
                             event.setdefault('conversationName', self.source['GroupName'])
                             if _get(event, 'senderId') == self.source['SenderId']:
                                 event['sender'] = self.source.get('SenderName', '')
-                                event['cost_table_source'] = bool(self.source.get('AllowReopen', False))
                             yield json.dumps(event, ensure_ascii=False)
                     except (ValueError, TypeError):
                         continue
@@ -237,7 +236,8 @@ def main(root=None, dws_executable=None):
         enabled = enabled and bool(active_sources)
         manager.tick(client_running() if enabled and not manager.activated else False,
                      enabled=enabled, force_start=control.get('force_until', 0) > time.time())
-        status = {'robot_protocol': 1, 'checked_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'pid': os.getpid(),
+        # 协议 2 支持 Webhook 和企业机器人两种发送目标。
+        status = {'robot_protocol': 2, 'checked_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'pid': os.getpid(),
                   'heartbeat': time.time(), 'enabled': enabled, 'configured': bool(active_sources),
                   'activated': manager.activated, 'sources': [
                       {'group': w.source['GroupName'], 'key': w.source['State'], 'status': w.status,
