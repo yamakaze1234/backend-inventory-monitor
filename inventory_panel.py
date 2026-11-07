@@ -51,6 +51,8 @@ def delivery_summary(status):
 
 
 def product_risk_label(product, connection):
+    if product.get('data_error'):
+        return '数据异常（已隔离）', 'unknown'
     risk = product.get('risk') or 'unknown'
     if not product.get('enabled', True):
         risk = 'disabled'
@@ -110,12 +112,15 @@ class InventoryPanel(tk.Frame):
         self.enabled = tk.BooleanVar(self, True)
         self.alerts = {key: tk.BooleanVar(self, True) for key in ALERTS}
         self.search = tk.StringVar(self)
+        self.risk_filter = tk.StringVar(self, '全部产品')
+        self.compact = tk.BooleanVar(self, False)
         self.notice = tk.StringVar(self)
         with service.db() as db:
             native_enabled = service.get(db, 'erp_native_enabled', False)
         self.native_enabled = tk.BooleanVar(self, native_enabled)
         self._build()
         self.search.trace_add('write', lambda *_: self.refresh())
+        self.risk_filter.trace_add('write', lambda *_: self.refresh())
         self.new_product(reveal=False)
         self.notice.set('')
         self.refresh()
@@ -130,8 +135,9 @@ class InventoryPanel(tk.Frame):
     def _build(self):
         style = ttk.Style(self)
         style.configure('Inventory.Treeview', rowheight=54, font=('Microsoft YaHei UI', 10), background='white', fieldbackground='white')
-        style.configure('Inventory.Treeview.Heading', font=('Microsoft YaHei UI', 9, 'bold'))
+        style.configure('Inventory.Treeview.Heading', font=('Microsoft YaHei UI', 10, 'bold'))
         top = tk.Frame(self, bg=BG)
+        self.status_top = top
         top.pack(fill='x', pady=(0, 10))
         self.connection = self.label(top, '● 等待 ERP', size=11)
         self.connection.pack(side='left')
@@ -141,6 +147,16 @@ class InventoryPanel(tk.Frame):
         self.delivery_state.pack(fill='x', pady=(0, 5))
         self.connection_detail = self.label(self, fg='#BA6415', anchor='w', wraplength=960, justify='left', size=9)
         self.connection_detail.pack(fill='x', pady=(0, 6))
+        # 覆盖统计只保留一行摘要，点击分类再查看完整原因。
+        self.coverage_bar = tk.Frame(self, bg=BG)
+        self.coverage_bar.pack(fill='x', pady=(0, 10))
+        self.coverage_buttons = {}
+        from inventory_insight_ui import show_coverage
+        for key, title in [('all', '本轮应查'), ('success', '已更新'), ('isolated', '已隔离'), ('missing', '未返回'), ('warehouse_missing', '库房待核对')]:
+            item = self.button(self.coverage_bar, title + ' —', lambda k=key: show_coverage(self, self.service, k))
+            item.configure(padx=9, pady=5, font=('Microsoft YaHei UI', 9))
+            item.pack(side='left', padx=(0, 6))
+            self.coverage_buttons[key] = item
         recovery_bar = tk.Frame(self, bg=BG)
         self.recovery_bar = recovery_bar
         recovery_bar.pack(fill='x', pady=(0, 6))
@@ -189,6 +205,8 @@ class InventoryPanel(tk.Frame):
         actions.pack(fill='x', pady=(0, 8))
         self.label(actions, '筛选产品', fg=MUTED, size=9).pack(side='left', padx=(0, 10))
         ttk.Entry(actions, textvariable=self.search, font=('Microsoft YaHei UI', 10), width=14).pack(side='left', fill='x', expand=True, padx=(0, 10))
+        ttk.Combobox(actions, textvariable=self.risk_filter, values=('全部产品', '库存风险', '待核对', '已停用'), state='readonly', width=10).pack(side='left', padx=(0, 8))
+        ttk.Checkbutton(actions, text='紧凑', variable=self.compact, command=self.refresh).pack(side='left')
         self.empty = self.label(left, '添加重点产品后，将在 ERP 在线时检查公司大库。', fg=MUTED, anchor='w')
         self.empty.pack(fill='x', pady=(0, 6))
         wrap_label(self.empty)
@@ -199,10 +217,11 @@ class InventoryPanel(tk.Frame):
         edit_button.configure(pady=4)
         edit_button.pack(side='right')
         table = tk.Frame(left, bg='white')
+        self.product_table = table
         table.pack(fill='both', expand=True)
-        columns = ('name', 'able', 'purchase', 'threshold', 'risk')
+        columns = ('name', 'goods_id', 'warehouse', 'able', 'purchase', 'threshold', 'risk')
         self.tree = ttk.Treeview(table, columns=columns, show='headings', style='Inventory.Treeview', selectmode='browse')
-        for key, title, width in zip(columns, ('产品名称 / ERP 编号', '预警数量', '待入', '预警值', '状态'), (220, 70, 70, 75, 100)):
+        for key, title, width in zip(columns, ('产品名称', 'ERP 编号', '监控口径', '当前数量', '待入', '预警值', '状态'), (245, 80, 115, 70, 65, 60, 125)):
             self.tree.heading(key, text=title, anchor='w' if key == 'name' else 'center')
             self.tree.column(key, width=width, minwidth=45, anchor='w' if key in ('name', 'risk') else 'e', stretch=key == 'name')
         scroll = ScrollBar(table, command=self.tree.yview)
@@ -220,7 +239,7 @@ class InventoryPanel(tk.Frame):
         event_area = tk.Frame(left, bg='white')
         event_area.pack(side='bottom', fill='x', before=table)
         self.event_area = event_area
-        self._events_manual = None
+        self._events_manual = False
         event_toggle = self.button(event_area, '最近动态  ▾', self.toggle_events)
         event_toggle.configure(bg='white', padx=0, pady=5, highlightbackground='white', anchor='w')
         event_toggle.pack(fill='x', pady=(6, 0))
@@ -496,10 +515,33 @@ class InventoryPanel(tk.Frame):
         self.refresh()
 
     def check(self):
-        self.service.request_check()
-        sql_mode = hasattr(self.service, 'source_mode') and self.service.source_mode() == 'sql'
-        self.notice.set('已请求立即检查，等待 SQL 查询完成。' if sql_mode else '已请求立即检查；等待已登录的 ERP 采集页面响应。')
+        """两项检查独立提交，任一入口失败不能阻止另一项；不在界面线程采集。"""
+        messages = []
+        try:
+            self.service.request_check()
+            messages.append('ERP 库存：已请求检查')
+        except Exception:
+            messages.append('ERP 库存：提交失败，请检查采集设置')
+        try:
+            result = self.ensure_douyin_runtime().check_all()
+            messages.append(f"抖店库存：已排队 {result['queued']} 店，正在检查 {result['busy']} 店")
+            if result['skipped']:
+                messages.append('未就绪店铺已跳过：' + '、'.join(result['skipped']))
+            elif not result['queued'] and not result['busy']:
+                messages.append('请先在抖店库存勾选参与巡检的店铺')
+        except Exception:
+            messages.append('抖店库存：提交失败，请检查店铺设置')
+        self.notice.set('；'.join(messages) + '。')
         self.refresh()
+
+    def ensure_douyin_runtime(self):
+        """从任意功能页检查时也能复用唯一抖店队列，无需先打开抖店页面。"""
+        if not hasattr(self, 'douyin_runtime'):
+            from douyin_inventory_runtime import DouyinRuntime
+            self.douyin_runtime = DouyinRuntime(self.service, live=getattr(self, 'live_delivery', False))
+            root = self.winfo_toplevel()
+            root.bind('<Destroy>', lambda event: self.douyin_runtime.close() if event.widget is root else None, add='+')
+        return self.douyin_runtime
 
     def build_catalog(self, parent):
         win = parent
@@ -534,13 +576,32 @@ class InventoryPanel(tk.Frame):
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         candidates = {}
+        self._catalog_dirty = True
+        catalog_cache = []
+        rendered = None
         def refresh_results(*_):
+            nonlocal catalog_cache, rendered
             sql_mode = hasattr(self.service,'source_mode') and self.service.source_mode()=='sql'
             for key,title in zip(('able','purchase','stock'),('总可销','总待入','总库存') if sql_mode else ('可销','待入','实际')):
                 tree.heading(key,text=title)
             quantity_fields = ('catalog_able','catalog_purchase','catalog_stock') if sql_mode else ('able','purchase','stock')
-            matches = self.service.catalog(query.get().strip(), limit=None, mode=self.catalog_mode.get())
-            total = len(self.service.catalog(limit=None))
+            # 完整目录只在版本变化时读取一次；隐藏的搜索页不占用首页重绘时间。
+            dirty = self._catalog_dirty
+            if dirty:
+                catalog_cache = self.service.catalog(limit=None)
+                self._catalog_dirty = False
+            text, mode = query.get().strip(), self.catalog_mode.get()
+            signature = (text, mode, sql_mode)
+            if not dirty and signature == rendered:
+                return
+            rendered = signature
+            terms = text.casefold().split()
+            if mode == 'goods_id':
+                matches = [p for p in catalog_cache if not text or str(p.get('goods_id', '')) == text]
+            else:
+                matches = [p for p in catalog_cache if all(
+                    t in (p['name'] if mode == 'name' else p['name'] + ' ' + p['sku']).casefold() for t in terms)]
+            total = len(catalog_cache)
             tree.delete(*tree.get_children())
             candidates.clear()
             for product in matches[:200]:
@@ -589,7 +650,7 @@ class InventoryPanel(tk.Frame):
         # Expose controls for the isolated real-window acceptance check.
         self.catalog_query, self.catalog_results = query, tree
         self.catalog_choose = choose
-        refresh_results()
+        summary.config(text='进入搜索页后加载商品目录，库存首页无需等待全目录。')
     def choose_catalog(self):
         if getattr(self, 'page_navigation', False):
             self.show_module('search')
@@ -607,12 +668,41 @@ class InventoryPanel(tk.Frame):
         if getattr(self, 'page_navigation', False):
             self.show_module('config')
 
-    def show_module(self, module):
+    def open_settings(self, category='settings'):
+        """复用现有设置和数据对象，在统一设置导航下切换功能。"""
+        self.show_module(category, settings_context=True)
+        if category == 'douyin' and not self.douyin_page.settings_box.winfo_manager():
+            self.douyin_page.toggle_settings()
+
+    def show_module(self, module, settings_context=False):
+        self.settings_context = settings_context or module == 'settings'
+        if not hasattr(self, 'settings_nav'):
+            self.settings_nav = tk.Frame(self, bg=BG)
+            self.settings_categories = {}
+            categories = [('settings', 'ERP 采集'), ('douyin', '抖店巡检'),
+                          ('profit', '价格监控'), ('robots', '通知机器人'), ('daily', '货源汇报')]
+            if getattr(self, 'dingtalk_controller', None) is not None:
+                categories.append(('dingtalk', '钉钉连接'))
+            for key, title in categories:
+                control = self.button(self.settings_nav, title, lambda k=key: self.open_settings(k))
+                control.pack(side='left', padx=(0, 6))
+                self.settings_categories[key] = control
+        if self.settings_context:
+            self.settings_nav.pack(fill='x', pady=(0, 8), before=self.body)
+            for key, control in self.settings_categories.items():
+                control._primary = key == module
+                control.config(bg=BLUE if key == module else 'white',
+                               fg='white' if key == module else INK,
+                               activeforeground='white' if key == module else INK)
+        else:
+            self.settings_nav.pack_forget()
         if getattr(self, 'active_module', None) != module:
             self.notice.set('')
         self.page_navigation = True
         self.add_tabs.configure(style='Page.TNotebook')
         self.active_module = module
+        if module == 'search':
+            self.refresh_catalog()
         if not hasattr(self, 'page_notice'):
             self.page_notice = self.label(self, textvariable=self.notice, fg='#BA6415', anchor='w', wraplength=1000)
         for pane in self.body.panes():
@@ -630,11 +720,40 @@ class InventoryPanel(tk.Frame):
                     self.dingtalk_page = RoundedCard(self.body)
                     DingTalkPanel(self.dingtalk_page.content, self.dingtalk_controller).pack(fill='both', expand=True)
                 target = self.dingtalk_page
+            elif module == 'douyin':
+                if not hasattr(self, 'douyin_page'):
+                    from douyin_inventory_ui import DouyinPanel
+                    self.douyin_page = DouyinPanel(self.body, self.ensure_douyin_runtime())
+                target = self.douyin_page
+            elif module == 'robots':
+                if not hasattr(self, 'robots_page'):
+                    from notification_robot_ui import build_robot_page
+                    from notification_robots import store_for_service
+                    self.robots_page, self.robot_panel = build_robot_page(self.body, store_for_service(self.service))
+                else:
+                    self.robot_panel.refresh()
+                target = self.robots_page
             elif module == 'daily':
                 if not hasattr(self, 'daily_page'):
                     from inventory_daily import build_page
                     self.daily_page = build_page(self.body, self.service)
                 target = self.daily_page
+            elif module == 'profit':
+                if not hasattr(self, 'profit_page'):
+                    from profit_panel import ProfitPanel
+                    from profit_monitor import ProfitMonitor, CoordinatedProfitSource
+                    from notification_robots import store_for_service
+                    if not hasattr(self.service, 'profit_monitor'):
+                        worker = getattr(self.service, 'sql_worker', None)
+                        self.service.profit_monitor = ProfitMonitor(self.service.root,
+                            source_provider=lambda: CoordinatedProfitSource(worker) if worker else None,
+                            robots=store_for_service(self.service))
+                        if not getattr(self.service, 'offline_preview', False):
+                            self.service.profit_monitor.start()
+                    self.profit_page = ProfitPanel(self.body, self.service.profit_monitor)
+                else:
+                    self.profit_page.refresh()
+                target = self.profit_page
             elif module == 'settings':
                 if not hasattr(self, 'settings_page'):
                     self.settings_page = tk.Frame(self.body, bg=BG, padx=0, pady=0)
@@ -688,13 +807,6 @@ class InventoryPanel(tk.Frame):
                     instructions_label.pack(fill='x')
                     wrap_label(instructions_label)
                     self.button(erp_card, '查看采集说明', self.open_setup).pack(anchor='w', pady=(14, 0))
-                    from notification_robot_ui import RobotPanel
-                    from notification_robots import store_for_service
-                    robot_card = section(settings_content, '通知机器人')
-                    self.robot_panel = RobotPanel(robot_card, store=store_for_service(self.service))
-                    self.robot_panel.pack(fill='x')
-                else:
-                    self.robot_panel.refresh()
                 if hasattr(self.service,'source_mode'):
                     if self.service.source_mode()=='sql':self.script_setup_card.pack_forget()
                     elif not self.script_setup_card.winfo_manager():self.script_setup_card.pack(fill='x',pady=(0,16))
@@ -704,15 +816,53 @@ class InventoryPanel(tk.Frame):
                     from inventory_event_ui import EventPanel
                     self.event_page = EventPanel(self.body,self.service)
                 target = self.event_page
+            elif module == 'impact':
+                if not hasattr(self, 'impact_page'):
+                    from inventory_insight_ui import ImpactPanel
+                    self.impact_page = ImpactPanel(self.body, self.service)
+                else:
+                    self.impact_page.refresh()
+                target = self.impact_page
             else:
                 target = self.product_page
                 chosen, other = (self.search_page, self.config_page) if module == 'search' else (self.config_page, self.search_page)
                 self.add_tabs.add(chosen)
                 self.add_tabs.hide(other)
                 self.add_tabs.select(chosen)
-            self.body.add(target, stretch='always', minsize=430)
+            # 主容器统一负责页边距，避免不同功能页重复增加内边距。
+            if 'padx' in target.keys():
+                target.configure(padx=0, pady=0)
+            self.body.add(target, stretch='always', minsize=310)
         if hasattr(self, 'on_module_changed'):
             self.on_module_changed(module)
+        if module == 'monitor':
+            self.coverage_bar.pack(fill='x', pady=(0, 10), before=self.body)
+        else:
+            self.coverage_bar.pack_forget()
+        self.layout_status()
+
+    def layout_status(self):
+        """只在布局条件变化时排版，避免定时刷新反复拆装控件。"""
+        layout_key = (getattr(self, 'active_module', 'monitor'),
+                      bool(self.connection_detail.cget('text')), getattr(self, '_sql_mode', False))
+        if getattr(self, '_status_layout_key', None) == layout_key:
+            return
+        self._status_layout_key = layout_key
+        if getattr(self, 'active_module', 'monitor') != 'monitor':
+            for widget in (self.status_top, self.delivery_state, self.connection_detail, self.recovery_bar):
+                widget.pack_forget()
+        else:
+            self.status_top.pack(fill='x', pady=(0, 6), before=self.coverage_bar)
+            self.delivery_state.pack(fill='x', pady=(0, 5), after=self.status_top)
+            if self.connection_detail.cget('text'):
+                self.connection_detail.pack(fill='x', pady=(0, 6), after=self.delivery_state)
+            else:
+                self.connection_detail.pack_forget()
+            # 布局统一在可见库存页执行，不能相对于已隐藏的控件调用 pack(after=...)。
+            if getattr(self, '_sql_mode', False):
+                self.recovery_bar.pack_forget()
+            else:
+                self.recovery_bar.pack(fill='x', pady=(0, 6), after=self.delivery_state)
 
     def open_setup(self):
         if self.setup_path.is_file():
@@ -739,49 +889,87 @@ class InventoryPanel(tk.Frame):
             self.after_cancel(self._after)
             self._after = None
         try:
+            self._refresh_error = ''
             status = self.service.status()
+            # 轮询仍读取最新状态；数据和筛选不变时，不让所有原生控件重复重绘。
+            render_key = (status, self.search.get(), self.risk_filter.get(), self.compact.get(),
+                          getattr(self, 'active_module', 'monitor'), hasattr(self, 'sidebar_erp_status'),
+                          hasattr(self, 'settings_page'))
+            if render_key == getattr(self, '_render_key', None):
+                if getattr(self, 'active_module', '') == 'config':
+                    self.refresh_warehouses()
+                self._after = self.after(2000, self.refresh)
+                return
             sql_mode = status.get('source_mode') == 'sql'
+            self._sql_mode = sql_mode
             if hasattr(self,'script_setup_card') and hasattr(self.service,'source_mode'):
                 if sql_mode:self.script_setup_card.pack_forget()
                 elif not self.script_setup_card.winfo_manager():self.script_setup_card.pack(fill='x',pady=(0,16))
-            if sql_mode:
-                self.recovery_bar.pack_forget()
-            elif not self.recovery_bar.winfo_manager():
-                self.recovery_bar.pack(fill='x',pady=(0,6),after=self.delivery_state)
             self.refresh_warehouses()
-            if getattr(self, '_catalog_checked', None) != status.get('checked_at'):
-                self._catalog_checked = status.get('checked_at')
-                self.refresh_catalog()
+            catalog_version = status.get('catalog_checked_at') if sql_mode else status.get('checked_at')
+            if getattr(self, '_catalog_checked', None) != catalog_version:
+                self._catalog_checked = catalog_version
+                self._catalog_dirty = True
+                if getattr(self, 'active_module', 'monitor') == 'search':
+                    self.refresh_catalog()
             self.message_state.config(text=f"每 {status.get('interval_seconds', 7200) / 3600:g} 小时检查 · 按产品预警依据")
             state = status.get('connection', 'waiting')
             if hasattr(self, 'sidebar_erp_status'):
                 connection_label, shade = {
                     'online': ('ERP 已连接', '#19B790'),
                     'waiting': ('等待 ERP 连接', '#D99A42'),
-                    'stale': ('ERP 连接已断开', '#D99A42'),
+                    'stale': ('库存数据已过期', '#D99A42'),
                     'error': ('ERP 连接异常', '#EF6B73'),
                 }.get(state, ('ERP 状态未知', '#D99A42'))
+                if sql_mode and state == 'error':
+                    connection_label = {'query': 'SQL 连接或查询失败', 'data': '库存数据校验失败', 'service': '库存处理失败'}.get(status.get('error_kind'), '库存读取失败')
                 self.sidebar_erp_status.config(text='●  ' + connection_label, fg=shade)
             text = {'waiting': '等待 ERP', 'online': 'ERP 在线', 'stale': '数据过期', 'error': 'ERP 连接异常'}.get(state, '等待 ERP')
+            if sql_mode and state == 'error':
+                text = {'query': '连接或查询失败', 'data': '库存数据校验失败', 'service': '库存处理失败'}.get(status.get('error_kind'), '库存读取失败')
             self.connection.config(text='● ' + ('SQL · ' if sql_mode else '') + text + ('' if status['enabled'] else ' · 监控已暂停'), fg='#087B54' if state == 'online' else '#BA6415')
             self.delivery_state.config(text=delivery_summary(status))
             detail = str(status.get('connection_error') or '')
             if sql_mode:
                 detail = detail or status.get('source_message','')
+                issues = status.get('data_issues', {})
+                if issues:
+                    detail = f'已隔离 {len(issues)} 个异常商品；点击“已隔离”查看原因。'
             if state != 'online' and status.get('checked_at'):
                 detail = (detail + ' · ' if detail else '') + '下列数量保留自上次成功检查，当前库存尚未确认。'
             self.connection_detail.config(text=detail)
-            if detail:
-                self.connection_detail.pack(fill='x', pady=(0, 6), after=self.delivery_state)
-            else:
-                self.connection_detail.pack_forget()
+            coverage = status.get('coverage', {})
+            for key, title in [('all', '本轮应查'), ('success', '已更新'), ('isolated', '已隔离'), ('missing', '未返回'), ('warehouse_missing', '库房待核对')]:
+                value = coverage.get('expected', '—') if key == 'all' else coverage.get('counts', {}).get(key, '—')
+                if key == 'all' and coverage and not status.get('coverage_current', True):
+                    title = '上轮应查'
+                self.coverage_buttons[key].configure(text=f'{title} {value}', fg='#A34D13' if key not in ('all', 'success') and isinstance(value, int) and value else INK)
             self.inbound_note.config(text='SQL：待入优先所选仓库；标“总”的为 ERP 总待入，仓库未确认。库存增加为快照净变化。' if sql_mode else ('' if status.get('inbound_verified') else '入库单据尚未接入，等待 ERP 采集'))
             self.pause_button.config(text='暂停库存监控' if status['enabled'] else '启用库存监控')
             fmt = lambda value: time.strftime('%m-%d %H:%M:%S', time.localtime(value)) if value else '—'
             self.timestamps.config(text=f"最近成功检查：{fmt(status.get('checked_at'))}    下次检查：{fmt(status.get('next_check'))}    每 {status.get('interval_seconds', 7200) // 60} 分钟 · 按产品预警依据")
             query = self.search.get().strip().casefold()
             products = [p for p in status.get('products', []) if query in (p['name'] + ' ' + p['sku'] + ' ' + str(p.get('goods_id', ''))).casefold()]
+            chosen = self.risk_filter.get()
+            if chosen == '库存风险':
+                products = [p for p in products if product_risk_label(p, state)[1] in ('low', 'oversold', 'negative_stock')]
+            elif chosen == '待核对':
+                products = [p for p in products if product_risk_label(p, state)[1] == 'unknown']
+            elif chosen == '已停用':
+                products = [p for p in products if not p.get('enabled', True)]
+            # 风险在前，名称和原始身份不截断；紧凑模式只改变行高。
+            rank = {'oversold': 0, 'negative_stock': 0, 'low': 1, 'unknown': 2, 'normal': 3, 'disabled': 4}
+            products.sort(key=lambda p: rank.get(product_risk_label(p, state)[1], 2))
+            # 样式修改会通知整个窗口；仅在用户切换行密度时更新。
+            rowheight = 34 if self.compact.get() else 46
+            if getattr(self, '_table_rowheight', None) != rowheight:
+                ttk.Style(self).configure('Inventory.Treeview', rowheight=rowheight)
+                self._table_rowheight = rowheight
             self.empty.config(text=f"已关注 {len(status.get('products', []))} 个产品 · 未取得库存时显示待检查" if status.get('products') else '尚未添加产品，点击“添加产品”开始。')
+            if status.get('products'):
+                self.empty.pack_forget()
+            else:
+                self.empty.pack(fill='x', pady=(0, 6), before=self.product_table)
             self.rows = {p['sku']: p for p in products}
             table_rows = []
             for iid, p in self.rows.items():
@@ -791,7 +979,9 @@ class InventoryPanel(tk.Frame):
                 pending_text = qty('warehouse_purchase' if p.get('stock_basis') == 'warehouse_stock' else 'purchase')
                 if p.get('pending_source') == 'erp_total' and p.get('pending_quantity') is not None:
                     pending_text = f"{p['pending_quantity']:g}（总）"
-                values = (f"{p['name']}\n{p.get('goods_id') or '编号待采集'} · {p.get('warehouse_name', '') + ' · 库存' if p.get('stock_basis') == 'warehouse_stock' else '公司大库 · 可销'}", qty('monitor_qty' if p.get('stock_basis') == 'warehouse_stock' else 'able'), pending_text, p['threshold'], marker + label)
+                values = (p['name'], p.get('goods_id') or '待采集', p.get('warehouse_name', '') + ' · 库存' if p.get('stock_basis') == 'warehouse_stock' else '公司大库 · 可销', qty('monitor_qty' if p.get('stock_basis') == 'warehouse_stock' else 'able'), pending_text, p['threshold'], marker + label)
+                if risk == 'unknown' and values[3] != '—':
+                    values = values[:3] + ('上次 ' + values[3],) + values[4:]
                 table_rows.append((iid, values, (risk,)))
             sync_tree(self.tree, table_rows)
             events = status.get('events', [])[:6]
@@ -806,11 +996,18 @@ class InventoryPanel(tk.Frame):
                 self.events.insert('end', event_text)
                 self.events.configure(state='disabled')
                 self._event_text = event_text
+            self._render_key = render_key
+        except tk.TclError:
+            # 界面故障不能改写 ERP 连接状态；验收可据此区分服务与渲染问题。
+            self._refresh_error = 'ui'
+            self.notice.set('界面刷新未完成，请重新切换页面；ERP 采集状态未改变。')
         except Exception:
+            self._refresh_error = 'service'
             self.connection.config(text='● 库存服务异常', fg='#B42332')
             if hasattr(self, 'sidebar_erp_status'):
                 self.sidebar_erp_status.config(text='●  ERP 状态读取失败', fg='#EF6B73')
             self.notice.set('读取库存状态失败，请检查本地数据文件；原配置不会被重置。')
+        self.layout_status()
         self._after = self.after(2000, self.refresh)
 
     def destroy(self):

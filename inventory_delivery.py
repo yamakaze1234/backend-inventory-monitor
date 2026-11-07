@@ -100,17 +100,17 @@ def resolve_destination(service, setup=None):
     if len(candidates) != 1:
         raise ValueError('库存通知账号未唯一确定，请核对钉钉当前默认账号。')
     profile = candidates[0]['key']
-    result = setup.cli(['chat', '+chat-search', '--query', '示例库存通知群', '--page-all', '--page-limit', '10'], profile=profile)
+    result = setup.cli(['chat', '+chat-search', '--query', '示例通知群', '--page-all', '--page-limit', '10'], profile=profile)
     if result.get('complete') is not True or result.get('partial') or result.get('hasMore') or result.get('failures'):
-        raise ValueError('示例库存通知群搜索未完整完成，库存通知保持待发送。')
+        raise ValueError('示例通知群搜索未完整完成，库存通知保持待发送。')
     matches = {g['openConversationId']: g for g in result.get('chats', [])
-               if g.get('title', g.get('name')) == '示例库存通知群' and g.get('openConversationId')}
+               if g.get('title', g.get('name')) == '示例通知群' and g.get('openConversationId')}
     if len(matches) != 1:
-        raise ValueError('示例库存通知群未唯一匹配，库存通知保持待发送。')
+        raise ValueError('示例通知群未唯一匹配，库存通知保持待发送。')
     ident = next(iter(matches))
     if previous and previous.get('group_id') and previous['group_id'] != ident:
-        raise ValueError('示例库存通知群标识发生变化，库存通知暂停，请核对原接收群。')
-    metadata = dict(name='示例库存通知群', group_id=ident, profile=profile, verified_at=time.time())
+        raise ValueError('示例通知群标识发生变化，库存通知暂停，请核对原接收群。')
+    metadata = dict(name='示例通知群', group_id=ident, profile=profile, verified_at=time.time())
     with service.db() as db:
         service.put(db, 'destination', metadata)
     return metadata
@@ -134,6 +134,12 @@ def _still_low(product, threshold):
 
 
 def format_events(events, service, now=None):
+    # 群消息默认紧凑；本地详情仍能查看完整采集和入库证据。
+    from inventory_message_view import compact_events
+    return compact_events(events, service, time.time() if now is None else now)
+
+
+def format_events_detailed(events, service, now=None):
     now = time.time() if now is None else now
     order = {'negative_stock': 0, 'oversold': 0, 'out_of_stock': 0, 'low': 1, 'inbound': 2, 'stock_increase': 2, 'pending_inbound': 2, 'recovery': 3}
     labels = dict(negative_stock='负库存', oversold='超售', out_of_stock='库存归零预警', low='低库存', inbound='确认入库', stock_increase='库存增加', pending_inbound='待入库提醒', recovery='风险恢复')
@@ -305,7 +311,14 @@ class DeliveryWorker:
                 return 0
             first = json.loads(rows[0][1])
             key = lambda e: ('job', e['delivery_job']) if e.get('delivery_job') else (e.get('check_id', e['observed_at']), e.get('cause'))
-            batch = [(ident, json.loads(data), attempts) for ident, data, attempts, created in rows if key(json.loads(data)) == key(first)]
+            # 新批次每条消息最多 6 项，同轮风险与补货变化分开；已有投递任务保持原分组。
+            risk_kinds = {'low', 'oversold', 'negative_stock', 'out_of_stock'}
+            family = lambda e: e['kind'] in risk_kinds
+            batch = [(ident, json.loads(data), attempts) for ident, data, attempts, created in rows
+                     if key(json.loads(data)) == key(first)
+                     and (first.get('delivery_job') or family(json.loads(data)) == family(first))]
+            if not first.get('delivery_job'):
+                batch = batch[:6]
             import hashlib
             job = first.get('delivery_job') or hashlib.sha256('|'.join(sorted(ident for ident, _, _ in batch)).encode()).hexdigest()
             for ident, event, _ in batch:

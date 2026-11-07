@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox
 from inventory_sources import InventoryRuntimeService as InventoryService
 from inventory_bridge import start_bridge
-from test_inventory_ui_local import build_workspace
+from inventory_workspace import build_workspace
 from inventory_version import APP_TITLE
 
 
@@ -57,7 +57,35 @@ def main():
     parser.add_argument('--data-dir')
     parser.add_argument('--ui-check', action='store_true', help='Run an isolated, offline UI check and exit')
     parser.add_argument('--sql-ui-check', action='store_true', help='Run isolated SQL/script acceptance and exit')
+    parser.add_argument('--refactor-check', action='store_true', help='离线验证重构界面，不启动采集或通知')
+    parser.add_argument('--browser-check', action='store_true', help='在独立空目录验证本机浏览器连接，不访问真实店铺')
+    parser.add_argument('--offline-demo', action='store_true', help='使用独立模拟数据体验重构界面')
+    parser.add_argument('--douyin-erp-check', help='只读复核整机快照的 ERP 配件，保存相邻结果文件，不发送消息')
     args = parser.parse_args()
+    if args.browser_check:
+        from inventory_browser_check import run
+        if not args.data_dir:
+            parser.error('--browser-check 需要独立的 --data-dir 验收输出目录')
+        return run(args.data_dir)
+    if args.douyin_erp_check:
+        # 使用与桌面相同的真实打包环境验收 ERP，不启动巡检或消息线程。
+        from douyin_erp import attach_erp
+        from douyin_scope import MACHINE_SCOPE
+        target = Path(args.douyin_erp_check)
+        payload = json.loads(target.read_text(encoding='utf-8'))
+        products = payload['products']
+        if not products or any(p.get('monitor_scope') != MACHINE_SCOPE for p in products):
+            raise ValueError('复核文件必须为已核验整机类目的完整快照')
+        service = InventoryService(Path(args.data_dir))
+        with service.db() as db:
+            settings = service.get(db, 'sql_connection', {})
+        service.configure_sql(settings, '', remember=True)
+        attach_erp(service, payload['shop'], products)
+        target.with_suffix('.result.json').write_text(json.dumps(dict(shop=payload['shop'], products=products), ensure_ascii=False), encoding='utf-8')
+        return
+    if args.refactor_check or args.offline_demo:
+        from inventory_refactor_check import run
+        return run(args.data_dir, interactive=args.offline_demo)
     if args.sql_ui_check:
         from inventory_sql_ui_check import run
         return run(args.data_dir)
@@ -77,6 +105,9 @@ def main():
     # Retain the existing user data path, including encrypted robot settings.
     service = InventoryService(folder / '.local_inventory_ui_test')
     root = tk.Tk()
+    # 初始化期间不暴露未完成绘制的原生窗口，避免 Windows 显示黑底半成品。
+    root.withdraw()
+    root.configure(bg='#F5F6F8')
     root.title(APP_TITLE)
     root.geometry(f'{min(1380, root.winfo_screenwidth()-60)}x{min(900, root.winfo_screenheight()-90)}')
     root.minsize(1080, 680)
@@ -146,12 +177,20 @@ def main():
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
         panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller)
         service.start_source()
+        from profit_monitor import ProfitMonitor, CoordinatedProfitSource
+        from notification_robots import store_for_service
+        service.profit_monitor = ProfitMonitor(service.root,
+            source_provider=lambda: CoordinatedProfitSource(service.sql_worker),
+            robots=store_for_service(service))
+        service.profit_monitor.start()
         if service.source_mode() == 'sql' and service.sql_worker.source is None:
             panel.show_module('settings')
         tray.run_detached()
         root.after(150, process_commands)
-        if args.tray:
-            root.withdraw()
+        if not args.tray:
+            # 先让布局与图片进入就绪状态，再由事件循环显示完整窗口。
+            root.update_idletasks()
+            root.after_idle(root.deiconify)
         from inventory_delivery import start_delivery
         bridge.delivery = start_delivery(service, live=True)
         root.mainloop()
@@ -162,6 +201,8 @@ def main():
         finally:
             tray.stop()
             service.close_source()
+            if hasattr(service, 'profit_monitor'):
+                service.profit_monitor.stop()
             bridge.close()
 
 
