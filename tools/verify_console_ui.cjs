@@ -14,8 +14,33 @@ async function main() {
     const errors = [];
     page.on('pageerror', e=>errors.push(e.message));
     // 界面验收不访问发布站；真实签名与下载失败由后端测试覆盖。
-    await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,native:false}}));
+    await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,native:true}}));
+    // 模拟宿主消息接口，仅核验网页边界与切换；真实 Win32 生命周期单独隔离验证。
+    await page.addInitScript(()=>{window.nativeMessages=[];window.chrome={...window.chrome,webview:{postMessage:message=>window.nativeMessages.push(message)}};});
+    const modules=[];
+    await page.route('**/api/native',route=>{modules.push(route.request().postDataJSON().module);return route.fulfill({json:{message:'业务页面已就绪'}});});
     await page.goto(url);
+    const icon=await page.request.get(new URL('/app-icon.ico',url).href);
+    assert.equal(icon.status(),200);
+    assert.deepEqual(await icon.body(),fs.readFileSync('app/ui/monitor_assets/monitor.ico'));
+    const updateLink=page.locator('[data-slot="sidebar-footer"]').getByRole('button',{name:'软件更新',exact:true});
+    await updateLink.waitFor();
+    const updateBox=await updateLink.boundingBox();
+    assert.ok(updateBox.y>800&&updateBox.x<260,'更新入口固定在桌面左下角');
+    const nav=[['douyin','抖店库存'],['dingtalk','钉钉监控'],['profit','ERP 价格监控'],['daily','货源汇报'],['events','库存提醒记录'],['monitor','管理监控商品'],['settings','连接与通知设置']];
+    for(const [module,title] of nav){
+      await page.getByRole('button',{name:title,exact:true}).click();
+      await page.locator(`[data-native-module="${module}"]`).waitFor();
+      await page.waitForFunction(()=>window.nativeMessages.at(-1)?.visible===true);
+      assert.equal(await page.getByRole('heading',{level:1}).innerText(),title);
+      const box=await page.locator(`[data-native-module="${module}"]`).boundingBox();
+      assert.ok(box.x>=256&&box.width>900,'业务页留在右侧内容区');
+    }
+    assert.deepEqual(modules,nav.map(item=>item[0]));
+    assert.equal(page.context().pages().length,1,'切换业务页不得打开新页面');
+    await page.getByRole('button',{name:'库存监控',exact:true}).click();
+    await page.waitForFunction(()=>window.nativeMessages.at(-1)?.visible===false);
+
     await page.getByText('1–25 / 共 120 条').waitFor();
     assert.equal(await page.locator('tbody tr').count(),25);
     await page.screenshot({path:path.join(out,'inventory.png'),fullPage:true});
@@ -41,10 +66,9 @@ async function main() {
     assert.ok(inputBox.width>250,'窄窗口的订单输入框必须保持可用宽度');
     await page.getByRole('button',{name:'展开或收起导航'}).click();
     await page.getByRole('button',{name:'软件更新',exact:true}).click();
-    await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'检查更新',exact:true}).waitFor();
     assert.deepEqual(errors,[]);
-    fs.writeFileSync(path.join(out,'browser-verification.json'),JSON.stringify({passed:true,rowsPerPage:25,orders:83,mobile:dimensions,errors},null,2));
+    fs.writeFileSync(path.join(out,'browser-verification.json'),JSON.stringify({passed:true,rowsPerPage:25,orders:83,mobile:dimensions,embeddedModules:modules,iconMatches:true,updateInFooter:true,errors},null,2));
     console.log('浏览器验证通过：分页、搜索、详情、深色、390px 布局及更新入口。');
   } finally { await browser.close(); }
 }

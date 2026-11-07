@@ -180,6 +180,18 @@ def main():
         nonlocal exiting, installing
         while not commands.empty():
             command = commands.get()
+            if isinstance(command, tuple):
+                module, done, result = command
+                try:
+                    if exiting:
+                        raise ValueError('程序正在退出')
+                    panel.show_module(module)
+                    root.update_idletasks()
+                except Exception:
+                    result.append('业务页面加载失败，请重试')
+                finally:
+                    done.set()
+                continue
             if command == 'exit' and not exiting:
                 exiting = True
                 if console is not None:
@@ -208,7 +220,10 @@ def main():
                     console.closing = False
                 root.title(APP_TITLE)
                 tray.title = '后台库存监控'
-                root.deiconify()
+                if args.legacy_ui:
+                    root.deiconify()
+                else:
+                    console.open()
                 messagebox.showerror('暂未退出', '钉钉监控尚未确认停止，请稍后重试退出，或在“钉钉监控”页检查状态。', parent=root)
             elif command == 'show' and not exiting:
                 if console is not None and not args.legacy_ui:
@@ -216,10 +231,6 @@ def main():
                 else:
                     root.deiconify()
                     root.lift()
-            elif command.startswith('native:') and not exiting:
-                panel.show_module(command.partition(':')[2])
-                root.deiconify()
-                root.lift()
             elif command == 'install-update' and not exiting:
                 exiting = installing = True
                 console.closing = True
@@ -289,13 +300,37 @@ def main():
             start_configured_message_worker(message_controller)
         except RuntimeError as error:
             messagebox.showwarning('钉钉监控暂未启动', str(error), parent=root)
-        panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller)
+        panel = build_workspace(root, service, live=True, dingtalk_controller=message_controller, embedded=not args.legacy_ui)
         from inventory_console import InventoryConsole
-        console = InventoryConsole(service, native_action=lambda module: commands.put(
-            module if module == 'install-update' else 'native:' + module))
-        # 从原生管理窗口也可回到统一工作台，不另起库存或匹配服务。
+        def native_action(module):
+            if module == 'install-update':
+                commands.put(module)
+                return
+            done=threading.Event()
+            result=[]
+            commands.put((module,done,result))
+            if not done.wait(15):
+                raise ValueError('业务页面加载超时，请重试')
+            if result:
+                raise ValueError(result[0])
+        native_hwnd=0
+        if not args.legacy_ui:
+            # 先在屏幕外完成 Tk 控件映射，再由宿主接管显示，不暴露独立管理窗口。
+            root.overrideredirect(True)
+            root.minsize(1,1)
+            root.attributes('-alpha',0)
+            root.geometry('1080x780+-20000+-20000')
+            root.deiconify()
+            root.update()
+            user32=ctypes.windll.user32
+            user32.GetParent.restype=ctypes.c_void_p
+            user32.GetParent.argtypes=[ctypes.c_void_p]
+            user32.ShowWindow.argtypes=[ctypes.c_void_p,ctypes.c_int]
+            native_hwnd=user32.GetParent(root.winfo_id())
+            user32.ShowWindow(native_hwnd,0)
+            root.attributes('-alpha',1)
+        console = InventoryConsole(service,native_action=native_action,native_hwnd=native_hwnd)
         panel.open_console = console.open
-        tk.Button(root, text='返回统一工作台', command=console.open).pack(side='bottom', fill='x')
         service.start_source()
         from profit_monitor import ProfitMonitor, CoordinatedProfitSource
         from notification_robots import store_for_service

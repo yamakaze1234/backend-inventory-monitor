@@ -6,7 +6,7 @@ from inventory_panel import InventoryPanel
 from inventory_version import APP_TITLE
 
 
-def build_workspace(root, service, live=False, dingtalk_controller=None):
+def build_workspace(root, service, live=False, dingtalk_controller=None, embedded=False):
     from tkinter import ttk
     from inventory_panel import BG, INK, MUTED, BLUE
     from inventory_theme import install_theme
@@ -110,5 +110,9 @@ def build_workspace(root, service, live=False, dingtalk_controller=None):
             button.config(bg='#202D44' if selected else '#101720', fg='white' if selected else '#A6B3C8')
     panel.on_module_changed = page_changed
     panel.show_module('monitor')
+    if embedded:
+        # 统一工作台已提供导航和标题，嵌入内容区仅保留实际业务页面。
+        sidebar.pack_forget()
+        heading.pack_forget()
     return panel
 

@@ -90,6 +90,21 @@ class ConsoleTests(unittest.TestCase):
             self.console.action('/api/orders/action',{'action':'start'})
         self.bot.action.assert_not_called()
 
+    def test_native_page_waits_for_callback_and_rejects_unknown_module(self):
+        self.console.native_action=Mock()
+        for module in ('douyin','dingtalk','profit','daily','events','monitor','settings'):
+            with self.request('/api/native',{'module':module}) as response:
+                self.assertEqual('业务页面已就绪',json.load(response)['message'])
+            self.console.native_action.assert_called_with(module)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/native',{'module':'arbitrary'})
+        self.assertEqual(400,error.exception.code)
+        self.assertEqual(7,self.console.native_action.call_count)
+        self.console.native_action.side_effect=ValueError('模拟加载失败')
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/native',{'module':'monitor'})
+        self.assertEqual(400,error.exception.code)
+
     def test_failed_restore_is_consumed_without_crashing_or_restarting_again(self):
         from inventory_app import restore_update_services
         controller=Mock()

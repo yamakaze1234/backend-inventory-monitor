@@ -4,7 +4,7 @@
 
 ## 使用与边界
 
-启动候选程序后，在独立 WebView2 桌面窗口打开由同一进程提供的本机工作台。库存监控、订单匹配、软件更新使用 React 和 ReUI；抖店库存、钉钉监控、货源汇报、价格监控、商品管理及连接设置仍通过侧栏打开原生管理窗口。原生界面可使用 `--legacy-ui` 启动。关闭工作台窗口不停止后台；通过托盘退出程序。
+启动候选程序后，在独立 WebView2 桌面窗口打开由同一进程提供的本机工作台。库存监控、订单匹配、软件更新使用 React 和 ReUI；抖店库存、钉钉监控、货源汇报、价格监控、商品管理及连接设置通过侧栏切换到同一窗口右侧的业务内容区，复用原生业务控件，不再另开管理主窗口。原生界面可使用 `--legacy-ui` 启动。关闭工作台窗口不停止后台；通过托盘退出程序。
 
 订单页面复用 `D:\工作\匹配\抖店SKU查询\抖店SKU查询` 的原匹配后端和 `D:\工作\PythonProject\数据分析\机器人日报` 的控制入口。队列仍在 `D:\工作\匹配\巡检运行数据\群机器人`，不复制业务数据库或登录资料。因此新增功能当前依赖这台机器已有的匹配运行环境，不是可单独搬到其他电脑使用的订单机器人安装包。
 
@@ -36,6 +36,14 @@ Python 新增测试：`test_order_console.py`、`test_inventory_updater.py`；�
 
 独立工作树构建可通过 `tools/build_inventory_monitor.ps1` 的 `-DependencyRoot` 复用既有 Python 打包依赖，通过 `-IndependentRoot` 指定既有独立工具源码位置。参数只解析构建依赖，不迁移现用业务数据。
 
-ReUI 来源：[分页示例](https://reui.io/preview/base/components/c-data-grid-1?ref=mcp)、[Frame](https://reui.io/components/frame?ref=mcp)、[Badge](https://reui.io/components/badge?ref=mcp)。保留官方组件样式，业务层不添加入场动画。原生管理窗口尚未转换为 ReUI，真实 ERP 写入、群投递、生产升级通道未作为本轮隔离验证的通过项。
+ReUI 来源：[分页示例](https://reui.io/preview/base/components/c-data-grid-1?ref=mcp)、[Frame](https://reui.io/components/frame?ref=mcp)、[Badge](https://reui.io/components/badge?ref=mcp)。保留官方组件样式，业务层不添加入场动画。业务页以原生控件嵌入右侧，尚未把每个表单重写为 React，真实 ERP 写入、群投递、生产升级通道未作为本轮隔离验证的通过项。
 
 不使用电脑操作的候选包验收可传 `--console-preview-data <独立目录> --console-headless --console-preview-seconds 60`。该模式不创建窗口，自动退出，并验证包内 WebView2 宿主运行库。
+
+## 同窗业务页与图标
+
+软件更新固定在左下角导航页脚，版本号与主题切换位于其下方。业务导航选中后，右侧标题与内容同步切换，桌面宿主按内容区边界嵌入原生业务页；保留原有表单、查询和操作。旧管理侧栏与重复标题隐藏，文件选择和确认等操作仍使用相应对话框。
+
+宿主在关闭前隐藏并脱离业务控件，后台服务和表单状态保留，托盘再次打开可重新嵌入。网页切回库存、订单或更新页时隐藏原生内容；窗口尺寸、侧栏和缩放变化同步右侧边界。跨进程嵌入只接受本机主程序所属窗口，不接收网页指定的窗口句柄。实现参考 [Microsoft SetParent 文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent)。
+
+页面标识和 favicon、Tk 窗口、托盘、桌面宿主及候选 EXE 均使用 `app/ui/monitor_assets/monitor.ico`。宿主与主程序使用相同应用标识。`tools/verify_native_embedding.py` 只使用屏幕外透明的隔离控件检查尺寸同步、脱离和重开，不进行桌面点击、键盘输入或真实业务操作。

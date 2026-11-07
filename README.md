@@ -8,7 +8,7 @@ Windows 桌面工具，集中查看 ERP 库存、抖店整机 SKU 库存、补�
 
 [查看 Gitea 发行版本](https://gitea.cq360.top/CoreStudio/backend-inventory-monitor/releases) · [GitHub 备用发行源](https://github.com/yamakaze1234/backend-inventory-monitor/releases)
 
-本地开发候选：见 [订单机器人与 ReUI 工作台整合](docs/订单机器人与ReUI工作台整合.md) 和 [候选验收](docs/订单整合候选验收.md)。尚未发布。
+本地开发候选：见 [订单机器人与 ReUI 工作台整合](docs/订单机器人与ReUI工作台整合.md) 、[首轮候选验收](docs/订单整合候选验收.md) 和 [同窗业务页验收](docs/同窗业务页候选验收.md)。尚未发布。
 
 ## 文档导航
 

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { DataGridFeatures } from '@/components/reui/data-grid/data-grid';
-import { PackageSearch, ListChecks, Download, Settings, RefreshCw, Play, Pause, Moon, Sun, Boxes, Bell, ChartNoAxesCombined, ExternalLink } from 'lucide-react';
-import { Sidebar, SidebarProvider, SidebarHeader, SidebarContent, SidebarGroup, SidebarGroupLabel, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarFooter, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
+import { PackageSearch, ListChecks, Download, Settings, RefreshCw, Play, Pause, Moon, Sun, Boxes, Bell, ChartNoAxesCombined } from 'lucide-react';
+import { Sidebar, SidebarProvider, SidebarHeader, SidebarContent, SidebarGroup, SidebarGroupLabel, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarFooter, SidebarInset, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { Frame, FramePanel, FrameHeader, FrameTitle, FrameDescription } from '@/components/reui/frame';
 import { Badge } from '@/components/reui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { toast, Toaster } from 'sonner';
 import { api, useSnapshot } from './api';
 import { Records } from './Records';
+import { NativePage } from './NativePage';
 
 type Product = {sku:string; name:string; risk:string; able:number|null; stock:number|null; monitor_qty:number|null; threshold:number; enabled:boolean};
 type Inventory = {products:Product[]; enabled:boolean; connection:string; checked_at:number; source_busy:boolean};
@@ -111,14 +112,19 @@ function UpdatesPage(){
     </div></FramePanel></Frame>;
 }
 
-export default function App(){
+function ConsoleLayout(){
   const [page,setPage]=useState('inventory');
+  const {setOpenMobile}=useSidebar();
+  const navigate=(id:string)=>{setPage(id);setOpenMobile(false);};
   const [dark,setDark]=useState(()=>localStorage.getItem('console-theme')==='dark');
   const autoChecked=useRef(false);
   const info=useSnapshot<{autoCheck:boolean;version:string;native:boolean}>('/api/info',30000);
   useEffect(()=>{document.documentElement.classList.toggle('dark',dark);localStorage.setItem('console-theme',dark?'dark':'light');},[dark]);
   useEffect(()=>{if(info.data&&!autoChecked.current){autoChecked.current=true;if(info.data.autoCheck)void api('/api/update/check',{}).catch(()=>{});}},[info.data]);
-  const pages=[{id:'inventory',title:'库存监控',icon:Boxes},{id:'orders',title:'订单匹配',icon:ListChecks},{id:'updates',title:'软件更新',icon:Download}];
+  const pages=[{id:'inventory',title:'库存监控',icon:Boxes},{id:'orders',title:'订单匹配',icon:ListChecks}];
   const native=[{id:'douyin',title:'抖店库存',icon:PackageSearch},{id:'dingtalk',title:'钉钉监控',icon:Bell},{id:'profit',title:'ERP 价格监控',icon:ChartNoAxesCombined},{id:'daily',title:'货源汇报',icon:ChartNoAxesCombined},{id:'events',title:'库存提醒记录',icon:Bell},{id:'monitor',title:'管理监控商品',icon:Boxes},{id:'settings',title:'连接与通知设置',icon:Settings}];
-  return <SidebarProvider><Sidebar><SidebarHeader><div className="flex items-center gap-3 p-2"><PackageSearch className="size-7"/><div className="flex flex-col gap-0.5"><strong>后台库存监控</strong><span className="text-xs text-muted-foreground">库存 · 订单 · 运营</span></div></div></SidebarHeader><SidebarContent><SidebarGroup><SidebarGroupLabel>工作台</SidebarGroupLabel><SidebarMenu>{pages.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton aria-current={page===item.id?"page":undefined} isActive={page===item.id} onClick={()=>setPage(item.id)}><item.icon/><span>{item.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup><SidebarGroup><SidebarGroupLabel>业务管理窗口</SidebarGroupLabel><SidebarMenu>{native.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton disabled={!info.data?.native} onClick={()=>void api('/api/native',{module:item.id}).catch(e=>toast.error(e.message))}><item.icon/><span>{item.title}</span><ExternalLink className="ml-auto size-3"/></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup></SidebarContent><SidebarFooter><div className="flex items-center justify-between gap-2 p-2"><span className="text-xs text-muted-foreground">v{info.data?.version||'—'} · 本机工作台</span><Button variant="ghost" size="icon-sm" aria-label={dark?'切换浅色':'切换深色'} onClick={()=>setDark(v=>!v)}>{dark?<Sun/>:<Moon/>}</Button></div></SidebarFooter></Sidebar><SidebarInset><header className="flex items-center gap-3 border-b p-4"><SidebarTrigger aria-label="展开或收起导航"/><div className="flex flex-col gap-0.5"><h1 className="text-lg font-semibold tracking-tight">{pages.find(p=>p.id===page)?.title}</h1><p className="text-xs text-muted-foreground">统一查看状态，按任务处理异常</p></div></header><div className="min-w-0 flex-1 p-4 md:p-6">{page==='inventory'?<InventoryPage/>:page==='orders'?<OrdersPage/>:<UpdatesPage/>}</div></SidebarInset><Toaster richColors theme={dark?'dark':'light'}/></SidebarProvider>;
+  return <><Sidebar><SidebarHeader><div className="flex items-center gap-3 p-2"><img src="/app-icon.ico" alt="" className="size-8"/><div className="flex flex-col gap-0.5"><strong>后台库存监控</strong><span className="text-xs text-muted-foreground">库存 · 订单 · 运营</span></div></div></SidebarHeader><SidebarContent><SidebarGroup><SidebarGroupLabel>工作台</SidebarGroupLabel><SidebarMenu>{pages.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton aria-current={page===item.id?"page":undefined} isActive={page===item.id} onClick={()=>navigate(item.id)}><item.icon/><span>{item.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup><SidebarGroup><SidebarGroupLabel>业务管理</SidebarGroupLabel><SidebarMenu>{native.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton aria-current={page===item.id?"page":undefined} isActive={page===item.id} onClick={()=>navigate(item.id)}><item.icon/><span>{item.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup></SidebarContent><SidebarFooter><SidebarMenu><SidebarMenuItem><SidebarMenuButton aria-current={page==='updates'?"page":undefined} isActive={page==='updates'} onClick={()=>navigate('updates')}><Download/><span>软件更新</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu><div className="flex items-center justify-between gap-2 p-2"><span className="text-xs text-muted-foreground">v{info.data?.version||'—'} · 本机工作台</span><Button variant="ghost" size="icon-sm" aria-label={dark?'切换浅色':'切换深色'} onClick={()=>setDark(v=>!v)}>{dark?<Sun/>:<Moon/>}</Button></div></SidebarFooter></Sidebar><SidebarInset><header className="flex items-center gap-3 border-b p-4"><SidebarTrigger aria-label="展开或收起导航"/><div className="flex flex-col gap-0.5"><h1 className="text-lg font-semibold tracking-tight">{[...pages,...native,{id:'updates',title:'软件更新'}].find(p=>p.id===page)?.title}</h1><p className="text-xs text-muted-foreground">统一查看状态，按任务处理异常</p></div></header><div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:p-6">{page==='inventory'?<InventoryPage/>:page==='orders'?<OrdersPage/>:page==='updates'?<UpdatesPage/>:<NativePage key={page} module={page} available={!!info.data?.native}/>}</div></SidebarInset><Toaster richColors theme={dark?'dark':'light'}/></>;
 }
+
+// 导航由同一布局管理，移动侧栏选中后关闭，更新入口固定在页脚。
+export default function App(){return <SidebarProvider><ConsoleLayout/></SidebarProvider>;}

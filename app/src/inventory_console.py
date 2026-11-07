@@ -19,9 +19,10 @@ from project_paths import UI_ROOT
 
 
 class InventoryConsole:
-    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0):
+    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0, native_hwnd=0):
         self.service = service
         self.native_action = native_action
+        self.native_hwnd = native_hwnd
         self.bot = bot or OrderBotAdapter()
         self.updater = updater or InventoryUpdater(service.root)
         self.assets = Path(assets or UI_ROOT / 'console').resolve()
@@ -83,8 +84,10 @@ class InventoryConsole:
                         if route.path == '/api/info':
                             with outer.service.db() as db:
                                 auto = outer.service.get(db,'console_auto_update_check',True)
-                            return self.reply(200,dict(version=VERSION,autoCheck=auto,native=outer.native_action is not None))
+                            return self.reply(200,dict(version=VERSION,autoCheck=auto,native=bool(outer.native_hwnd)))
                         return self.reply(404,{'error':'接口不存在'})
+                    if route.path == '/app-icon.ico':
+                        return self.reply(200,(UI_ROOT/'monitor_assets/monitor.ico').read_bytes(),'image/x-icon')
                     path = (outer.assets / (route.path.lstrip('/') or 'index.html')).resolve()
                     if not path.is_relative_to(outer.assets) or not path.is_file():
                         return self.reply(404,{'error':'页面不存在，请先构建前端'})
@@ -175,7 +178,7 @@ class InventoryConsole:
             if module not in {'monitor','daily','profit','dingtalk','events','douyin','settings'} or not self.native_action:
                 raise ValueError('此运行方式不支持原生管理页')
             self.native_action(module)
-            return {'message':'已打开管理窗口'}
+            return {'message':'业务页面已就绪'}
         if path == '/api/update/preferences':
             if not isinstance(body.get('autoCheck'),bool):
                 raise ValueError('更新偏好无效')
@@ -228,7 +231,7 @@ class InventoryConsole:
         host=UI_ROOT/'console-host/InventoryConsoleHost.exe'
         if not host.is_file():
             raise ValueError('桌面窗口资源缺失，请先构建 console-host')
-        self.window=subprocess.Popen([str(host),self.url+'/#'+self.token,str(os.getpid())],
+        self.window=subprocess.Popen([str(host),self.url+'/#'+self.token,str(os.getpid()),str(self.native_hwnd)],
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
 
     def close(self):
