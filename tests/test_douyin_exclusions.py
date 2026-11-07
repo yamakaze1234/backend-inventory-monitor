@@ -12,7 +12,7 @@ from douyin_inventory import DouyinInventory
 from douyin_inventory_runtime import DouyinRuntime
 from douyin_online import FIELD_NAMES, sync_online
 from douyin_scope import MACHINE_SCOPE, product_url
-from tests.test_douyin_online import FakeTable
+from test_douyin_online import FakeTable
 
 PID='3797179547129085954'
 
@@ -79,7 +79,9 @@ class ExclusionTests(unittest.TestCase):
         own=cloud.rows[0]['recordId'];cloud.rows.append(dict(recordId='manual',cells={self.fields['备注']:'人工行'}))
         self.store.update_exclusions(self.ident,PID)
         result=sync_online(self.store,self.ident,client=cloud)
-        self.assertTrue(result['ok']);self.assertEqual(cloud.deletes,[own]);self.assertEqual(cloud.rows[0]['recordId'],'manual')
+        self.assertTrue(result['ok']);self.assertEqual(cloud.deletes,[])
+        self.assertEqual([r['recordId'] for r in cloud.rows],[own,'manual'])
+        self.assertEqual(cloud.rows[0]['cells'][self.fields['补库存标记']],'已退出提醒')
 
     def test_runtime_serializes_save_and_requests_online_sync_without_sender(self):
         runtime=object.__new__(DouyinRuntime);runtime.store=self.store;runtime.commands=queue.Queue();runtime.sync_online=Mock()

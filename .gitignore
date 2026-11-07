@@ -26,3 +26,6 @@ auth.json
 *.pem
 *.key
 !tests/fixtures/monitor_sources.json
+
+app/data/
+.verification/

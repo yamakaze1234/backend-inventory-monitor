@@ -169,7 +169,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(event['after']['purchase'],60)
         self.assertEqual(event['before']['purchase'],50)
         body=format_events([event],self.service)
-        # 通知已有颜色标签，断言可见业务文案而非标签拼接方式。
+        # 消息含颜色标签，按用户实际看到的连续文本验证。
         import re
         self.assertIn('ERP 总待入：60 件 · 仓库未确认', re.sub(r'<[^>]+>', '', body))
         self.assertNotIn('公司大库',body)

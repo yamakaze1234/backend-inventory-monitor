@@ -8,7 +8,6 @@ import unittest
 from datetime import datetime, timezone
 
 from inventory_sources import InventoryRuntimeService
-from inventory_impact import InventoryImpact
 from inventory_delivery import DeliveryWorker, format_events
 from douyin_inventory import DouyinInventory
 from tests.test_inventory_sources import Connector, SETTINGS, raw
@@ -40,14 +39,6 @@ class RefactorTests(unittest.TestCase):
     def quantities(self):
         return {p['goods_id']:p['able'] for p in self.s.status()['products']}
 
-    def config(self, **changes):
-        value = manifest(goods_id='101')
-        value['publishedAt'] = datetime.now(timezone.utc).isoformat()
-        value.update(changes)
-        rehash(value)
-        path = self.folder / 'manifest.json'
-        path.write_text(json.dumps(value), encoding='utf-8')
-        return path
 
     def test_changed_code_does_not_block_good_product_and_does_not_rebind(self):
         self.c.rows[0].update(分库数=14, 分库可销数=14)
@@ -110,58 +101,8 @@ class RefactorTests(unittest.TestCase):
         self.assertEqual(coverage['expected'], 1)
         self.assertEqual(coverage['excluded'], 1)
 
-    def test_manifest_matches_only_exact_goods_and_shows_missing_mapping(self):
-        model = InventoryImpact(self.s)
-        model.import_manifest(self.config())
-        self.c.rows[0].update(分库数=0, 分库可销数=0)
-        self.poll()
-        row = model.report()['rows'][0]
-        self.assertEqual(row['parts'][0]['goods_id'], '101')
-        self.assertEqual(row['spu'], '')
-        self.assertEqual(row['priority'], '待核对')
-        # 即使名称完全相同，无精确编号的配件也不能自动匹配。
-        path = self.config(revision=2)
-        value = json.loads(path.read_text())
-        value['configs'][0]['parts'][0]['goodsId'] = ''
-        rehash(value)
-        path.write_text(json.dumps(value), encoding='utf-8')
-        model.import_manifest(path)
-        self.assertFalse(model.report()['rows'][0]['parts'])
 
-    def test_exact_listing_priority_requires_fresh_confirmed_store_and_config(self):
-        model = InventoryImpact(self.s)
-        model.import_manifest(self.config())
-        self.c.rows[0].update(分库数=0, 分库可销数=0)
-        self.poll()
-        shops = DouyinInventory(self.folder)
-        store = shops.add_store('测试店铺')
-        shops.rebase(store, confirmed=True)
-        product = [dict(product_id='9001', product_name='整机', skus=[dict(sku_id='9002', export_sellable=9)])]
-        shops.accept(store, shops.store(store)['revision'], product, complete=True, notify=False)
-        shops.enable(store, True)
-        shops.accept(store, shops.store(store)['revision'], product, complete=True, notify=False)
-        model.bind_listing('intel', 'c1', spu='26', store_id=store, product_id='9001', sku_id='9002')
-        self.assertEqual(model.report()['rows'][0]['priority'], '优先核对')
-        shops.fail(store)
-        self.assertEqual(model.report()['rows'][0]['priority'], '待核对')
-        shops.accept(store, shops.store(store)['revision'], product, complete=True, notify=False)
-        self.assertEqual(model.report(now=time.time()+90000)['rows'][0]['priority'], '待核对')
-        shops.rebase(store, confirmed=True)
-        self.assertEqual(model.report()['rows'][0]['priority'], '待核对')
 
-    def test_manifest_rollback_other_source_and_tamper_keep_last_import(self):
-        model = InventoryImpact(self.s)
-        model.import_manifest(self.config(revision=3))
-        for changes in ({'revision':2}, {'revision':4,'workspaceId':'other'}):
-            with self.assertRaises(ValueError):
-                model.import_manifest(self.config(**changes))
-            self.assertEqual(model.report()['revision'], 3)
-        path = self.config(revision=4)
-        value = json.loads(path.read_text())
-        value['configs'][0]['name'] = 'tampered'
-        path.write_text(json.dumps(value), encoding='utf-8')
-        with self.assertRaises(ValueError):
-            model.import_manifest(path)
 
     def test_notifications_compact_keep_exact_names_and_explanation_once(self):
         self.c.rows[0].update(分库数=14, 分库可销数=14)

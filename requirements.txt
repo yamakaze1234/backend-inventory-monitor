@@ -4,3 +4,6 @@ six==1.17.0
 openpyxl==3.1.5
 et_xmlfile==2.0.0
 pymssql==2.4.1
+
+websockets==15.0.1
+pyxlsb==1.0.10

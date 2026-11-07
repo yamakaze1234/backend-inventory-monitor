@@ -1,7 +1,7 @@
 """独立浏览器的归属、迁移和下载边界测试；不访问真实店铺。"""
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 import json
 import queue
 import tempfile
@@ -118,6 +118,86 @@ class BrowserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.execute(dict(kind='browser_settings',value=dict(mode='managed',browser='edge'),open=True,reply=queue.Queue()),self.ident)
         runtime.sync_online.assert_called_once_with(self.ident)
+
+    def test_click_waits_for_missing_and_disabled_button_then_clicks_once(self):
+        # 页面尚未渲染、列表加载期间禁用，均等待条件就绪再结束。
+        worker = ManagedExportWorker(None, self.store.root/'profiles'/self.ident)
+        worker.check_shop = Mock()
+        worker.pause = Mock()
+        worker.eval = Mock(side_effect=[dict(state='waiting', reason='missing'),
+            dict(state='waiting', reason='disabled'), dict(state='clicked')])
+        worker.click('#exportSearchedGoods', '导出查询商品')
+        self.assertEqual(worker.eval.call_count, 3)
+        self.assertEqual(worker.pause.call_count, 2)
+
+    def test_click_rejects_ambiguous_or_changed_shop_without_retry(self):
+        # 不用自动重试绕过多个按钮或店铺身份变化。
+        for state in ('ambiguous', 'wrong_shop'):
+            worker = ManagedExportWorker(None, self.store.root/'profiles'/self.ident)
+            worker.check_shop, worker.pause = Mock(), Mock()
+            worker.eval = Mock(return_value=dict(state=state))
+            with self.assertRaises(ValueError):
+                worker.click('#exportSearchedGoods', '导出查询商品')
+            worker.eval.assert_called_once()
+            worker.pause.assert_not_called()
+
+    def test_click_timeout_explains_disabled_state(self):
+        worker = ManagedExportWorker(None, self.store.root/'profiles'/self.ident)
+        worker.check_shop, worker.pause = Mock(), Mock()
+        worker.eval = Mock(return_value=dict(state='waiting', reason='disabled'))
+        with self.assertRaisesRegex(ValueError, '控件仍被禁用'):
+            worker.click('#exportSearchedGoods', '导出查询商品', seconds=0)
+        worker.pause.assert_not_called()
+
+    def test_cold_start_timeout_retries_same_owned_browser(self):
+        browser = ShopBrowser(self.store.root, self.ident, 'chrome')
+        browser.state = dict(port=9222, browser_id='owned-browser', page='own-page')
+        url = 'ws://127.0.0.1:9222/devtools/browser/owned-browser'
+        browser.read = Mock(side_effect=[TimeoutError('启动暂时繁忙'), dict(webSocketDebuggerUrl=url)])
+        with patch('douyin_browser.time.sleep'):
+            self.assertEqual(browser.running(), url)
+        self.assertEqual(browser.read.call_count, 2)
+
+    def test_close_uses_only_verified_dedicated_browser_and_preserves_login(self):
+        browser = ShopBrowser(self.store.root, self.ident, 'chrome')
+        browser.state = dict(port=9222, browser_id='owned-browser', page='owned-page')
+        browser.running = Mock(side_effect=['ws://127.0.0.1:9222/devtools/browser/owned-browser', None])
+        browser.save = Mock()
+        with patch('douyin_browser.CdpChannel') as channel:
+            browser.close_after_collection()
+            channel.return_value.__enter__.return_value.command.assert_called_once_with('Browser.close', timeout=5)
+        self.assertEqual(browser.state, {})
+        browser.save.assert_called_once()
+
+    def test_close_refuses_reused_browser_port(self):
+        browser = ShopBrowser(self.store.root, self.ident, 'chrome')
+        browser.running = Mock(side_effect=ValueError('端口已被其他浏览器占用'))
+        with patch('douyin_browser.CdpChannel') as channel:
+            with self.assertRaises(ValueError):
+                browser.close_after_collection()
+            channel.assert_not_called()
+
+    def test_collect_closes_only_after_successful_snapshot_acceptance(self):
+        runtime = object.__new__(DouyinRuntime)
+        runtime.store = MagicMock()
+        runtime.store.store.return_value = dict(confirmed=True, name='测试店铺', revision=1, status='查询成功')
+        runtime.validate_connection = Mock()
+        runtime.stop_event = Mock(); runtime.stop_event.is_set.return_value = False
+        runtime.notification_ready = Mock(return_value=False)
+        runtime.notify_current = Mock()
+        worker = Mock(); worker.call.return_value = dict(products=[], complete=True)
+        runtime.worker = Mock(return_value=worker); runtime.workers = {self.ident: worker}
+        order = []
+        runtime.store.accept.side_effect = lambda *a, **k: order.append('accept')
+        worker.finish_collection.side_effect = lambda: order.append('close')
+        runtime.sync_online = Mock(side_effect=lambda *a: order.append('sync') or dict(ok=True))
+        runtime.collect(self.ident)
+        self.assertEqual(order, ['accept', 'close', 'sync'])
+        worker.finish_collection.reset_mock()
+        worker.call.side_effect = ValueError('采集失败，需要保留现场')
+        with self.assertRaises(ValueError):
+            runtime.collect(self.ident)
+        worker.finish_collection.assert_not_called()
 
     def test_download_ignores_other_frame_and_requires_completion(self):
         worker = ManagedExportWorker(None, self.store.root/'profiles'/self.ident)

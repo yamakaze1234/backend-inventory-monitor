@@ -6,11 +6,11 @@ from suhao_cost_monitor import build_payload, should_forward
 
 class SuhaoCostMonitorTests(unittest.TestCase):
     def test_reopen_title_requires_suhao_and_reopen_content(self):
-        for sender in ('示例供货员', '示例采购员', '示例运营员', ''):
+        for sender in ('苏豪', '彭旭', '唐福建', ''):
             for content in ('重开成本表', '重新开表', '成本表重新开', '成本重新开', '成本没调整，主要是发库存数量给大家参考', '已到货', '价格更新'):
                 with self.subTest(sender=sender, content=content):
                     payload = build_payload(dict(sender=sender, text=content, messageId='private-id-123'))
-                    expected = sender == '示例供货员' and content in ('重开成本表', '重新开表', '成本表重新开', '成本重新开')
+                    expected = sender == '苏豪' and content in ('重开成本表', '重新开表', '成本表重新开', '成本重新开')
                     self.assertEqual('重开成本表' in payload['markdown']['title'], expected)
                     title = '价格调整｜重开成本表' if expected else '货源情况'
                     self.assertEqual(payload['markdown']['title'], title)
@@ -20,7 +20,7 @@ class SuhaoCostMonitorTests(unittest.TestCase):
 
     def test_tang_arrival_message_is_supply_information(self):
         text = '@所有人 Z890 AORUS MASTER AI TOP 已经到货'
-        payload = build_payload(dict(sender='示例运营员', conversationName='示例运营群', text=text))
+        payload = build_payload(dict(sender='唐福建', conversationName='运营组大群', text=text))
         self.assertEqual(payload['markdown']['title'], '货源情况')
         self.assertNotIn('价格调整', payload['markdown']['text'])
         self.assertIn(text, payload['markdown']['text'])
@@ -61,7 +61,7 @@ class SuhaoCostMonitorTests(unittest.TestCase):
         payload = build_payload(
             {
                 "conversationId": "target-group",
-                "sender": "示例供货员",
+                "sender": "苏豪",
                 "createTime": "2026-09-08 14:05:18",
                 "messageId": "m-3",
                 "text": "重新开表 先按4300核算",

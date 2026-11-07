@@ -1,5 +1,4 @@
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 from source_monitor_supervisor import Supervisor, has_dingtalk
 from suhao_cost_monitor import should_forward, build_payload
@@ -20,11 +19,14 @@ class FakeWorker:
 
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
-        # Synthetic sources keep regression tests independent of local accounts.
-        fixture_root = Path(__file__).parent / 'fixtures'
-        self.root_patch = patch('source_monitor_supervisor.ROOT', fixture_root)
-        self.root_patch.start()
-        self.addCleanup(self.root_patch.stop)
+        # 使用模拟来源验证订阅隔离，不依赖开发电脑的真实配置。
+        import json
+        from monitor_setup_service import DEFAULT_ROWS
+        rows = [dict(row, GroupId=f'group-{i}', SenderId=f'user-{i}', State=f'state-{i}')
+                for i, row in enumerate(DEFAULT_ROWS)]
+        reader = patch('source_monitor_supervisor.Path.read_text', return_value=json.dumps(rows))
+        reader.start()
+        self.addCleanup(reader.stop)
 
     def test_windowless_start_does_not_require_stdin(self):
         import source_monitor_supervisor as module
@@ -33,11 +35,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(len(sources), 4)
         self.assertTrue(all(s['GroupId'] and s['SenderId'] for s in sources))
 
-    def test_sender_keeps_both_groups_with_independent_deduplication(self):
+    def test_pengxu_keeps_both_groups_with_independent_deduplication(self):
         from source_monitor_supervisor import load_sources
         sources = load_sources()
-        sender_sources = [s for s in sources if s.get('SenderName') == '示例采购员']
-        self.assertEqual({s['GroupName'] for s in sender_sources}, {'示例整机业务群', '示例销售协同群'})
+        pengxu = [s for s in sources if s.get('SenderName') == '示例采购员']
+        self.assertEqual({s['GroupName'] for s in pengxu}, {'示例整机业务群', '示例销售协同群'})
         self.assertEqual(len({s['State'] for s in sources}), len(sources))
 
     def test_waits_then_starts_once_and_recovers_dead_worker(self):

@@ -43,6 +43,54 @@ class CacheTests(unittest.TestCase):
         archive=json.loads(next(self.trash.glob('*.json')).read_text('utf-8'))
         self.assertEqual(len(archive['records']),3)
 
+    def export_fixture(self):
+        """三份有归档凭据的导出：历史、当前和最新；另含未完成下载。"""
+        import hashlib, os
+        from douyin_inventory import DouyinInventory
+        store = DouyinInventory(self.root); ident = store.add_store('缓存测试店')
+        folder = store.root/'exports'/ident; folder.mkdir(parents=True)
+        downloads = store.root/'managed-downloads'/ident; downloads.mkdir(parents=True)
+        groups = []
+        for i in range(1,4):
+            target = folder/f'2026010{i}_120000_abcdef.xlsx'
+            raw = downloads/(str(i)*32+'.xlsx')
+            data = ('导出'+str(i)).encode()
+            target.write_bytes(data); raw.write_bytes(data)
+            evidence = target.with_suffix('.json')
+            evidence.write_text(json.dumps(dict(file=str(target),download_file=str(raw),sha256=hashlib.sha256(data).hexdigest())),encoding='utf-8')
+            for path in (target,raw,evidence):os.utime(path,(self.old,self.old))
+            groups.append((target,raw,evidence))
+        unfinished = downloads/('f'*32+'.crdownload');unfinished.write_bytes(b'partial')
+        with store.db() as db:
+            db.execute('UPDATE stores SET export_file=? WHERE id=?',(str(groups[1][0]),ident))
+            db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)',('manual-note','保留备注'))
+        return store, ident, groups, unfinished
+
+    def test_history_export_cache_recycles_only_verified_old_files(self):
+        store,ident,groups,unfinished = self.export_fixture()
+        plan = preview(self.service,0,now=self.now)
+        self.assertEqual({x['path'] for x in plan['files']},{str(x.resolve()) for x in groups[0]})
+        result = execute(self.service,plan,recycler=self.recycle)
+        self.assertEqual(result['recycled_files'],3)
+        self.assertTrue(all(x.exists() for group in groups[1:] for x in group))
+        self.assertTrue(unfinished.exists())
+        with store.db() as db:
+            self.assertEqual(db.execute('SELECT value FROM preferences WHERE key=?',('manual-note',)).fetchone()[0],'保留备注')
+
+    def test_export_becoming_current_after_preview_is_preserved(self):
+        store,ident,groups,_ = self.export_fixture()
+        plan = preview(self.service,0,now=self.now)
+        with store.db() as db:db.execute('UPDATE stores SET export_file=? WHERE id=?',(str(groups[0][0]),ident))
+        result = execute(self.service,plan,recycler=self.recycle)
+        self.assertEqual(result['recycled_files'],0)
+        self.assertTrue(all(x.exists() for x in groups[0]))
+
+    def test_modified_history_workbook_and_unowned_download_are_preserved(self):
+        _,_,groups,_ = self.export_fixture()
+        groups[0][0].write_bytes(b'user-edited')
+        plan = preview(self.service,0,now=self.now)
+        self.assertEqual(plan['files'],[])
+
     def test_recycle_failure_prevents_database_deletion(self):
         def fail(path): raise OSError('no recycle bin')
         result=execute(self.service,preview(self.service,30,now=self.now),recycler=fail)

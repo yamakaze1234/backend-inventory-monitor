@@ -124,7 +124,7 @@ class MultiShopTests(unittest.TestCase):
 
     def test_removed_shop_cloud_cleanup_preserves_other_shops_and_manual_rows(self):
         import json
-        from tests.test_douyin_online import FakeTable
+        from test_douyin_online import FakeTable
         from douyin_online import FIELD_NAMES, sync_online
         first, second = self.shops(2)
         fields = {name:'f' + str(i) for i,name in enumerate(FIELD_NAMES)}
@@ -137,8 +137,9 @@ class MultiShopTests(unittest.TestCase):
         self.store.remove_store(first)
         result = sync_online(self.store, first, client=cloud)
         self.assertTrue(result['ok'])
-        self.assertEqual(cloud.deletes, ['own'])
-        self.assertEqual([r['recordId'] for r in cloud.rows], ['other','manual'])
+        self.assertEqual(cloud.deletes, [])
+        self.assertEqual([r['recordId'] for r in cloud.rows], ['own','other','manual'])
+        self.assertEqual(cloud.rows[0]['cells'][fields['补库存标记']], '已退出提醒')
 
     def test_profiles_cannot_be_shared_and_unready_stores_are_skipped(self):
         first, second = self.shops(2)

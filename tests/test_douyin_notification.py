@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from douyin_inventory import DouyinInventory
 from douyin_notification import deliver_current, delivery_label
 from notification_robots import RobotStore
-from tests.test_douyin_restock import item
+from test_douyin_restock import item
 
 
 class NotificationTests(unittest.TestCase):
