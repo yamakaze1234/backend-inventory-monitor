@@ -2,8 +2,49 @@
 import tkinter as tk
 from tkinter import ttk
 
-BG, INK, MUTED, BLUE = '#F1F5FB', '#223550', '#586D8C', '#285EB9'
-BORDER = '#C3D3EB'
+# 中性底色减少长时间看表的视觉负担，蓝色仅用于操作和当前导航。
+BG, INK, MUTED, BLUE = '#F5F6F8', '#182230', '#617083', '#2563EB'
+BORDER = '#DFE4EB'
+
+
+def inherit_surface(event):
+    """统一所有页面和弹窗的 ttk 背景，消除灰底上的白色文字块与工具栏断层。"""
+    widget = event.widget
+    base = widget.winfo_class()
+    if base not in ('TFrame', 'TLabel', 'TCheckbutton', 'TRadiobutton'):
+        return
+    chosen = str(widget.cget('style'))
+    if chosen and chosen != base and not chosen.startswith('SurfaceAuto'):
+        return
+    parent = widget.master
+    style = ttk.Style(widget)
+    color = BG
+    while parent is not None:
+        if isinstance(parent, ttk.Notebook):
+            color = 'white'
+            break
+        if 'bg' in parent.keys():
+            color = parent.cget('bg')
+            break
+        if isinstance(parent, ttk.Frame):
+            parent_style = str(parent.cget('style'))
+            if parent_style and parent_style != 'TFrame':
+                color = style.lookup(parent_style, 'background') or BG
+                break
+        parent = getattr(parent, 'master', None)
+    token = ''.join(f'{c // 257:02x}' for c in widget.winfo_rgb(color))
+    name = f'SurfaceAuto{token}.{base}'
+    # 同色控件共用一次样式注册，避免映射每个控件都广播全窗口主题变化。
+    root = widget._root()
+    registered = getattr(root, '_surface_styles', set())
+    if name not in registered:
+        style.configure(name, background=color)
+        if base in ('TCheckbutton', 'TRadiobutton'):
+            style.map(name, background=[('active', color), ('!active', color)])
+        registered.add(name)
+        root._surface_styles = registered
+    if chosen != name:
+        widget.configure(style=name)
 
 
 def sync_tree(tree, rows):
@@ -42,6 +83,9 @@ def install_theme(widget):
             tree.yview_scroll(steps, 'units')
         return 'break'
     root.bind_class('Treeview', '<MouseWheel>', tree_wheel)
+    # 通过映射事件覆盖延迟创建的功能页与设置弹窗，业务页不再各自维护底色。
+    for kind in ('TFrame', 'TLabel', 'TCheckbutton', 'TRadiobutton'):
+        root.bind_class(kind, '<Map>', inherit_surface, add='+')
     style = ttk.Style(root)
     style.theme_use('clam')
     style.configure('.', font=('Microsoft YaHei UI', 10), background='white', foreground=INK)
@@ -53,7 +97,7 @@ def install_theme(widget):
         style.map(name, bordercolor=[('focus', BLUE)],
                   fieldbackground=[('readonly', '#F5F6FA'), ('disabled', '#F5F6FA')],
                   foreground=[('disabled', MUTED)])
-    style.configure('TButton', padding=(14, 9), borderwidth=0, relief='flat',
+    style.configure('TButton', padding=(12, 8), borderwidth=0, relief='flat',
                     background='#EFF4FC', foreground=INK)
     style.map('TButton', background=[('disabled', '#F1F3F7'), ('active', '#E3EDFC')],
               foreground=[('disabled', '#9AA4B3')])
@@ -113,13 +157,17 @@ def install_theme(widget):
     style.configure('TLabelframe.Label', background='white', foreground=INK,
                     font=('Microsoft YaHei UI', 11, 'bold'))
     style.configure('TNotebook', background='white', borderwidth=0, bordercolor='white', lightcolor='white', darkcolor='white')
-    style.configure('TNotebook.Tab', padding=(16, 9), background=BG, foreground=MUTED)
+    style.configure('TNotebook.Tab', padding=(16, 8), background=BG, foreground=MUTED)
     style.map('TNotebook.Tab', background=[('selected', 'white')], foreground=[('selected', BLUE)])
     style.layout('Page.TNotebook.Tab', [])
-    style.configure('Treeview', background='white', fieldbackground='white', rowheight=38,
+    style.configure('Treeview', background='white', fieldbackground='white', rowheight=36,
                     borderwidth=0, relief='flat', bordercolor=BORDER, font=('Microsoft YaHei UI', 10))
     style.configure('Treeview.Heading', background='#F6F7FA', foreground=MUTED,
-                    font=('Microsoft YaHei UI', 9, 'bold'), relief='flat', padding=(10, 10))
+                    font=('Microsoft YaHei UI', 10, 'bold'), relief='flat', padding=(10, 8))
+    # 未使用自绘滚动条的旧页面也采用一致的窄滚动条。
+    for name in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
+        style.configure(name, background='#C2CBD9', troughcolor='#F5F6F8', borderwidth=0,
+                        arrowsize=12, bordercolor='#F5F6F8', lightcolor='#F5F6F8', darkcolor='#F5F6F8')
     style.map('Treeview', background=[('selected', '#E7EFFD')], foreground=[('selected', '#1E4F9B')])
     style.map('Treeview.Heading', background=[('active', '#ECEFF5')])
     root._inventory_theme_ready = True
@@ -184,7 +232,12 @@ class RoundedButton(tk.Button):
     def _paint(self):
         from tkinter import font
         from PIL import Image, ImageDraw, ImageTk
-        face = font.Font(self, font=self.cget('font'))
+        # 缓存字体对象；每次刷新都创建/销毁命名字体会触发 Tk 的字体重排。
+        font_spec = str(self.cget('font'))
+        if getattr(self, '_font_spec', None) != font_spec:
+            self._font_spec = font_spec
+            self._measure_font = font.Font(self, font=font_spec)
+        face = self._measure_font
         lines = str(self.cget('text')).splitlines() or ['']
         width = max(face.measure(line) for line in lines) + 2 * int(self._padx) + 2
         height = face.metrics('linespace') * len(lines) + 2 * int(self._pady) + 2

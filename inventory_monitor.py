@@ -196,7 +196,7 @@ class InventoryService(WarehouseLookups):
     def accept_auxiliary_observations(self, db, rows, details, scope):
         pass
 
-    def accept_snapshot(self, check_id, rows, *, scope, warehouse='公司大库', complete=True, observed_at=None, journals=None, warehouse_details=None, config_revision=None, preserve_catalog=False):
+    def accept_snapshot(self, check_id, rows, *, scope, warehouse='公司大库', complete=True, observed_at=None, journals=None, warehouse_details=None, config_revision=None, preserve_catalog=False, coverage=None):
         observed = time.time() if observed_at is None else quantity(observed_at)
         if not complete or warehouse != '公司大库' or not scope or not check_id or not isinstance(rows, list):
             raise ValueError('库存检查不完整或公司大库身份不匹配，已保留上次数据。')
@@ -270,6 +270,9 @@ class InventoryService(WarehouseLookups):
                 db.execute('DELETE FROM catalog')
             db.executemany('INSERT OR REPLACE INTO catalog VALUES (?,?)', [(sku, json.dumps(r, ensure_ascii=False)) for sku, r in mapped.items()])
             db.execute('INSERT INTO checks VALUES (?,?)', (check_id, observed))
+            # 覆盖统计与库存快照同一事务提交，避免失败轮次显示为检查成功。
+            if coverage is not None:
+                self.put(db, 'check_coverage', dict(coverage, checked_at=observed, scope=scope))
             for key, value in dict(scope=scope, checked_at=observed, next_check=observed+self.get(db, 'interval_seconds', 7200),
                                    last_skus=sorted(valid_skus), heartbeat=time.time(), connection_error='',
                                    inbound_verified=journals is not None).items():

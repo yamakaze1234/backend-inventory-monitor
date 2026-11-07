@@ -49,7 +49,7 @@ def run(output_directory):
         try:
             panel = build_workspace(root, service, live=True, dingtalk_controller=controller)
             assert panel.version_label.cget('text') == APP_TITLE
-            for module in ('monitor', 'search', 'config', 'settings', 'daily', 'dingtalk'):
+            for module in ('monitor', 'search', 'config', 'settings', 'daily', 'dingtalk', 'profit'):
                 panel.show_module(module)
                 root.update()
                 ImageGrab.grab(window=int(root.frame(), 16)).save(output / f'frozen-page-{module}.png')
@@ -147,7 +147,9 @@ def run(output_directory):
             ImageGrab.grab(window=int(root.frame(), 16)).save(output / 'frozen-settings.png')
             if errors:
                 raise RuntimeError('; '.join(errors))
-            (output / 'frozen-ui-check.json').write_text(json.dumps(dict(passed=True, pages=6,
+            (output / 'frozen-ui-check.json').write_text(json.dumps(dict(passed=True, pages=7, profit_page=True,
                 wizard=True, robot_pause_resume=True, robot_editor=True, warehouse_settings=True, warehouse_qty=20, product_import=True, batch_remove=True, report_preview=True, cache_cleanup=True, inventory_only_no_message_worker=True, erp_outage_one_shot=True, live_services=False), ensure_ascii=False, indent=2), encoding='utf-8')
         finally:
+            if hasattr(service, 'profit_monitor'):
+                service.profit_monitor.stop()
             root.destroy()

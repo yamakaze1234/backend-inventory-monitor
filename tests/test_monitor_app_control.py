@@ -40,7 +40,7 @@ class MonitorControlTests(unittest.TestCase):
     def test_current_worker_is_not_restarted(self):
         import monitor_app_control as module
         controller = module.Controller({'workspace': '.', 'portable': True})
-        snapshot = {'pid': 4, 'heartbeat': 100, 'robot_protocol': 1, 'enabled': True}
+        snapshot = {'pid': 4, 'heartbeat': 100, 'robot_protocol': 2, 'enabled': True}
         with patch.object(module, 'read_json', return_value=snapshot), patch.object(module.time, 'time', return_value=100), \
                 patch.object(module, 'is_process_alive', return_value=True), patch.object(controller, 'stop') as stop, \
                 patch.object(controller, 'ensure_task') as launch:
@@ -58,7 +58,8 @@ class MonitorControlTests(unittest.TestCase):
     def test_legacy_worker_waits_for_fresh_pause_and_dead_children(self):
         import monitor_app_control as module
         controller = module.Controller({'workspace': '.', 'portable': True})
-        legacy = {'pid': 4, 'heartbeat': 99, 'enabled': True, 'sources': []}
+        # 已支持旧 Webhook 路由的后台，也必须升级到企业机器人协议。
+        legacy = {'pid': 4, 'heartbeat': 99, 'robot_protocol': 1, 'enabled': True, 'sources': []}
         stale = dict(legacy, heartbeat=99, enabled=False)
         live = dict(legacy, heartbeat=101, enabled=False, sources=[{'pid': 5}])
         paused = dict(legacy, heartbeat=102, enabled=False)

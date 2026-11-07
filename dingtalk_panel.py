@@ -15,7 +15,7 @@ class DingTalkPanel(tk.Frame):
         self.busy = False
         self.wizard = None
         self.after_id = None
-        self.status_label = tk.Label(self, text='正在读取钉钉状态', bg='white', fg='#141923', font=('Microsoft YaHei UI', 16, 'bold'))
+        self.status_label = tk.Label(self, text='正在读取钉钉状态', bg='white', fg=INK, font=('Microsoft YaHei UI', 11, 'bold'))
         self.status_label.pack(anchor='w', pady=(0, 8))
         self.hint = tk.StringVar(self, '沿用现有消息来源和机器人配置。')
         hint_label = tk.Label(self, textvariable=self.hint, bg='white', fg=MUTED, anchor='w', justify='left')
@@ -24,7 +24,7 @@ class DingTalkPanel(tk.Frame):
         actions = tk.Frame(self, bg='white')
         actions.pack(side='bottom', fill='x', pady=(16, 0))
         self.buttons = []
-        for title, command in [('启动钉钉监控', lambda: self.action('start')), ('停止钉钉监控', lambda: self.action('stop')), ('一键配置', self.configure_sources), ('管理机器人', self.manage_robots)]:
+        for title, command in [('启动钉钉监控', lambda: self.action('start')), ('停止钉钉监控', lambda: self.action('stop')), ('一键配置', self.configure_sources)]:
             control = button(actions, title, command, primary=not self.buttons)
             control.pack(side='left', padx=(0, 10))
             self.buttons.append(control)
@@ -60,13 +60,6 @@ class DingTalkPanel(tk.Frame):
                 self.events.put('操作未完成，请检查钉钉客户端及一键配置。')
         threading.Thread(target=work, daemon=True).start()
 
-    def manage_robots(self):
-        from notification_robot_ui import open_robot_manager
-        if getattr(self, 'robot_window', None) is not None and self.robot_window.winfo_exists():
-            self.robot_window.lift()
-            return
-        self.robot_window = open_robot_manager(self, self.controller.root)
-
     def configure_sources(self):
         from monitor_setup_wizard import SetupWizard
         if self.wizard is not None and not self.wizard.closed:
@@ -75,6 +68,10 @@ class DingTalkPanel(tk.Frame):
         self.wizard = SetupWizard(self.winfo_toplevel(), self.controller)
 
     def refresh(self):
+        # 手动刷新和定时刷新共用一个计时器，避免反复切页累积轮询。
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
         if not self.winfo_ismapped():
             self.after_id = self.after(500, self.refresh)
             return

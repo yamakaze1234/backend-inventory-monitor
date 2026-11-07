@@ -158,6 +158,51 @@ class RobotsTest(unittest.TestCase):
             self.add('部门一', ['inventory', 'daily'])
         self.add('部门一', ['daily'])
 
+    def enterprise(self, **kwargs):
+        # 全部为离线标识，网络调用必须通过测试替身。
+        target = dict(profile='corp:user', group_id='cidfixture', group_name='样例群',
+                      robot_code='dingfixture', robot_name='样例企业机器人')
+        return self.store.save('企业机器人', channels=['inventory'], mode='enterprise', enterprise=target, **kwargs)
+
+    def test_enterprise_defaults_paused_and_keeps_legacy_schema(self):
+        ident = self.enterprise()
+        self.assertFalse(self.store.list_robots()[0]['enabled'])
+        with self.store.db() as db:
+            self.assertEqual(len(db.execute('PRAGMA table_info(robots)').fetchall()), 8)
+            self.assertEqual(db.execute('SELECT length(secret) FROM robots WHERE id=?', (ident,)).fetchone()[0], 0)
+        with patch('notification_enterprise.send_enterprise') as send:
+            result = self.store.send('inventory','paused',{},self.now)
+        send.assert_not_called()
+        self.assertEqual(result['status'], 'skipped')
+
+    def test_mixed_delivery_routes_and_unknown_is_not_retried(self):
+        self.add(channels=['inventory']); self.enterprise(enabled=True)
+        with patch('notification_enterprise.send_enterprise', return_value={'status':'unknown'}) as enterprise, \
+                patch('notification_robots.send_encrypted', return_value={'status':'sent'}) as webhook:
+            result = self.store.send('inventory','mixed',{},self.now)
+            self.store.send('inventory','mixed',{},self.now)
+            self.assertEqual(result['status'],'partial')
+            enterprise.assert_called_once(); webhook.assert_called_once()
+            self.assertEqual(enterprise.call_args.args[0]['group_id'],'cidfixture')
+
+    def test_enterprise_duplicate_and_mode_change_rejected(self):
+        ident=self.enterprise()
+        with self.assertRaises(ValueError): self.enterprise()
+        with self.assertRaises(ValueError): self.store.save('改成地址',channels=['inventory'],robot_id=ident)
+        self.store.delete(ident)
+        with self.store.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM enterprise_robots').fetchone()[0],0)
+
+    def test_enterprise_edit_target_cancels_old_pending_epoch(self):
+        ident=self.enterprise(enabled=True)
+        old=self.store.list_robots()[0]
+        target={**old['enterprise'],'group_id':'cidsecond','group_name':'另一个群'}
+        with patch('notification_robots.time.time', return_value=self.now+10):
+            self.store.save('企业机器人',channels=['inventory'],robot_id=ident,enabled=True,mode='enterprise',enterprise=target)
+        with patch('notification_enterprise.send_enterprise') as send:
+            result=self.store.send('inventory','old',{},self.now)
+        send.assert_not_called(); self.assertEqual(result['status'],'skipped')
+
     def test_daily_runtime_fans_out_and_does_not_repeat_slot(self):
         from inventory_daily import run_once, save_settings, TZ
         from datetime import datetime

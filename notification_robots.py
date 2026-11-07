@@ -12,7 +12,8 @@ import sqlite3
 import time
 import uuid
 
-CHANNELS = {'inventory': '库存提醒', 'daily': '货源日报', 'messages': '钉钉货源消息'}
+CHANNELS = {'inventory': '库存提醒', 'douyin_inventory': '抖店补库存提醒（单独启用）',
+            'daily': '货源日报', 'messages': '钉钉货源消息', 'profit': 'ERP 单价累计涨跌 100 元提醒'}
 
 
 class RobotStore:
@@ -22,6 +23,8 @@ class RobotStore:
         self.path = self.root / 'notification_robots.sqlite3'
         with self.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS enterprise_robots (
+                    robot TEXT PRIMARY KEY, target TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS robots (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, secret BLOB NOT NULL,
                     enabled INTEGER NOT NULL, channels TEXT NOT NULL,
@@ -88,10 +91,19 @@ class RobotStore:
 
     def list_robots(self):
         with self.db() as db:
-            return [dict(id=r[0], name=r[1], enabled=bool(r[2]), channels=json.loads(r[3]))
-                    for r in db.execute('SELECT id,name,enabled,channels FROM robots WHERE deleted=0 ORDER BY rowid')]
+            # 独立表保存企业目标，不改变旧后台仍在使用的 robots 表列数。
+            return [dict(id=r[0], name=r[1], enabled=bool(r[2]), channels=json.loads(r[3]),
+                         mode='enterprise' if r[4] else 'webhook', enterprise=json.loads(r[4]) if r[4] else None)
+                    for r in db.execute('SELECT r.id,r.name,r.enabled,r.channels,e.target FROM robots r '
+                                        'LEFT JOIN enterprise_robots e ON r.id=e.robot WHERE r.deleted=0 ORDER BY r.rowid')]
 
-    def save(self, name, webhook='', channels=None, robot_id=None, enabled=True):
+    def save(self, name, webhook='', channels=None, robot_id=None, enabled=None, *, mode='webhook', enterprise=None):
+        if mode not in ('webhook', 'enterprise'):
+            raise ValueError('未知机器人类型。')
+        enabled = mode == 'webhook' if enabled is None else bool(enabled)
+        if mode == 'enterprise':
+            from notification_enterprise import validate_target
+            enterprise = validate_target(enterprise)
         name = str(name).strip()
         channels = sorted(set(channels or []))
         if not name or len(name) > 60:
@@ -99,7 +111,7 @@ class RobotStore:
         if not channels or any(c not in CHANNELS for c in channels):
             raise ValueError('请至少选择一种通知。')
         encrypted = None
-        if webhook.strip():
+        if mode == 'webhook' and webhook.strip():
             from monitor_setup_service import validate_webhook
             from monitor_secret_store import protect
             validate_webhook(webhook)
@@ -110,18 +122,27 @@ class RobotStore:
             old = db.execute('SELECT secret,enabled,since,fingerprint FROM robots WHERE id=? AND deleted=0', (robot_id,)).fetchone()
             if robot_id is not None and old is None:
                 raise ValueError('机器人不存在，请刷新列表。')
-            if old is None and encrypted is None:
+            existing_enterprise = db.execute('SELECT target FROM enterprise_robots WHERE robot=?', (robot_id,)).fetchone()
+            if old and bool(existing_enterprise) != (mode == 'enterprise'):
+                raise ValueError('编辑时不能更换机器人类型，请另行添加。')
+            if mode == 'webhook' and old is None and encrypted is None:
                 raise ValueError('新增机器人需要填写完整 Webhook 地址。')
+            target_changed = mode == 'enterprise' and (not existing_enterprise or json.loads(existing_enterprise[0]) != enterprise)
             since = json.loads(old[2]) if old else {}
-            since = {c: since.get(c, now) if old and old[1] and enabled and encrypted is None else now for c in channels}
+            since = {c: since.get(c, now) if old and old[1] and enabled and encrypted is None and not target_changed else now for c in channels}
             ident = robot_id or uuid.uuid4().hex
-            fingerprint = hashlib.sha256(webhook.strip().encode()).hexdigest() if encrypted is not None else old[3]
+            if mode == 'enterprise':
+                fingerprint = 'enterprise:' + hashlib.sha256(json.dumps([enterprise[k] for k in ('profile','group_id','robot_code')]).encode()).hexdigest()
+            else:
+                fingerprint = hashlib.sha256(webhook.strip().encode()).hexdigest() if encrypted is not None else old[3]
             for other_id, scopes, other_fingerprint in db.execute('SELECT id,channels,fingerprint FROM robots WHERE deleted=0'):
                 if other_id != ident and fingerprint and fingerprint == other_fingerprint and set(channels).intersection(json.loads(scopes)):
                     raise ValueError('同一机器人已接收所选通知，请编辑已有机器人，避免重复推送。')
             db.execute('INSERT OR REPLACE INTO robots VALUES (?,?,?,?,?,?,0,?)',
-                       (ident, name, encrypted if encrypted is not None else old[0], int(bool(enabled)),
+                       (ident, name, b'' if mode == 'enterprise' else encrypted if encrypted is not None else old[0], int(bool(enabled)),
                         json.dumps(channels), json.dumps(since), fingerprint))
+            if mode == 'enterprise':
+                db.execute('INSERT OR REPLACE INTO enterprise_robots VALUES (?,?)', (ident, json.dumps(enterprise, ensure_ascii=False)))
         return ident
 
     def set_enabled(self, robot_id, enabled):
@@ -137,13 +158,14 @@ class RobotStore:
         # Logical removal keeps delivery receipts and migration tombstones.
         with self.db() as db:
             db.execute("UPDATE robots SET deleted=1,enabled=0,secret=x'' WHERE id=?", (robot_id,))
+            db.execute('DELETE FROM enterprise_robots WHERE robot=?', (robot_id,))
 
     def recent_receipts(self, limit=30):
         with self.db() as db:
             return [dict(channel=r[0], name=r[1], status='unknown' if r[2] == 'sending' and time.time() - r[3] > 60 else r[2], at=r[3]) for r in db.execute(
                 'SELECT channel,name,status,updated FROM receipts ORDER BY updated DESC LIMIT ?', (limit,))]
 
-    def send(self, channel, job, payload, occurred_at, transport=None):
+    def send(self, channel, job, payload, occurred_at, transport=None, recipient_ids=None):
         if channel not in CHANNELS:
             raise ValueError('未知通知类型。')
         transport = transport or send_encrypted
@@ -154,6 +176,8 @@ class RobotStore:
                 db.execute('INSERT INTO jobs VALUES (?,?,?)', (channel, job, occurred_at))
                 for ident, name, enabled, scopes, since in db.execute(
                         'SELECT id,name,enabled,channels,since FROM robots WHERE deleted=0').fetchall():
+                    if recipient_ids is not None and ident not in recipient_ids:
+                        continue
                     epochs = json.loads(since)
                     if channel not in json.loads(scopes):
                         continue
@@ -172,6 +196,7 @@ class RobotStore:
                 if receipt[0] != 'pending' and not (receipt[0] == 'failed' and receipt[2]):
                     continue
                 robot = db.execute('SELECT enabled,channels,since,deleted,secret FROM robots WHERE id=?', (ident,)).fetchone()
+                enterprise = db.execute('SELECT target FROM enterprise_robots WHERE robot=?', (ident,)).fetchone()
                 eligible = (robot and robot[0] and not robot[3] and channel in json.loads(robot[1])
                             and json.loads(robot[2]).get(channel) == receipt[1])
                 db.execute('UPDATE receipts SET status=?,retryable=0,updated=? WHERE channel=? AND job=? AND robot=?',
@@ -179,7 +204,11 @@ class RobotStore:
             if not eligible:
                 continue
             try:
-                result = transport(robot[4], payload)
+                if enterprise:
+                    from notification_enterprise import send_enterprise
+                    result = send_enterprise(json.loads(enterprise[0]), payload)
+                else:
+                    result = transport(robot[4], payload)
                 status = result.get('status', 'unknown')
                 if status not in ('sent', 'failed', 'unknown'):
                     status = 'unknown'

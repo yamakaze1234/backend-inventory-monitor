@@ -169,7 +169,9 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(event['after']['purchase'],60)
         self.assertEqual(event['before']['purchase'],50)
         body=format_events([event],self.service)
-        self.assertIn('ERP 总待入：60 件 · 仓库未确认',body)
+        # 通知已有颜色标签，断言可见业务文案而非标签拼接方式。
+        import re
+        self.assertIn('ERP 总待入：60 件 · 仓库未确认', re.sub(r'<[^>]+>', '', body))
         self.assertNotIn('公司大库',body)
         self.assertNotIn('可销库存：',body)
         restarted=InventoryRuntimeService(self.temp.name)

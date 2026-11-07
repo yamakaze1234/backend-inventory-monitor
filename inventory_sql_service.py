@@ -1,10 +1,11 @@
-"""SQL inventory source service; delivery remains owned by the existing application."""
+"""Isolated SQL beta service: shared inventory source service; delivery remains owned by the existing application."""
 import json
 import threading
 import time
 import uuid
 from inventory_monitor import InventoryService
-from sql_inventory_source import normalize, normalize_bundle, warehouse_key
+from sql_inventory_source import normalize, normalize_bundle, warehouse_key, SqlReadError
+from inventory_health import normalize_isolated, isolate_watch_identity, build_coverage
 
 
 def eligible_product_name(name):
@@ -44,6 +45,10 @@ class SqlInventoryService(InventoryService):
 
     def catalog(self, query='', limit=100, mode='all'):
         rows = super().catalog(query, limit=None, mode=mode)
+        with self.db() as db:
+            excluded = set(self.get(db, 'sql_excluded_goods_ids', []))
+            issues = self.get(db, 'sql_data_issues', {})
+        rows = [r for r in rows if r.get('goods_id') not in excluded and r.get('goods_id') not in issues]
         return self.filter_catalog(rows)[:limit]
 
     @staticmethod
@@ -60,6 +65,11 @@ class SqlInventoryService(InventoryService):
             raise ValueError('停售、套餐或名称含星号的商品不加入监控。')
 
     def _save_product(self, db, product):
+        gid = str(product.get('goods_id', ''))
+        if gid in self.get(db, 'sql_excluded_goods_ids', []):
+            raise ValueError('该商品已排除，不加入库存监控。')
+        if gid in self.get(db, 'sql_data_issues', {}):
+            raise ValueError('该商品库存数据异常，暂不加入监控。')
         if not db.execute('SELECT 1 FROM products WHERE sku=?', (product.get('sku'),)).fetchone():
             self._ensure_addable(db, product)
             db.execute('DELETE FROM meta WHERE key=?', ('sql_pending:' + product['sku'],))
@@ -125,6 +135,13 @@ class SqlInventoryService(InventoryService):
             last = self.get(db, 'sql_last_success', 0)
             result['catalog_checked_at'] = self.get(db, 'sql_catalog_updated', 0)
             result['known_warehouses'] = self.get(db, 'sql_known_warehouses', [])
+            result['data_issues'] = self.get(db, 'sql_data_issues', {})
+            result['excluded_goods_ids'] = self.get(db, 'sql_excluded_goods_ids', [])
+            result['error_kind'] = self.get(db, 'sql_error_kind', '')
+            result['coverage'] = self.get(db, 'check_coverage', {})
+            result['coverage_current'] = bool(result['coverage']) and (
+                result['coverage'].get('revision') == self.get(db, 'config_revision', 0)
+                and result['coverage'].get('scope') == self.get(db, 'scope'))
             for product in result['products']:
                 pending = self.get(db, 'sql_pending:' + product['sku'], {})
                 product['pending_source'] = pending.get('mode')
@@ -133,6 +150,10 @@ class SqlInventoryService(InventoryService):
                 if pending.get('mode') == 'warehouse':
                     field = 'warehouse_purchase' if product.get('stock_basis') == 'warehouse_stock' else 'purchase'
                     product[field] = product['pending_quantity']
+                issue = result['data_issues'].get(str(product.get('goods_id')))
+                if issue:
+                    product.update(data_error=issue['reason'], risk='unknown', able=None, stock=None,
+                                   monitor_qty=None, purchase=None, warehouse_purchase=None, pending_quantity=None)
         result['connection_error'] = self._sql_session_error
         if self._sql_session_error:
             result['connection'] = 'error'
@@ -140,6 +161,9 @@ class SqlInventoryService(InventoryService):
             result['connection'] = 'waiting'
         elif last:
             result['connection'] = 'online' if time.time()-last <= result['interval_seconds'] + 60 else 'stale'
+        # 目录刷新成功不代表监控快照已刷新；失败、暂停和过期都标为上轮覆盖。
+        result['coverage_current'] = result['coverage_current'] and result['enabled'] and result['connection'] == 'online' and (
+            0 <= time.time() - result['coverage'].get('checked_at', 0) <= result['interval_seconds'] + 60)
         return result
 
     def accept_snapshot(self, *args, **kwargs):
@@ -211,7 +235,10 @@ class SqlWorker:
             self.service._sql_session_error = ''
             self.refresh_requested = True
             self.message = '连接设置已应用，等待读取目录。'
-        self.service.request_check()
+        # Reconnecting/restarting must never resume a user-paused monitor.
+        with self.service.db() as db:
+            if self.service.get(db, 'enabled', True):
+                self.service.put(db, 'next_check', 0)
 
     def refresh_catalog(self):
         with self.lock:
@@ -221,7 +248,7 @@ class SqlWorker:
             self.message = '已安排刷新目录（查询至少间隔 30 秒）。'
 
     def start(self):
-        self.thread = threading.Thread(target=self.run, daemon=True, name='sql-reader')
+        self.thread = threading.Thread(target=self.run, daemon=True, name='sql-beta-reader')
         self.thread.start()
         return self
 
@@ -240,6 +267,7 @@ class SqlWorker:
             with s.db() as db:
                 due = s.get(db, 'enabled', True) and now >= s.get(db, 'next_check', 0)
                 revision = s.get(db, 'config_revision', 0)
+                excluded = set(s.get(db, 'sql_excluded_goods_ids', []))
             request = s.pending_warehouse_request()
             full = self.refresh_requested
             if not full and not due and request is None:
@@ -248,7 +276,8 @@ class SqlWorker:
             self.busy = True
             self.refresh_requested = False
         try:
-            products = [p for p in s.products() if p['enabled']]
+            all_products = s.products()
+            products = [p for p in all_products if p['enabled'] and p.get('goods_id') not in excluded]
             ids = {p['goods_id'] for p in products if p.get('goods_id')} if due or full else set()
             if request:
                 ids.add(request['goods_id'])
@@ -259,37 +288,51 @@ class SqlWorker:
                 return
             self.last_call = now
             legacy = getattr(source, 'legacy_text', None)
+            issues = {}
             if hasattr(source, 'read_bundle'):
                 bundle = source.read_bundle(None if full else ids)
                 if full and not bundle['catalog']:
                     raise ValueError('库存查询完整目录为空，已保留原目录。')
-                rows, details = normalize_bundle(bundle, legacy_text=getattr(source, 'legacy_text', None))
+                bundle = {k: [r for r in v if str(r.get('goods_id')) not in excluded] for k, v in bundle.items()}
+                rows, details = normalize_isolated(bundle, legacy_text=getattr(source, 'legacy_text', None), issues=issues)
                 warehouse_count = len(bundle['warehouses'])
             else:
                 raw = source.read(None if full else ids)
                 if full and not raw:
                     raise ValueError('完整目录为空，已保留原目录。')
-                rows, details = normalize(raw, legacy_text=legacy)
+                raw = [r for r in raw if str(r.get('goods_id')) not in excluded]
+                rows, details = normalize_isolated(dict(catalog=[], warehouses=raw), legacy_text=legacy, issues=issues)
                 warehouse_count = len(raw)
             with s.db() as db:
                 if revision != s.get(db, 'config_revision', 0):
                     raise ValueError('查询期间监控设置改变，等待按新设置重试。')
+            # 逐商品隔离编码变化；不能阻断其他商品，也不能重绑旧关注记录。
+            rows, details = isolate_watch_identity(rows, details, all_products, issues)
             by_id = {r['goods_id']: r for r in rows}
             if hasattr(s, 'adapt_sql_details'):
                 details = s.adapt_sql_details(details)
-            # SKU is the legacy storage key; never accept another goods_id with that key.
-            for p in products:
-                if p.get('goods_id') in by_id and by_id[p['goods_id']]['sku'] != p['sku']:
-                    raise ValueError('已关注商品编码发生变化，请核对后重新关联。')
             if full:
                 s.store_catalog(rows, details, source.scope)
             if request:
                 row = by_id.get(request['goods_id'])
                 d = details.get(row['sku']) if row else dict(goods_id=request['goods_id'], complete=True, depots=[])
-                s.accept_warehouses(request['request_id'], d, scope=source.scope)
-            if full or due:
+                if request['goods_id'] not in issues and request['goods_id'] not in excluded:
+                    s.accept_warehouses(request['request_id'], d, scope=source.scope)
+                else:
+                    s.accept_warehouses(request['request_id'], dict(goods_id=request['goods_id'], complete=False), scope=source.scope)
+            with s.db() as db:
+                previous = {} if full else s.get(db, 'sql_data_issues', {})
+                previous = {k: v for k, v in previous.items() if k not in ids and k not in excluded}
+                previous.update(issues)
+                s.put(db, 'sql_data_issues', previous)
+                for gid, issue in issues.items():
+                    s.put(db, 'warehouse_options:' + gid, dict(status='error', depots=[], observed_at=0, error=issue['reason']))
+                s.put(db, 'sql_error_kind', '')
+                still_enabled = s.get(db, 'enabled', True)
+            if due and still_enabled:
                 s.accept_snapshot(uuid.uuid4().hex, rows, scope=source.scope, journals=None,
-                    warehouse_details=details, config_revision=revision, preserve_catalog=True)
+                    warehouse_details=details, config_revision=revision, preserve_catalog=True,
+                    coverage=build_coverage(all_products, rows, details, issues, revision, excluded))
             with s.db() as db:
                 s.put(db, 'sql_last_success', time.time())
             s.connection_update(error='')
@@ -297,6 +340,10 @@ class SqlWorker:
             self.retry_at = 0
             missing = [p for p in products if p.get('goods_id') not in by_id] if due or full else []
             self.message = f'查询完成：{len(rows)} 件商品，{warehouse_count} 条仓库记录。'
+            if issues:
+                self.message += ' 数据异常已隔离：' + '、'.join(sorted(issues)) + '；其他商品正常处理。'
+            if excluded:
+                self.message += ' 已排除商品：' + '、'.join(sorted(excluded)) + '。'
             if missing:
                 self.message += f' {len(missing)} 个关注商品未查到，保留旧值并标为未知。'
             unresolved = []
@@ -317,6 +364,8 @@ class SqlWorker:
             self.failures += 1
             self.retry_at = now + min(1800, 60 * 2 ** min(self.failures-1, 5))
             message = str(error) if isinstance(error, ValueError) else '读取失败，已保留原数据，请核对连接及字段。'
+            with s.db() as db:
+                s.put(db, 'sql_error_kind', 'query' if isinstance(error, SqlReadError) else 'data' if isinstance(error, ValueError) else 'service')
             s.connection_update(error=message)
             self.message = message + '（失败后退避重试）'
             if full:
