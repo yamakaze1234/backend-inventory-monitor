@@ -13,10 +13,10 @@ CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存（�
 
 def robot_form(row=None):
     row=row or {}
-    values={**dict(mode='webhook',enabled=False,channels=['inventory']),**{k:v for k,v in row.items() if k!='enterprise'}}
+    values={**dict(mode='enterprise',enabled=False,channels=['inventory']),**{k:v for k,v in row.items() if k!='enterprise'}}
     values.update(row.get('enterprise') or {})
-    fields=[F('name','备注名称'),F('mode','机器人类型',options=[('webhook','Webhook 机器人'),('enterprise','企业机器人')]),
-        F('webhook','Webhook（留空保留原地址）','password',when=dict(mode='webhook')),F('profile','钉钉账号标识',when=dict(mode='enterprise')),F('group_id','目标群标识',when=dict(mode='enterprise')),F('group_name','目标群名称',when=dict(mode='enterprise')),F('robot_code','企业机器人编码',when=dict(mode='enterprise')),F('robot_name','企业机器人名称',when=dict(mode='enterprise')),F('channels','通知类型','multi',options=CHANNELS),F('enabled','启用机器人','bool')]
+    fields=[F('name','备注名称',when=dict(mode='webhook')),F('mode','机器人类型',options=[('webhook','Webhook 机器人'),('enterprise','企业机器人')]),
+        F('webhook','Webhook（留空保留原地址）','password',when=dict(mode='webhook')),F('group_name','目标群名称',when=dict(mode='enterprise')),F('robot_name','企业机器人名称',when=dict(mode='enterprise')),F('channels','通知类型','multi',options=CHANNELS),F('enabled','启用机器人','bool')]
     return A('robot-save','编辑机器人' if row.get('id') else '添加机器人',fields,values,module='settings')
 
 def product_form(row=None):
@@ -36,13 +36,27 @@ def event_rows(b,q):
     elif period in ('近24小时','近7天'):since=time.time()-{'近24小时':86400,'近7天':604800}[period]
     return b.service.preview_events(kinds=KINDS.get(q.get('type','全部类型')),warehouse=q.get('warehouse',''),query=q.get('query',''),since=since)
 
+def matches_product(row,q):
+    """顶部筛选统一作用于关注产品、ERP目录和检查明细。"""
+    query=str(q.get('query','')).strip();mode=q.get('mode','all')
+    if mode not in ('all','name','goods_id'):raise ValueError('未知搜索模式')
+    if mode=='goods_id':return not query or str(row.get('goods_id',''))==query
+    haystack=str(row.get('name','')) if mode=='name' else ' '.join(str(row.get(k,'')) for k in ('name','sku','goods_id'))
+    return all(term in haystack.casefold() for term in query.casefold().split())
+
+
 def build_view(b,module,q):
     sections=[];filters=[]
+    if module=='order-settings':
+        from order_business import view
+        return view(b,q)
     if module=='monitor':
-        rows=b.service.products()
+        all_products=b.service.products()
+        rows=[p for p in all_products if matches_product(p,q)]
         for p in rows:p['_forms']=[product_form(p)]
         selected=[(p['sku'],p['name']+' · '+p['sku']) for p in rows]
         main=S('products','关注产品');main['forms']=[product_form(),A('remove-preview','批量移除关注',[F('skus','选择产品','multi',options=selected)]),A('import-preview','导入表格',[F('path','Excel / CSV 文件','file')]),A('template','下载导入模板')]
+        main['description']=f'当前筛选 {len(rows)} / {len(all_products)} 件关注商品'
         main['tables']=[T('已关注产品',[('name','商品'),('sku','SKU'),('threshold','提醒阈值'),('enabled','监控'),('warehouse_name','仓库')],rows)]
         catalog=b.service.catalog(q.get('query',''),limit=500,mode=q.get('mode','all'))
         catalog=[dict(r,_forms=[product_form(dict(r,editing=False))]) for r in catalog]
@@ -58,6 +72,7 @@ def build_view(b,module,q):
         last={p['sku']:p.get('observed_at',0) for p in status.get('products',[])}
         checks=[]
         for item in coverage.get('items',[]):
+            if not matches_product(item,q):continue
             stamp=coverage.get('checked_at',0) if item['state']=='success' else last.get(item['sku'],0)
             checks.append(dict(item,state=labels.get(item['state'],item['state']),last=time.strftime('%m-%d %H:%M:%S',time.localtime(stamp)) if stamp else '尚无有效库存'))
         health['tables']=[T('逐商品覆盖情况',[('name','商品'),('goods_id','ERP 编号'),('warehouse','库房'),('state','检查结果'),('last','上次有效检查'),('reason','原因')],checks)]
@@ -79,11 +94,16 @@ def build_view(b,module,q):
             cfg=b.service.get(db,'sql_connection',{});remember=b.service.get(db,'sql_remember',False)
         source=S('source','库存数据来源');source['forms']=[A('source','保存 SQL 连接',[F('server','服务器'),F('port','端口','number'),F('database','数据库'),F('user','查询账号'),F('password','密码（留空使用已保存密码）','password'),F('remember','加密保存密码','bool')],dict({k:cfg.get(k,1433 if k=='port' else 'ERP' if k=='database' else '') for k in ('server','port','database','user')},remember=remember)),A('catalog','刷新完整 ERP 目录'),A('interval','保存监控周期',[F('minutes','分钟','number')],dict(minutes=b.service.status()['interval_seconds']//60))]
         source['text']='使用 SQL 查询 ERP 库存。旧来源配置可通过保存 SQL 连接切换。'
-        robots=S('robots','通知机器人');rows=b.robots().list_robots()
+        robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。这里仅管理通知，订单匹配机器人单独配置。';rows=b.robots().list_robots()
         for row in rows:row['_forms']=[robot_form(row),A('robot-toggle','暂停' if row['enabled'] else '启用',[],dict(id=row['id'],enabled=not row['enabled']),confirm='确认调整该机器人的通知开关？'),A('robot-delete','移除机器人',[],dict(id=row['id']),confirm='移除机器人，历史回执保留。')]
-        robots['forms']=[robot_form(),A('enterprise-profiles','选择企业机器人')];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]
-        cache=S('cache','本地缓存');cache['forms']=[A('cache-preview','预览清理范围',[F('days','保留范围',options=[('7','7 天前'),('30','30 天前'),('90','90 天前'),('0','全部可清理缓存')])],dict(days='30'))]
-        sections=[source,robots,cache]
+        robots['forms']=[robot_form()];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]
+        from inventory_cache_schedule import settings_section
+        from inventory_workspace_config import workspace_settings
+        workspace=workspace_settings(b.service)
+        department=S('workspace','部门与工作区');department['description']='新安装使用独立数据目录；现有工作区继续保留原有配置。未配置的业务模块不会自动接收任务。'
+        department['forms']=[A('workspace','保存工作区信息',[F('department','部门名称'),F('name','工作区名称')],workspace)]
+        department['text']='当前数据目录：'+workspace['data_dir']
+        sections=[department,source,robots,settings_section(b)]
     elif module=='profit':
         state=b.profit().status();main=S('scope','价格监控配置')
         # 价格监控仅展示维护表入口；旧快照数据仍保留以便历史查询。
@@ -120,7 +140,7 @@ def build_view(b,module,q):
         weekly['description']='生成后在页面审阅、编辑和下载，再手动选择接收机器人。'
         schedule=S('schedule','定时日报');schedule['forms']=[A('settings','保存日报设置',[F('enabled','启用定时日报','bool'),F('times','北京时间（逗号分隔）')],dict(enabled=daily['enabled'],times=', '.join(daily['times'])))];schedule['text']='最近日报：'+str(last.get('status','尚无'))+' '+str(last.get('reason',''))
         ai=S('ai','AI 接入');ai['forms']=[A('ai-save','保存 AI 设置',[F('url','兼容接口 HTTPS 地址'),F('model','模型'),F('key','API Key（留空保留）','password')],{k:cfg.get(k,'') for k in ('url','model')}),A('ai-test','测试已保存的 AI 连接')]
-        receivers=S('receivers','接收机器人');receivers['forms']=[robot_form(),A('enterprise-profiles','选择企业机器人',module='settings')];receivers['tables']=[T('接收机器人',[('name','名称'),('enabled','启用'),('channels','通知范围')],[dict(r,_forms=[robot_form(r)]) for r in b.robots().list_robots()])]
+        receivers=S('receivers','接收机器人');receivers['forms']=[robot_form()];receivers['tables']=[T('接收机器人',[('name','名称'),('enabled','启用'),('channels','通知范围')],[dict(r,_forms=[robot_form(r)]) for r in b.robots().list_robots()])]
         sections=[weekly,schedule,ai,receivers]
     elif module=='dingtalk':
         state=b.controller.status() if b.controller else dict(state='paused',ready=0,sources=[])

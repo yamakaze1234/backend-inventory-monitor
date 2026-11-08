@@ -94,24 +94,42 @@ def interval(b,v):b.service.set_interval(v['minutes']);return dict(message='监�
 
 @action('settings','cache-preview')
 def cache_preview(b,v):
-    from inventory_cache import preview
-    plan=preview(b.service,int(v['days']))
-    token=b.review('cache',plan)
-    return dict(message=f"可清理 {plan['row_count']} 条记录 / {plan['file_count']} 个文件",tables=[T('清理范围',[('label','类别'),('rows','记录数'),('bytes','字节数')],plan['groups'])],forms=[A('cache-confirm','移入回收站',[],dict(token=token),confirm='清理所预览的历史缓存；保留现用配置和未完成记录。')])
+    from inventory_cache_schedule import preview_action
+    return preview_action(b,v)
 
 @action('settings','cache-confirm')
 def cache_confirm(b,v):
-    from inventory_cache import execute
-    result=execute(b.service,b.reviewed(v.get('token'),'cache'))
-    return dict(message='清理完成',tables=[T('清理结果',[('name','项目'),('value','数量')],[dict(name=k,value=x) for k,x in result.items()])])
+    from inventory_cache_schedule import execute_action
+    return execute_action(b,v)
+
+@action('settings','cache-settings')
+def cache_settings(b,v):
+    from inventory_cache_schedule import save_action
+    return save_action(b,v)
+
+@action('settings','workspace')
+def workspace_settings_save(b,v):
+    from inventory_workspace_config import save_workspace_settings
+    save_workspace_settings(b.service,v)
+    return dict(message='部门与工作区名称已保存')
 
 @action('settings','robot-save')
 def robot_save(b,v):
-    from notification_enterprise import EnterpriseClient
-    target={k:v.get(k,'') for k in ('profile','group_id','group_name','robot_code','robot_name')}
-    if v.get('mode')=='enterprise':b.external();target=EnterpriseClient().verify(target)
-    b.robots().save(v['name'],v.get('webhook',''),ids(v.get('channels')),robot_id=v.get('id') or None,enabled=bool(v.get('enabled',False)),mode=v.get('mode','webhook'),enterprise=target)
-    return dict(message='机器人已保存；新建默认暂停')
+    if v.get('mode')=='enterprise':
+        from notification_business import search
+        return search(b,v)
+    b.robots().save(v.get('name',''),v.get('webhook',''),ids(v.get('channels')),robot_id=v.get('id') or None,enabled=bool(v.get('enabled',False)),mode='webhook')
+    return dict(message='通知机器人已保存')
+
+@action('settings','robot-account')
+def robot_account(b,v):
+    from notification_business import account
+    return account(b,v)
+
+@action('settings','robot-candidate')
+def robot_candidate(b,v):
+    from notification_business import candidate
+    return candidate(b,v)
 
 @action('settings','robot-toggle')
 def robot_toggle(b,v):b.robots().set_enabled(v['id'],bool(v['enabled']));return dict(message='机器人启停已保存')
@@ -404,3 +422,24 @@ def price_maintenance_bind(b,v):
     if inspect_sources(plan['sources'])!=plan:raise ValueError('维护表已变化，请重新预览')
     b.profit().bind_maintenance(plan['sources'],expected_preview=plan)
     return dict(message='主机维护表已绑定，每轮巡检重新读取配件 ID 和配置关系')
+
+
+@action('order-settings','backend-save')
+def order_backend_save(b,v):
+    from order_business import save_backend
+    return save_backend(b,v)
+
+@action('order-settings','backend-deploy')
+def order_backend_deploy(b,v):
+    from order_business import deploy_backend
+    return deploy_backend(b,v)
+
+@action('order-settings','robot-search')
+def order_robot_search(b,v):
+    from order_business import search_robot
+    return search_robot(b,v)
+
+@action('order-settings','robot-select')
+def order_robot_select(b,v):
+    from order_business import select_robot
+    return select_robot(b,v)

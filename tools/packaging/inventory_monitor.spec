@@ -7,6 +7,9 @@ import runpy
 root = Path(SPECPATH).parents[1]
 source = root / 'app' / 'src'
 ui = root / 'app' / 'ui'
+# 仅收录兼容后端的公开源码，保持目录结构，排除编译缓存与运行数据。
+order_root = root / 'integrations' / 'order_backend'
+order_sources = [(str(p), str(Path('order_backend') / p.parent.relative_to(order_root))) for p in sorted(order_root.rglob('*')) if p.is_file() and p.suffix in {'.py', '.pyw', '.ps1', '.mjs'}]
 dependencies = Path(os.environ.get('INVENTORY_BUILD_DEPENDENCIES', str(root)))
 a = Analysis(
     [str(source / 'inventory_app.py')],
@@ -22,9 +25,9 @@ a = Analysis(
            (str(ui / 'update-public-key.txt'), '.'),
            (str(ui / 'apply-update.ps1'), '.'),
            (str(root / 'THIRD_PARTY_LICENSES' / 'WebView2-LICENSE.txt'), 'licenses'),
-           (str(ui / 'monitor_assets' / 'monitor.ico'), 'monitor_assets')],
+           (str(ui / 'monitor_assets' / 'monitor.ico'), 'monitor_assets')] + order_sources,
     hiddenimports=['pystray._win32', 'inventory_monitor', 'inventory_rules',
-                   'inventory_price_changes', 'inventory_data_api', 'inventory_business', 'inventory_business_actions', 'inventory_business_views', 'inventory_console', 'order_bot_adapter', 'inventory_updater',
+                   'notification_resolver', 'notification_business', 'order_business', 'order_bot_config', 'inventory_workspace_config', 'inventory_cache_schedule', 'inventory_price_changes', 'inventory_data_api', 'inventory_business', 'inventory_business_actions', 'inventory_business_views', 'inventory_console', 'order_bot_adapter', 'inventory_updater',
                    'price_maintenance', 'price_schedule', 'profit_monitor', 'erp_price_monitor', 'profit_manifest', 'profit_rules', 'profit_panel',
                    'inventory_panel', 'inventory_bridge', 'inventory_delivery', 'inventory_inbound', 'source_monitor_supervisor', 'monitor_portable_install', 'monitor_setup_service'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],

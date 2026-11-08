@@ -9,7 +9,8 @@ import re
 import threading
 import time
 
-KNOWN_SHOPS = {'英特尔官方旗舰店': '76', '技嘉旗舰店': '32', '乔思伯官方旗舰店': '33'}
+# 店铺名称不再隐式映射到作者部门的 ERP 编号；身份以用户绑定及工作簿校验为准。
+KNOWN_SHOPS = {}
 _CACHE = OrderedDict()
 _LOCK = threading.Lock()
 

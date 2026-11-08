@@ -92,6 +92,10 @@ def resolve_destination(service, setup=None):
     setup = setup or delivery_setup(service)
     with service.db() as db:
         previous = service.get(db, 'destination')
+    # 旧个人身份发送兼容入口必须已有明确目标，不能为新部门默认查找固定群。
+    if not previous or not str(previous.get('name', '')).strip():
+        raise ValueError('尚未配置库存通知目标，请在通知机器人中选择接收群')
+    group_name = str(previous['name']).strip()
     profiles = setup.profiles()
     if previous and previous.get('profile'):
         candidates = [p for p in profiles if p['key'] == previous['profile']]
@@ -100,17 +104,17 @@ def resolve_destination(service, setup=None):
     if len(candidates) != 1:
         raise ValueError('库存通知账号未唯一确定，请核对钉钉当前默认账号。')
     profile = candidates[0]['key']
-    result = setup.cli(['chat', '+chat-search', '--query', '牛马群', '--page-all', '--page-limit', '10'], profile=profile)
+    result = setup.cli(['chat', '+chat-search', '--query', group_name, '--page-all', '--page-limit', '10'], profile=profile)
     if result.get('complete') is not True or result.get('partial') or result.get('hasMore') or result.get('failures'):
-        raise ValueError('牛马群搜索未完整完成，库存通知保持待发送。')
+        raise ValueError('目标群搜索未完整完成，库存通知保持待发送。')
     matches = {g['openConversationId']: g for g in result.get('chats', [])
-               if g.get('title', g.get('name')) == '牛马群' and g.get('openConversationId')}
+               if g.get('title', g.get('name')) == group_name and g.get('openConversationId')}
     if len(matches) != 1:
-        raise ValueError('牛马群未唯一匹配，库存通知保持待发送。')
+        raise ValueError('目标群未唯一匹配，库存通知保持待发送。')
     ident = next(iter(matches))
     if previous and previous.get('group_id') and previous['group_id'] != ident:
-        raise ValueError('牛马群标识发生变化，库存通知暂停，请核对原接收群。')
-    metadata = dict(name='牛马群', group_id=ident, profile=profile, verified_at=time.time())
+        raise ValueError('目标群标识发生变化，库存通知暂停，请核对原接收群。')
+    metadata = dict(name=group_name, group_id=ident, profile=profile, verified_at=time.time())
     with service.db() as db:
         service.put(db, 'destination', metadata)
     return metadata

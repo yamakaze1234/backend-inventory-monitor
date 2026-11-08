@@ -103,12 +103,14 @@ class MultiShopTests(unittest.TestCase):
 
     def test_defaults_custom_names_and_deleted_shop_not_recreated(self):
         self.store.ensure_default_stores()
-        self.assertEqual(len(self.store.stores()), 3)
+        self.assertEqual(len(self.store.stores()), 0)
+        self.store.add_store('部门甲店')
+        self.store.add_store('部门乙店')
         removed = self.store.stores()[1]['id']
         self.store.remove_store(removed)
         self.store.ensure_default_stores()
         self.store.add_store('自定义四店')
-        self.assertEqual(len(self.store.stores()), 3)
+        self.assertEqual(len(self.store.stores()), 2)
         with self.assertRaises(ValueError):
             self.store.add_store('自定义四店')
         reopened = DouyinInventory(self.root)

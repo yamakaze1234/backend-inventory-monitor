@@ -155,20 +155,9 @@ class DouyinInventory:
                        ('patrol_selected:' + ident, '1' if selected else '0'))
 
     def ensure_default_stores(self):
-        """首次启用三店配置时补齐常用店铺；删除后不在下一次启动时自动加回。"""
-        from douyin_maintenance import KNOWN_SHOPS
-        from douyin_online import binding
-        online = binding(self.root)
+        """旧入口保留兼容；空工作区不预置其他部门店铺，也不自动恢复已删除店铺。"""
         with self.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM preferences WHERE key='default_shops_v1'").fetchone():
-                return
-            names = {r[0] for r in db.execute('SELECT name FROM stores')}
-            for name in KNOWN_SHOPS:
-                if name not in names:
-                    db.execute('INSERT INTO stores(id,name,field,interval,online_url,connection_mode) VALUES (?,?,?,?,?,?)',
-                               (uuid.uuid4().hex, name, 'export_sellable', 1800, online['url'] if online else '', 'managed'))
-            db.execute("INSERT INTO preferences VALUES ('default_shops_v1','1')")
+            db.execute("INSERT OR IGNORE INTO preferences VALUES ('default_shops_v1','1')")
 
     def remove_store(self, ident):
         """移出监控并使进行中的旧结果失效；历史文件保留，不执行永久文件删除。"""

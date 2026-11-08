@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-MODULES={'monitor','events','settings','douyin','profit','daily','dingtalk'}
+MODULES={'monitor','events','settings','douyin','profit','daily','dingtalk','order-settings'}
 
 class BusinessConsole:
     def __init__(self,service,controller=None,douyin=None,offline=False):

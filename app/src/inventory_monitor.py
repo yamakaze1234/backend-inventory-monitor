@@ -289,7 +289,7 @@ class InventoryService(WarehouseLookups):
         terms = query.casefold().split()
         if mode == 'name':
             return [r for r in rows if all(t in r['name'].casefold() for t in terms)][:limit]
-        return [r for r in rows if all(t in (r['name'] + ' ' + r['sku']).casefold() for t in terms)][:limit]
+        return [r for r in rows if all(t in (r['name'] + ' ' + r['sku'] + ' ' + str(r.get('goods_id',''))).casefold() for t in terms)][:limit]
 
     def status(self, *, include_notifications=True):
         from notification_robots import store_for_service

@@ -27,6 +27,17 @@ class BusinessTests(unittest.TestCase):
 
     def act(self,module,name,values=None):return ACTIONS[(module,name)](self.business,values or {})
 
+    def test_monitor_filters_apply_to_watched_products_and_exact_ids(self):
+        # 顶部筛选必须改变当前关注列表，而非只影响另一个ERP目录分区。
+        self.service.save_product(dict(sku='FILTER-A',goods_id='987654321',name='筛选专用 Alpha',threshold=5,enabled=True))
+        self.service.save_product(dict(sku='FILTER-B',goods_id='987654322',name='筛选专用 Beta',threshold=5,enabled=True))
+        from inventory_business_views import build_view
+        def rows(query):return build_view(self.business,'monitor',query)['sections'][0]['tables'][0]['rows']
+        self.assertEqual([r['sku'] for r in rows(dict(query='Alpha',mode='name'))],['FILTER-A'])
+        self.assertEqual([r['sku'] for r in rows(dict(query='987654321',mode='goods_id'))],['FILTER-A'])
+        self.assertEqual(rows(dict(query='98765432',mode='goods_id')),[])
+        self.assertGreaterEqual(len(rows({})),2)
+
     def test_every_page_is_serializable_and_forms_have_allowlisted_handlers(self):
         for module in MODULES:
             view=self.business.snapshot(module,{})

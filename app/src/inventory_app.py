@@ -25,7 +25,8 @@ def promote_to_v1(service):
         service.put(db, 'pre_v1_snapshots', [[sku, json.loads(data)] for sku, data in snapshots])
         db.execute('DELETE FROM snapshots')
         service.put(db, 'production_v1_started', time.time())
-        service.put(db, 'enabled', True)
+        # 新用户没有产品时先显示配置引导，不自动启动采集或发送。
+        service.put(db, 'enabled', bool(db.execute('SELECT 1 FROM products LIMIT 1').fetchone()))
         service.put(db, 'next_check', 0)
     return True
 
@@ -152,8 +153,11 @@ def main():
     except (AttributeError, OSError):
         pass
     folder = Path(sys.executable).parent if getattr(sys, 'frozen', False) else PROJECT_ROOT
-    # Retain the existing user data path, including encrypted robot settings.
-    service = InventoryService(folder / '.local_inventory_ui_test')
+    from inventory_workspace_config import resolve_data_root, message_data_root
+    data_root = resolve_data_root(args.data_dir, folder)
+    # 旧安装保留原数据目录；新目录只使用本工作区自己的机器人与监听设置。
+    legacy_workspace = data_root == (folder / '.local_inventory_ui_test').resolve()
+    service = InventoryService(data_root)
     root = tk.Tk()
     # 初始化期间不暴露未完成绘制的原生窗口，避免 Windows 显示黑底半成品。
     root.withdraw()
@@ -285,7 +289,7 @@ def main():
     try:
         promote_to_v1(service)
         from monitor_app_control import Controller
-        message_controller = Controller({'workspace': str(args.data_dir or default_data_dir()), 'portable': True,
+        message_controller = Controller({'workspace': str(message_data_root(service, legacy=legacy_workspace)), 'portable': True,
                                          'executable': sys.executable if getattr(sys, 'frozen', False) else None})
         with service.db() as db:
             service.put(db, 'daily_source_root', str(message_controller.root))
@@ -308,6 +312,8 @@ def main():
             source_provider=lambda: CoordinatedProfitSource(service.sql_worker),
             robots=store_for_service(service))
         service.profit_monitor.start()
+        from inventory_cache_schedule import start_worker
+        start_worker(service,business=business,runtime=runtime)
         if panel is not None and service.source_mode() == 'sql' and service.sql_worker.source is None:
             panel.show_module('settings')
         tray.run_detached()
@@ -337,6 +343,8 @@ def main():
             if message_controller is not None:
                 message_controller.stop()
         finally:
+            from inventory_cache_schedule import stop_worker
+            stop_worker(service)
             tray.stop()
             service.close_source()
             if hasattr(service, 'profit_monitor'):

@@ -23,7 +23,8 @@ class InventoryConsole:
         self.service = service
         self.native_action = native_action
         self.business = business
-        self.bot = bot or OrderBotAdapter()
+        self.bot = bot or OrderBotAdapter(workspace_root=service.root)
+        if business is not None:business.order_bot=self.bot
         self.updater = updater or InventoryUpdater(service.root)
         self.assets = Path(assets or UI_ROOT / 'console').resolve()
         if not (self.assets / 'index.html').is_file():
@@ -105,7 +106,8 @@ class InventoryConsole:
                         if route.path == '/api/info':
                             with outer.service.db() as db:
                                 auto = outer.service.get(db,'console_auto_update_check',True)
-                            return self.reply(200,dict(version=VERSION,autoCheck=auto,business=outer.business is not None))
+                            from inventory_workspace_config import workspace_settings
+                            return self.reply(200,dict(version=VERSION,autoCheck=auto,business=outer.business is not None,workspace=workspace_settings(outer.service)))
                         return self.reply(404,{'error':'接口不存在'})
                     if route.path == '/app-icon.ico':
                         return self.reply(200,(UI_ROOT/'monitor_assets/monitor.ico').read_bytes(),'image/x-icon')
@@ -290,6 +292,9 @@ def preview(root,desktop=False,duration=None,check_host=False):
                 skus=[dict(sku_id=str(91000+index),sku_name='标准配置',export_sellable=0,components={'现货可售':0,'预售库存':0,'阶梯库存':0},
                     erp=dict(state='配件齐全',parts=[],shortages=[],unknown=[]))])],complete=True,notify=False)
     class DemoBot:
+        def configuration(self):
+            # 隔离验收仅展示未配置状态，不连接任何真实订单后端。
+            return dict(configured=False,deployed=False,shops=[],target={},message="尚未配置本部门订单后端")
         def snapshot(self,page=0,size=25):
             rows=[dict(id=f'demo-{i}',kind='order',number=f'10987654321000{i:04}',shop=['76','32','33'][i%3],
                        state=['queued','running','verified','needs_review'][i%4],created=1794000000-i*60,delivery='pending') for i in range(83)]

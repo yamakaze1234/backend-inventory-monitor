@@ -64,6 +64,7 @@ class DeliveryTests(unittest.TestCase):
             return db.execute('SELECT status,attempts,retry_at FROM events WHERE id=?', (ident,)).fetchone()
 
     def test_destination_requires_unique_complete_current_profile(self):
+        with self.svc.db() as db:self.svc.put(db, 'destination', dict(name='牛马群'))
         result = resolve_destination(self.svc, FakeSetup())
         self.assertEqual(result['group_id'], 'cid-real')
         with patch.object(FakeSetup, 'profiles', return_value=[]):
@@ -75,6 +76,20 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(FakeSetup, 'cli', return_value=dict(complete=False, chats=[])):
             with self.assertRaises(ValueError):
                 resolve_destination(self.svc, FakeSetup())
+
+    def test_unconfigured_destination_never_searches_default_group(self):
+        setup = FakeSetup()
+        with patch.object(setup, 'profiles') as profiles, patch.object(setup, 'cli') as cli:
+            with self.assertRaisesRegex(ValueError, '尚未配置'):
+                resolve_destination(self.svc, setup)
+            profiles.assert_not_called(); cli.assert_not_called()
+
+    def test_destination_uses_saved_department_group(self):
+        with self.svc.db() as db:self.svc.put(db, 'destination', dict(name='采购提醒群'))
+        with patch.object(FakeSetup, 'cli', return_value=dict(complete=True, chats=[dict(title='采购提醒群', openConversationId='cid-team')])) as call:
+            result=resolve_destination(self.svc, FakeSetup())
+        self.assertEqual(result['name'], '采购提醒群')
+        self.assertIn('采购提醒群', call.call_args.args[0])
 
     def test_groups_same_round_sends_once(self):
         self.add_event('a'); self.add_event('b', 'oversold'); self.add_event('c', observed=1700007200)
@@ -113,6 +128,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_definitive_cli_rejection_is_failed_without_unapproved_retry(self):
         from inventory_delivery import DwsCommandError
+        with self.svc.db() as db:self.svc.put(db, 'destination', dict(name='牛马群'))
         sender = DwsSender(self.svc, FakeSetup())
         with patch.object(sender.setup, 'cli', side_effect=DwsCommandError({'category':'validation', 'retryable':False})):
             result = sender('正文')
@@ -125,6 +141,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_unclassified_cli_failure_stays_unknown(self):
         from inventory_delivery import DwsCommandError
+        with self.svc.db() as db:self.svc.put(db, 'destination', dict(name='牛马群'))
         sender = DwsSender(self.svc, FakeSetup())
         with patch.object(sender.setup, 'cli', side_effect=DwsCommandError({'category':'internal', 'retryable':True})):
             self.assertEqual(sender('正文')['status'], 'unknown')
@@ -179,6 +196,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_cli_sender_checks_receipt_for_exact_destination(self):
         setup = FakeSetup()
+        with self.svc.db() as db:self.svc.put(db, 'destination', dict(name='牛马群'))
         sender = DwsSender(self.svc, setup)
         with patch.object(setup, 'cli', side_effect=[{'openTaskId':'task-original'},
                 {'openMessageId':'message-original', 'openConversationId':'cid-real'}]) as cli:
