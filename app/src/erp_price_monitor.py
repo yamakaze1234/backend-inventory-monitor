@@ -9,6 +9,7 @@ import time
 import uuid
 
 from profit_manifest import canonical, read_manifest, sha
+from price_schedule import normalize_times, next_daily
 
 INTERVAL_SECONDS = 120 * 60
 PRICE_MODE = 'erp-unit-price/v2'
@@ -149,8 +150,19 @@ class ProfitMonitor:
                     count=len(manifest['configs']), goodsCount=len(goods), invalidIds=invalid,
                     shops=sorted({c['shopId'] for c in manifest['configs']}), path=str(Path(path).resolve()))
 
-    def bind(self, path):
-        manifest = read_manifest(path)
+    def bind_maintenance(self, sources, *, expected_preview=None):
+        # 维护表快照只存入本地监控库，不回写工作簿。
+        return self.bind('', maintenance_sources=sources, expected_preview=expected_preview)
+
+    def bind(self, path, *, maintenance_sources=None, expected_preview=None):
+        if maintenance_sources is not None:
+            from price_maintenance import read_sources, normalize_sources
+            maintenance_sources = normalize_sources(maintenance_sources)
+            with self.db() as db:
+                row = db.execute('SELECT content FROM snapshot WHERE id=1').fetchone()
+            manifest = read_sources(maintenance_sources, previous=json.loads(row[0]) if row else None, expected=expected_preview)
+        else:
+            manifest = read_manifest(path)
         with self.lock, self.db() as db:
             if self.running and threading.get_ident() != self.run_thread_ident:
                 raise ValueError('检测正在运行，请本轮完成后重新绑定')
@@ -169,18 +181,22 @@ class ProfitMonitor:
                                (manifest['sourceId'], manifest['workspaceId'], removed_id))
             db.execute('INSERT INTO snapshot VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content,received=excluded.received',
                        (canonical(manifest), time.time()))
-            self._set(db, 'manifest_path', str(Path(path).resolve()))
+            self._set(db, 'manifest_path', str(Path(path).resolve()) if maintenance_sources is None else '')
+            self._set(db, 'maintenance_sources', maintenance_sources or [])
             self._set(db, 'last_read_at', time.time())
             self._set(db, 'source_error', '')
+        if maintenance_sources is not None:
+            return dict(count=len(manifest['configs']),goodsCount=len(watched_goods(manifest)[0]))
         return self.preview(path)
 
     def refresh(self):
         with self.db() as db:
             path = self._get(db, 'manifest_path')
-        if not path:
+            sources = self._get(db, 'maintenance_sources', [])
+        if not path and not sources:
             raise ValueError('尚未绑定联动快照')
         try:
-            return self.bind(path)
+            return self.bind_maintenance(sources) if sources else self.bind(path)
         except Exception as error:
             with self.db() as db:
                 self._set(db, 'source_error', str(error)[:200])
@@ -199,6 +215,7 @@ class ProfitMonitor:
                 db.execute('DELETE FROM snapshot WHERE id=1')
                 db.execute("UPDATE events SET status='cancelled' WHERE status IN ('pending','partial','failed')")
                 self._set(db, 'manifest_path', '')
+                self._set(db, 'maintenance_sources', [])
                 self._set(db, 'enabled', False)
                 self._set(db, 'notify', False)
                 self._set(db, 'next_check', 0)
@@ -210,7 +227,33 @@ class ProfitMonitor:
                 raise ValueError('请先绑定完整联动快照')
             self._set(db, 'enabled', bool(enabled))
             if enabled:
-                self._set(db, 'next_check', 0)
+                self._set(db, 'next_check', self._next_check(db) if self._get(db, 'schedule_mode') == 'daily' else 0)
+
+    def set_schedule(self, times, enabled):
+        # 全部校验通过后一次保存，避免无效时间误开启巡检。
+        times = normalize_times(times)
+        with self.lock, self.db() as db:
+            if enabled and not db.execute('SELECT 1 FROM snapshot WHERE id=1').fetchone():
+                raise ValueError('请先绑定主机维护表或完整配置快照')
+            self._set(db, 'schedule_mode', 'daily')
+            self._set(db, 'schedule_times', times)
+            self._set(db, 'schedule_failures', 0)
+            self._set(db, 'enabled', bool(enabled))
+            self._set(db, 'next_check', next_daily(time.time(), times) if enabled else 0)
+
+    def _schedule_failure(self, db, error):
+        # SQL 忙或连接暂不可用不应占掉当天唯一巡检；最多补试三次。
+        attempt = self._get(db, 'schedule_failures', 0) + 1
+        self._set(db, 'schedule_failures', attempt)
+        self._set(db, 'last_error', error)
+        self._set(db, 'next_check', time.time()+300 if attempt <= 3 else self._next_check(db))
+        if attempt > 3:self._set(db, 'schedule_failures', 0)
+
+    def _next_check(self, db):
+        # 旧版间隔配置保持兼容；保存新表单后才切换固定时刻。
+        if self._get(db, 'schedule_mode', 'interval') == 'daily':
+            return next_daily(time.time(), self._get(db, 'schedule_times', ['09:00']))
+        return time.time() + self._get(db, 'interval', INTERVAL_SECONDS)
 
     def set_interval(self, minutes):
         minutes = int(minutes)
@@ -240,6 +283,7 @@ class ProfitMonitor:
                 result['affectedConfigs'] = affected_config_count(details.get('refs', []))
                 result['refs'] = details.get('refs', [])
             return dict(bound=bool(row), path=self._get(db, 'manifest_path', ''),
+                        maintenanceSources=self._get(db, 'maintenance_sources', []),
                         sourceId=manifest['sourceId'] if manifest else None,
                         revision=manifest['revision'] if manifest else None,
                         count=len(manifest['configs']) if manifest else 0, goodsCount=len(goods), invalidIds=invalid,
@@ -247,7 +291,10 @@ class ProfitMonitor:
                         lastReadAt=self._get(db, 'last_read_at'), sourceError=self._get(db, 'source_error', ''),
                         enabled=self._get(db, 'enabled', False), notify=self._get(db, 'notify', False),
                         intervalSeconds=self._get(db, 'interval', INTERVAL_SECONDS),
+                        scheduleMode=self._get(db, 'schedule_mode', 'interval'),
+                        scheduleTimes=self._get(db, 'schedule_times', ['09:00']),
                         nextCheck=self._get(db, 'next_check', 0), running=self.running,
+                        lastError=self._get(db, 'last_error', ''),
                         lastRun=dict(last) if last else None, lastResults=results, events=events)
 
     def notification_preview(self):
@@ -268,7 +315,10 @@ class ProfitMonitor:
             try:
                 self.refresh()
             except Exception:
-                pass  # A malformed new file cannot replace the last good complete snapshot.
+                # 维护表刷新失败时不能拿旧配件范围冒充本轮读取成功。
+                with self.db() as db:
+                    if self._get(db, 'maintenance_sources', []):raise
+                pass  # 旧版 JSON 绑定保留兼容的最后完整快照。
             with self.db() as db:
                 row = db.execute('SELECT content FROM snapshot WHERE id=1').fetchone()
                 if not row:
@@ -302,6 +352,8 @@ class ProfitMonitor:
                 if (not isinstance(costs, dict) or not isinstance(collected.get('failed', []), list)
                     or not set(costs) <= ids or not failed <= ids):
                     raise ValueError('SQL 成本查询范围无效')
+                # SQL 适配器以 failed 返回失败批次；查询成功但缺价格的 ID 不算传输失败。
+                if failed:cost_error = '部分 ERP 成本批次查询失败，等待补试'
             except Exception:
                 costs, failed, source_scope = {}, ids, None
                 cost_error = 'ERP 成本采集失败或连接未启用'
@@ -353,8 +405,14 @@ class ProfitMonitor:
                                    (*scope_key, sql_scope, gid, unit, result_id, next_anchor, next_anchor_id))
                     if changed and allow_notifications:
                         self._insert_change_events(db, run_id, manifest, gid, watch[gid], anchor, unit, cost_at, recipients)
-                db.execute("UPDATE runs SET status='completed',finished=? WHERE id=?", (time.time(), run_id))
-                if allow_notifications:self._set(db, 'next_check', time.time()+self._get(db, 'interval', INTERVAL_SECONDS))
+                db.execute('UPDATE runs SET status=?,finished=?,error=? WHERE id=?',
+                           ('failed' if cost_error else 'completed', time.time(), cost_error or None, run_id))
+                if allow_notifications:
+                    if cost_error:self._schedule_failure(db, cost_error)
+                    else:
+                        self._set(db, 'schedule_failures', 0)
+                        self._set(db, 'last_error', '')
+                        self._set(db, 'next_check', self._next_check(db))
                 self._set(db, 'invalid_ids', invalid)
             if self.robots and allow_notifications:
                 self.deliver_pending()
@@ -423,7 +481,7 @@ class ProfitMonitor:
             last_refresh = 0
             while not self.stop_event.wait(10):
                 status = self.status()
-                if status['enabled'] and time.time()-last_refresh >= 30:
+                if status['enabled'] and status['scheduleMode'] != 'daily' and time.time()-last_refresh >= 30:
                     last_refresh = time.time()
                     with self.db() as db:
                         old = db.execute('SELECT content FROM snapshot WHERE id=1').fetchone()
@@ -443,8 +501,7 @@ class ProfitMonitor:
                         self.check()
                     except Exception as error:
                         with self.db() as db:
-                            self._set(db, 'last_error', str(error)[:200])
-                            self._set(db, 'next_check', time.time()+300)
+                            self._schedule_failure(db, str(error)[:200])
                 elif status['notify'] and status['events']:
                     try:
                         self.deliver_pending()

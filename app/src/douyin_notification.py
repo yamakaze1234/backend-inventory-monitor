@@ -4,6 +4,7 @@ import time
 import uuid
 
 from douyin_restock import brief
+from douyin_online import preview_signature
 
 CHANNEL = 'douyin_inventory'
 
@@ -16,7 +17,7 @@ def audience(robots):
             if CHANNEL in json.loads(scopes)]
 
 
-def deliver_current(store, robots, ident, *, online_ready=True):
+def deliver_current(store, robots, ident, *, online_ready=True, pending_only=False, online_signature=None):
     """仅在成功采集或配件核对后调用；相同清单重启不重发，未知结果不重试。"""
     results = []
     for robot, epoch in audience(robots):
@@ -29,12 +30,11 @@ def deliver_current(store, robots, ident, *, online_ready=True):
                 continue
             preview = json.loads(row[0])
             payload = brief(preview, config['online_url'] if online_ready else '')
-            if payload and not online_ready:
-                payload['markdown']['text'] = payload['markdown']['text'].replace(
-                    '在线明细暂未配置', '在线明细尚未同步，请在库存监控程序中查看本次补库存清单。')
             saved = db.execute('SELECT value FROM preferences WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else {}
             same = old.get('signature') == preview['signature'] and old.get('epoch') == epoch
+            if pending_only and not (same and old.get('status') == 'waiting_online'):
+                continue
             # 空清单也保存，后续再次缺货才能形成新的提醒周期。
             if same and not old.get('retryable'):
                 results.append(dict(robot=robot, status=old['status']))
@@ -42,9 +42,15 @@ def deliver_current(store, robots, ident, *, online_ready=True):
             state = (old if same else dict(job=uuid.uuid4().hex, signature=preview['signature'],
                                           epoch=epoch, occurred=time.time(), payload=payload))
             # 明确失败后的重试沿用任务号，但使用本轮时间和在线同步状态生成的文案。
-            state.update(status='sending' if payload else 'empty', retryable=False, payload=payload)
+            # 在线明细必须先完成回读；失败只保存待发送状态，不把占位文案发到群。
+            # 同步期间低库存规则可能重建清单；只认本轮实际发布的签名。
+            waiting = bool(payload) and (not online_ready or
+                      online_signature is not None and online_signature != preview_signature(preview))
+            state.update(status='waiting_online' if waiting else 'sending' if payload else 'empty',
+                         retryable=waiting, payload=payload)
             db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', (key, json.dumps(state, ensure_ascii=False)))
-        if not payload:
+        if waiting or not payload:
+            results.append(dict(robot=robot, status=state['status']))
             continue
         # 先持久化发送占位；进程中断时保留未知状态，不能盲目补发。
         try:
@@ -68,7 +74,7 @@ def delivery_label(store, ident, robots=None):
     states = [json.loads(value) for key, value in rows
               if json.loads(value).get('signature') == signature and
               (targets is None or targets.get(key.rsplit(':', 1)[1]) == json.loads(value).get('epoch'))]
-    labels = {'sent': '已发送', 'unknown': '结果未知，不自动重发', 'sending': '发送中或结果待核对',
+    labels = {'waiting_online': '等待在线明细同步，尚未发送', 'sent': '已发送', 'unknown': '结果未知，不自动重发', 'sending': '发送中或结果待核对',
               'failed': '发送失败，请查看机器人通知记录', 'partial': '部分发送成功',
               'empty': '当前无补库存提醒', 'skipped': '已跳过'}
     return '；'.join(dict.fromkeys(labels.get(s['status'], '待发送') for s in states)) or '等待下一次成功检查'

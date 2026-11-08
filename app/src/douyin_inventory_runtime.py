@@ -304,10 +304,11 @@ class DouyinRuntime:
                 self.notice += '；本店专属浏览器未确认退出，请手动关闭'
         online = None
         try:
-            online = self.sync_online(ident)
+            online = self.sync_online(ident, force=self.notification_ready())
         finally:
-            # 在线表失败不能吞掉已完成的库存检查及独立群通知。
-            self.notify_current(ident, online_ready=isinstance(online, dict) and online.get('ok') is True)
+            # 在线表失败保留库存检查结果，群消息留待在线回读成功后发送。
+            self.notify_current(ident, online_ready=isinstance(online, dict) and online.get('ok') is True and isinstance(online.get('signature'), str),
+                                online_signature=online.get('signature') if isinstance(online, dict) else None)
 
     def sync_online(self, ident, *, force=False):
         """在线明细同步与群消息发送分开；失败不覆盖成功采集的库存快照。"""
@@ -326,14 +327,14 @@ class DouyinRuntime:
         return any(r['enabled'] and 'douyin_inventory' in r['channels']
                    for r in store_for_service(self.service).list_robots())
 
-    def notify_current(self, ident, *, online_ready=True):
+    def notify_current(self, ident, *, online_ready=True, pending_only=False, online_signature=None):
         """只发送本次核对后的补库存清单，不投递旧归零／恢复事件。"""
         if not self.notification_ready():
             return []
         from notification_robots import store_for_service
         from douyin_notification import deliver_current, delivery_label
         robots = store_for_service(self.service)
-        result = deliver_current(self.store, robots, ident, online_ready=online_ready)
+        result = deliver_current(self.store, robots, ident, online_ready=online_ready, pending_only=pending_only, online_signature=online_signature)
         self.notice = self.store.store(ident)['status'] + '；群提醒：' + delivery_label(self.store, ident, robots)
         return result
 
@@ -357,9 +358,10 @@ class DouyinRuntime:
                        ('配件库存核对完成；平台库存仍为上次导出快照', ident))
         online = None
         try:
-            online = self.sync_online(ident)
+            online = self.sync_online(ident, force=self.notification_ready())
         finally:
-            self.notify_current(ident, online_ready=isinstance(online, dict) and online.get('ok') is True)
+            self.notify_current(ident, online_ready=isinstance(online, dict) and online.get('ok') is True and isinstance(online.get('signature'), str),
+                                online_signature=online.get('signature') if isinstance(online, dict) else None)
 
     def execute(self, operation, ident):
         if self.store.store(ident).get('deleted') and operation != 'online':
@@ -442,7 +444,10 @@ class DouyinRuntime:
         elif operation == 'parts':
             self.recheck_parts(ident)
         elif operation == 'online':
-            self.sync_online(ident, force=True)
+            online = self.sync_online(ident, force=True)
+            # 手动恢复同步只释放本轮待发送消息，不补发未曾入队的历史清单。
+            if isinstance(online, dict) and online.get('ok') is True and isinstance(online.get('signature'), str):
+                self.notify_current(ident, online_ready=True, pending_only=True, online_signature=online['signature'])
         elif operation in ('confirm', 'check', 'export', 'inspect'):
             config = self.store.store(ident)
             if operation == 'inspect' and not config.get('patrol_selected', True):

@@ -11,7 +11,7 @@ async function main(){
  const connection=(await call('/api/data/connection')).data;
  assert.equal(connection.scope,'read-only');
  const catalog=await call('/api/data/catalog',null,connection.token);
- assert.equal(catalog.status,200);assert.equal(catalog.data.datasets.length,26);
+ assert.equal(catalog.status,200);assert.equal(catalog.data.datasets.length,27);
  for(const dataset of catalog.data.datasets){
   const response=await call('/api/data/query',{dataset:dataset.id},connection.token);
   assert.equal(response.status,200,dataset.id+': '+JSON.stringify(response.data));
@@ -45,9 +45,9 @@ async function main(){
  assert.equal((await call('/api/data/query',{dataset:'price_events'},connection.token)).data.total,0);
  const {spawnSync}=require('node:child_process');
  const cli=spawnSync('D:/python/python.exe',['-B','-X','utf8','tools/query_inventory_data.py','--url',origin],{env:{...process.env,INVENTORY_QUERY_TOKEN:connection.token},encoding:'utf8'});
- assert.equal(cli.status,0);assert.equal(JSON.parse(cli.stdout).datasets.length,26);
+ assert.equal(cli.status,0);assert.equal(JSON.parse(cli.stdout).datasets.length,27);
  fs.mkdirSync('outputs/机器人查询验收',{recursive:true});
- fs.writeFileSync('outputs/机器人查询验收/result.json',JSON.stringify({passed:true,datasets:26,orderRows:83,uniquePages:true,shopFilter:true,writeDenied:true,priceRefresh:true,noNotifications:true,cli:true},null,2));
- console.log('机器人查询验收通过：26 数据集、83条完整分页、店铺筛选、只读权限隔离。');
+ fs.writeFileSync('outputs/机器人查询验收/result.json',JSON.stringify({passed:true,datasets:27,orderRows:83,uniquePages:true,shopFilter:true,writeDenied:true,priceRefresh:true,noNotifications:true,cli:true},null,2));
+ console.log('机器人查询验收通过：27 数据集、83条完整分页、店铺筛选、只读权限隔离。');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

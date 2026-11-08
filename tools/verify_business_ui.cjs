@@ -26,6 +26,17 @@ async function main(){
   await page.getByText('检测完成：1 个配件价格变化，0 个待核对。',{exact:true}).waitFor();
   await page.getByText('+1.00',{exact:true}).waitFor();await page.getByText('+2.00',{exact:true}).waitFor();
   await page.screenshot({path:path.join(output,'price-changes.png'),fullPage:true,animations:'disabled'});
+  // 固定时间保存到隔离服务，重新打开核对；维护表入口使用现有 React 文件字段。
+  await section('价格监控配置');await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
+  const schedule=page.getByRole('dialog');await schedule.getByLabel('每天巡检时间（北京时间，多个用逗号分隔）',{exact:true}).fill('09:30');
+  await schedule.getByRole('button',{name:'提交',exact:true}).click();await page.getByText('北京时间固定巡检时间已保存',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
+  assert.equal(await page.getByRole('dialog').getByLabel('每天巡检时间（北京时间，多个用逗号分隔）',{exact:true}).inputValue(),'09:30');
+  await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
+  await page.getByRole('button',{name:'选择主机维护表',exact:true}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'选择文件',exact:true}).first().waitFor();
+  await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
+
   await page.getByRole('button',{name:'管理监控商品',exact:true}).click();
   await page.getByRole('button',{name:'添加产品',exact:true}).click();
   let dialog=page.getByRole('dialog');await dialog.getByLabel('SKU 编码',{exact:true}).fill('REUI-TEST');await dialog.getByLabel('ERP 商品编号',{exact:true}).fill('12345');await dialog.getByLabel('商品名称',{exact:true}).fill('ReUI 隔离测试商品');await dialog.getByLabel('预警阈值',{exact:true}).fill('7');await dialog.getByRole('button',{name:'提交',exact:true}).click();

@@ -156,7 +156,7 @@ def profit_unbind(b,v):b.profit().unbind();return dict(message='已解除绑定�
 
 @action('profit','schedule')
 def profit_schedule(b,v):
-    b.profit().set_interval(v['minutes']);b.profit().set_enabled(bool(v['enabled']));return dict(message='价格监控周期已保存')
+    b.profit().set_schedule(v['times'],bool(v['enabled']));return dict(message='北京时间固定巡检时间已保存')
 
 @action('profit','notify-preview')
 def profit_notify_preview(b,v):
@@ -378,4 +378,29 @@ def view_price_changes(b,v):
     if not ident:raise ValueError('上一轮价格检测仍在执行，请稍后查看')
     from inventory_price_changes import changes
     current=changes(b.service,dict(run_id=ident))
-    return dict(message=f"检测完成：{current['changed_count']} 个配件价格变化，{current['unknown_count']} 个待核对。",select='changes')
+    label='检测完成' if current.get('run_status')=='completed' else '检测未完成，请查看来源状态'
+    return dict(message=f"{label}：{current['changed_count']} 个配件价格变化，{current['unknown_count']} 个待核对。",select='changes')
+
+
+@action('profit','maintenance-preview')
+def price_maintenance_preview(b,v):
+    # 复用已配置的维护表也先预览，不能静默扩大价格巡检范围。
+    from price_maintenance import inspect_sources, saved_sources
+    sources=saved_sources(b.douyin.store) if v.get('reuse') else v.get('sources')
+    preview=inspect_sources(sources)
+    result=dict(message=f"维护表：{preview['count']} 套配置 / {preview['goodsCount']} 个配件 ID。只读已保存内容。",
+        tables=[T('维护表范围',[('path','文件'),('sheet','工作表'),('shop_id','店铺'),('count','配置数')],preview['files']),
+                T('需要处理的行',[('path','文件'),('sheet','工作表'),('row','行'),('reason','问题')],preview['issues'])])
+    if preview['complete']:
+        token=b.review('price-maintenance',preview)
+        result['forms']=[A('maintenance-bind','确认绑定维护表',values=dict(token=token),confirm='确认店铺和配件范围；首次有效采集只建立价格基准。')]
+    return result
+
+
+@action('profit','maintenance-bind')
+def price_maintenance_bind(b,v):
+    from price_maintenance import inspect_sources
+    plan=b.reviewed(v.get('token'),'price-maintenance')
+    if inspect_sources(plan['sources'])!=plan:raise ValueError('维护表已变化，请重新预览')
+    b.profit().bind_maintenance(plan['sources'],expected_preview=plan)
+    return dict(message='主机维护表已绑定，每轮巡检重新读取配件 ID 和配置关系')

@@ -23,8 +23,9 @@ DATASETS = {
     'restock_records': ('补库存历史记录', 'id shop_id created detected_at inventory_at items', 'created'),
     'exclusions': ('人工排除的前台链接', 'shop_id product_id reason created', 'created'),
     'low_stock_rules': ('店铺低库存规则', 'shop_id default parts', ''),
-    'price_changes': ('最近或指定批次的价格变化', 'id goods_id name before_cents after_cents delta_cents direction reason warehouse affected_count configs', ''),
+    'price_changes': ('最近或指定批次的价格变化', 'id goods_id name before_cents after_cents delta_cents direction band percent reason warehouse affected_count configs', ''),
     'price_affected_configs': ('价格变化影响的配置', 'id shop_id config_id product name changes cost_delta_cents complete', ''),
+    'price_schedule': ('价格巡检计划与来源状态', 'enabled notify mode times timezone next_check source_error last_error last_read_at source_type', ''),
     'price_batches': ('价格检测批次历史', 'id started status revision', 'started'),
     'price_results': ('ERP 成本检测历史（不是调价单）', 'id run_id goods_id valid unit_cents previous_cents changed anchor_cents anchor_delta_cents reason created names configs', 'created'),
     'price_events': ('ERP 成本提醒历史', 'id shop_id created status text', 'created'),
@@ -123,6 +124,10 @@ def source(console, dataset, options=None):
     if dataset.startswith('price_'):
         # 直接只读数据库，不调用 profit() 的惰性初始化，查询不创建业务文件。
         path = service.root/'profit_monitor.sqlite3'
+        if dataset=='price_schedule':
+            # 只读取白名单设置，不暴露维护表本地路径或连接信息。
+            settings={r['key']:json.loads(r['value']) for r in read_rows(path,"SELECT key,value FROM settings WHERE key IN ('enabled','notify','schedule_mode','schedule_times','next_check','source_error','last_error','last_read_at','maintenance_sources')")}
+            return [dict(enabled=settings.get('enabled',False),notify=settings.get('notify',False),mode=settings.get('schedule_mode','interval'),times=settings.get('schedule_times',['09:00']),timezone='Asia/Shanghai',next_check=settings.get('next_check',0),source_error=settings.get('source_error',''),last_error=settings.get('last_error',''),last_read_at=settings.get('last_read_at'),source_type='maintenance' if settings.get('maintenance_sources') else 'manifest')]
         if dataset=='price_results':
             rows = read_rows(path,'SELECT * FROM price_results ORDER BY created,id')
             for r in rows:

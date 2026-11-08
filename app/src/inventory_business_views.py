@@ -86,8 +86,16 @@ def build_view(b,module,q):
         sections=[source,robots,cache]
     elif module=='profit':
         state=b.profit().status();main=S('scope','价格监控配置')
-        main['forms']=[A('preview','选择并预览配置快照',[F('path','manifest.json 文件','file')],dict(path=state['path'])),A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('minutes','检测周期（分钟）','number')],dict(enabled=state['enabled'],minutes=state['intervalSeconds']//60)),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
-        main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；累计涨跌达到 100 元提醒。来源状态：{state['sourceError'] or '正常'}"
+        main['forms']=[A('preview','选择并预览配置快照',[F('path','manifest.json 文件','file')],dict(path=state['path'])),A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('times','每天巡检时间（北京时间，多个用逗号分隔）')],dict(enabled=state['enabled'],times=', '.join(state['scheduleTimes']))),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
+        from price_maintenance import saved_sources
+        bindings=state['maintenanceSources'] or saved_sources(b.douyin.store) or [dict(path='',sheet='',shop_id='')]
+        main['forms']=[A('maintenance-preview','预览已有主机维护表',values=dict(reuse=True)),A('maintenance-preview','选择主机维护表',[F('sources','维护表清单','rows',columns=[('path','文件完整路径'),('sheet','工作表'),('shop_id','ERP 店铺编号')])],dict(sources=bindings)),*main['forms']]
+        main['tables']=[T('已绑定维护表',[('path','文件'),('sheet','工作表'),('shop_id','店铺')],state['maintenanceSources'])]
+        main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；累计涨跌达到 100 元提醒。涨幅 ≥5%（含从零上涨）/ 上涨 <5% / 降价分别展示。来源状态：{state['sourceError'] or state['lastError'] or '正常'}"
+        from price_schedule import TZ
+        from datetime import datetime
+        next_time=datetime.fromtimestamp(state['nextCheck'],TZ).strftime('%Y-%m-%d %H:%M') if state['enabled'] and state['nextCheck'] else '未启用 / 待执行'
+        main['description']='下次巡检（北京时间）：'+next_time+('；当前仍为旧版间隔计划，保存后改为固定时间点。' if state['scheduleMode']=='interval' else '；每轮重新读取已保存的维护表。')
         results=S('results','检测结果');rows=state['lastResults']
         for r in rows:
             r['price']='—' if not r['valid'] else f"{r['unit_cents']/100:.2f}"
@@ -100,7 +108,7 @@ def build_view(b,module,q):
         changes_section['forms']=[A('view-changes','一键查看价格变动',immediate=True)]
         changes_section['tables']=result_tables(snapshot)
         if snapshot.get('checked_at'):changes_section['text']='检测时间：'+time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(snapshot['checked_at']))
-        filters=[F('comparison','对比方式',options=[('batch','与上次检测比较'),('day','该日批次与前一日比较')]),F('direction','价格变化',options=[('all','全部'),('up','涨价'),('down','降价'),('same','未变化'),('baseline','建立基准'),('unknown','待核对')]),F('query','配件 / 链接 / 配置'),F('run_id','历史批次',options=[('','最近批次')]+[(r['id'],time.strftime('%m-%d %H:%M:%S',time.localtime(r['started']))) for r in snapshot['batches']])]
+        filters=[F('comparison','对比方式',options=[('batch','与上次检测比较'),('day','该日批次与前一日比较')]),F('direction','价格变化',options=[('all','全部'),('up','全部涨价'),('high','上涨 ≥5% / 从零上涨'),('small_up','上涨 <5%'),('down','降价'),('same','未变化'),('baseline','建立基准'),('unknown','待核对')]),F('query','配件 / 链接 / 配置'),F('run_id','历史批次',options=[('','最近批次')]+[(r['id'],time.strftime('%m-%d %H:%M:%S',time.localtime(r['started']))) for r in snapshot['batches']])]
         sections=[changes_section,main,results]
     elif module=='daily':
         from inventory_daily import settings

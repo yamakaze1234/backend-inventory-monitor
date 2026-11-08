@@ -13,6 +13,11 @@ FIELD_NAMES = ['店铺','商品名称','配置名称','商品链接','平台库�
                '处理状态','备注','平台快照时间','配件核对时间','商品ID','SKU ID','关联键']
 
 
+def preview_signature(preview):
+    """同步回执覆盖完整清单；通知去重的候选 ID 签名不足以识别规则和时间变化。"""
+    return hashlib.sha256(json.dumps(preview, ensure_ascii=False, sort_keys=True).encode()).hexdigest() if preview else None
+
+
 def binding(root):
     path = Path(root) / 'online-table.json'
     if not path.is_file():
@@ -228,8 +233,11 @@ def sync_online(store, ident, *, force=False, client=None):
             after = before
         if not verified(after, expected, deletions, config['fields']['关联键']):
             raise ValueError('在线表格回读未通过；已保留进度，下次完整读取后仅补齐差量')
+        # 绑定可在运行中更新，消息链接必须指向本轮实际回读的表格。
+        with store.db() as db:
+            db.execute('UPDATE stores SET online_url=? WHERE id=?', (config['url'], ident))
         receipt = dict(ok=True, message=f"在线明细已同步：{len(expected)} 个 SKU（含未匹配待核对项）",
-                       fingerprint=fingerprint, at=time.time(), added=len(additions), updated=len(changes), deleted=len(deletions), url=config['url'])
+                       fingerprint=fingerprint, signature=preview_signature(preview), at=time.time(), added=len(additions), updated=len(changes), deleted=len(deletions), url=config['url'])
     except Exception as error:
         receipt.update(ok=False, uncertain=writing, message=str(error) if isinstance(error, ValueError) else '在线同步未完成，请检查钉钉登录；本地记录已保留')
     save_status(store.root, ident, receipt)

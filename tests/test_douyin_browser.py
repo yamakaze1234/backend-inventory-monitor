@@ -190,9 +190,15 @@ class BrowserTests(unittest.TestCase):
         order = []
         runtime.store.accept.side_effect = lambda *a, **k: order.append('accept')
         worker.finish_collection.side_effect = lambda: order.append('close')
-        runtime.sync_online = Mock(side_effect=lambda *a: order.append('sync') or dict(ok=True))
+        runtime.sync_online = Mock(side_effect=lambda *a, **k: order.append('sync') or dict(ok=True, signature='synced-preview'))
         runtime.collect(self.ident)
         self.assertEqual(order, ['accept', 'close', 'sync'])
+        runtime.sync_online.assert_called_once_with(self.ident, force=False)
+        runtime.notification_ready.return_value = True
+        runtime.sync_online.reset_mock()
+        runtime.collect(self.ident)
+        runtime.sync_online.assert_called_once_with(self.ident, force=True)
+        runtime.notify_current.assert_called_with(self.ident, online_ready=True, online_signature='synced-preview')
         worker.finish_collection.reset_mock()
         worker.call.side_effect = ValueError('采集失败，需要保留现场')
         with self.assertRaises(ValueError):
