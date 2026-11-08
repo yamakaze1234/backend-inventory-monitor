@@ -16,6 +16,8 @@ node tools/verify_console_ui.cjs $url
 if ($LASTEXITCODE -ne 0) {throw '候选前端验收失败'}
 node tools/verify_business_ui.cjs $url
 if ($LASTEXITCODE -ne 0) {throw '候选业务页面验收失败'}
+node tools/verify_data_api.cjs $url
+if ($LASTEXITCODE -ne 0) {throw '候选机器人查询验收失败'}
 if (!$process.WaitForExit(60000)) {throw '候选未按隔离验收时限退出'}
 $process.Refresh()
 if ($process.ExitCode -ne 0) {throw "候选退出异常：$($process.ExitCode)"}

@@ -62,6 +62,11 @@ class BusinessConsole:
         def run():
             try:
                 result=ACTIONS[(module,action)](self,values) or {}
+                # 导航合并后，连续操作必须继承实际业务模块，不能退回当前页面模块。
+                for followup in result.get('forms',[]):followup.setdefault('module',module)
+                for listing in result.get('tables',[]):
+                    for row in listing.get('rows',[]):
+                        for followup in row.get('_forms',[]):followup.setdefault('module',module)
                 with self.lock:
                     self.jobs[request_id].update(state='done',message=result.get('message','操作完成'),result=result)
                     self.latest[module]=request_id

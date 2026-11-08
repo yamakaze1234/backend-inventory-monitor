@@ -8,13 +8,19 @@ async function main(){
  try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url);
-  const nav=[['douyin','抖店库存',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉监控',['消息监听']],['profit','ERP 价格监控',['价格监控配置','检测结果']],['daily','货源汇报',['货源周报','定时日报','AI 接入','接收机器人']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['settings','连接与通知设置',['库存数据来源','通知机器人','本地缓存']]];
+  const nav=[['douyin','前台库存监控',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉货源监控',['消息监听','货源周报','定时日报','AI 接入','接收机器人']],['profit','ERP调价监控',['查看价格变动','价格监控配置','检测结果']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['settings','连接与通知设置',['库存数据来源','通知机器人','本地缓存']]];
   async function section(title){await page.getByRole('combobox',{name:'业务分区'}).click();await page.getByRole('option',{name:title,exact:true}).click();}
   for(const [module,title,sections] of nav){
    await page.getByRole('button',{name:title,exact:true}).click();await page.locator(`[data-business-module="${module}"] [data-slot="frame"]`).first().waitFor();
    for(const title of sections){await section(title);assert.equal(await page.locator('[data-native-module],iframe').count(),0);await page.screenshot({path:path.join(output,`${module}-${sections.indexOf(title)}.png`),fullPage:true,animations:'disabled'});}
    assert.equal(await page.getByRole('alert').count(),0,`${module} 读取失败`);
   }
+  await page.getByRole('button',{name:'ERP调价监控',exact:true}).click();await section('查看价格变动');
+  await page.getByRole('button',{name:'一键查看价格变动',exact:true}).click();
+  assert.equal(await page.getByRole('dialog').count(),0,'一键查看不能再弹提交表单');
+  await page.getByText('检测完成：1 个配件价格变化，0 个待核对。',{exact:true}).waitFor();
+  await page.getByText('+1.00',{exact:true}).waitFor();await page.getByText('+2.00',{exact:true}).waitFor();
+  await page.screenshot({path:path.join(output,'price-changes.png'),fullPage:true,animations:'disabled'});
   await page.getByRole('button',{name:'管理监控商品',exact:true}).click();
   await page.getByRole('button',{name:'添加产品',exact:true}).click();
   let dialog=page.getByRole('dialog');await dialog.getByLabel('SKU 编码',{exact:true}).fill('REUI-TEST');await dialog.getByLabel('ERP 商品编号',{exact:true}).fill('12345');await dialog.getByLabel('商品名称',{exact:true}).fill('ReUI 隔离测试商品');await dialog.getByLabel('预警阈值',{exact:true}).fill('7');await dialog.getByRole('button',{name:'提交',exact:true}).click();
@@ -35,7 +41,7 @@ async function main(){
   }
   assert.deepEqual(errors,[]);assert.equal(page.context().pages().length,1);
   fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({passed:true,modules:nav.map(x=>x[0]),sections:nav.reduce((n,x)=>n+x[2].length,0),productCreateEditRemove:true,settingsSave:true,passwordMasked:true,mobileWidth:390,errors},null,2));
-  console.log('ReUI 业务验收通过：七个真实页面、21 个分区、表单写入、预览确认、深色与窄屏。');
+  console.log('ReUI 业务验收通过：六个导航入口（保留七个业务模块）、22 个分区、表单写入、预览确认、深色与窄屏。');
  }finally{await browser.close();}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

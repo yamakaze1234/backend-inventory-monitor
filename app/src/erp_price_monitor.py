@@ -257,7 +257,7 @@ class ProfitMonitor:
         content = json.loads(row[0])['text']['content'] if row else '尚无 ERP 单价变化事件。首次有效采集仅建立基准；相对上次提醒基准累计涨跌达到 100 元才提醒。'
         return dict(recipients=recipients, message=content)
 
-    def check(self):
+    def check(self, *, allow_notifications=True):
         with self.lock:
             if self.running:
                 return False
@@ -278,6 +278,14 @@ class ProfitMonitor:
                 db.execute('INSERT INTO runs(id,source_id,revision,started,status,kind) VALUES(?,?,?,?,?,?)',
                            (run_id, manifest['sourceId'], manifest['revision'], time.time(), 'running', PRICE_EVENT_KIND))
             watch, invalid = watched_goods(manifest)
+            # 保存本批次实际 BOM 数量，历史比较不借用后续修改的配置。
+            quantities={}
+            for config in manifest['configs']:
+                counts={}
+                for part in config['parts']:
+                    gid=part['goodsId'];qty=part['qty']
+                    counts[gid]=None if qty is None or counts.get(gid,0) is None else counts.get(gid,0)+qty
+                for gid,qty in counts.items():quantities.setdefault(gid,[]).append([config['shopId'],config['configId'],qty])
             ids = set(watch)
             costs, failed, source_scope, cost_error, cost_at = {}, set(), None, '', time.time()
             try:
@@ -310,7 +318,7 @@ class ProfitMonitor:
                                (*scope_key, *sorted(ids)))
                 else:
                     db.execute('UPDATE price_baselines SET active=0 WHERE source_id=? AND workspace_id=?', scope_key)
-                notify = self._get(db, 'notify', False)
+                notify = allow_notifications and self._get(db, 'notify', False)
                 recipients = [r['id'] for r in self.robots.list_robots() if r['enabled'] and 'profit' in r['channels']] if notify and self.robots else []
                 for gid in sorted(ids):
                     old = db.execute('''SELECT * FROM price_baselines WHERE source_id=? AND workspace_id=?
@@ -326,7 +334,7 @@ class ProfitMonitor:
                     details = dict(names=watch[gid]['names'], refs=watch[gid]['refs'], publishedAt=manifest['publishedAt'],
                                    sourceId=manifest['sourceId'], workspaceId=manifest['workspaceId'],
                                    sourceRevision=manifest['revision'], sqlScope=sql_scope, costAt=cost_at,
-                                   basis=PRICE_BASIS, failedBatch=gid in failed)
+                                   basis=PRICE_BASIS, failedBatch=gid in failed, configQuantities=quantities.get(gid,[]))
                     db.execute('''INSERT INTO price_results
                         (id,run_id,source_id,workspace_id,sql_scope,goods_id,valid,unit_cents,previous_cents,
                          changed,reason,details,created,anchor_cents,anchor_delta_cents)
@@ -334,8 +342,8 @@ class ProfitMonitor:
                         (result_id, run_id, *scope_key, sql_scope, gid, int(valid), unit if valid else None,
                          prior, int(changed), reason, canonical(details), time.time(), anchor, anchor_delta))
                     if valid:
-                        next_anchor = unit if not old or changed else anchor
-                        next_anchor_id = result_id if not old or changed else old['anchor_result_id']
+                        next_anchor = unit if not old or changed and allow_notifications else anchor
+                        next_anchor_id = result_id if not old or changed and allow_notifications else old['anchor_result_id']
                         db.execute('''INSERT INTO price_baselines
                             (source_id,workspace_id,sql_scope,goods_id,unit_cents,last_result_id,active,anchor_cents,anchor_result_id)
                             VALUES(?,?,?,?,?,?,1,?,?)
@@ -343,12 +351,12 @@ class ProfitMonitor:
                             unit_cents=excluded.unit_cents,last_result_id=excluded.last_result_id,active=1,
                             anchor_cents=excluded.anchor_cents,anchor_result_id=excluded.anchor_result_id''',
                                    (*scope_key, sql_scope, gid, unit, result_id, next_anchor, next_anchor_id))
-                    if changed:
+                    if changed and allow_notifications:
                         self._insert_change_events(db, run_id, manifest, gid, watch[gid], anchor, unit, cost_at, recipients)
                 db.execute("UPDATE runs SET status='completed',finished=? WHERE id=?", (time.time(), run_id))
-                self._set(db, 'next_check', time.time()+self._get(db, 'interval', INTERVAL_SECONDS))
+                if allow_notifications:self._set(db, 'next_check', time.time()+self._get(db, 'interval', INTERVAL_SECONDS))
                 self._set(db, 'invalid_ids', invalid)
-            if self.robots:
+            if self.robots and allow_notifications:
                 self.deliver_pending()
             return run_id
         except Exception as error:

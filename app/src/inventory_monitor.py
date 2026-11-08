@@ -291,9 +291,10 @@ class InventoryService(WarehouseLookups):
             return [r for r in rows if all(t in r['name'].casefold() for t in terms)][:limit]
         return [r for r in rows if all(t in (r['name'] + ' ' + r['sku']).casefold() for t in terms)][:limit]
 
-    def status(self):
+    def status(self, *, include_notifications=True):
         from notification_robots import store_for_service
-        robots = [r for r in store_for_service(self).list_robots() if 'inventory' in r['channels']]
+        # 机器人只读查询不触发通知配置初始化或迁移。
+        robots = [r for r in store_for_service(self).list_robots() if 'inventory' in r['channels']] if include_notifications else []
         robot_status = dict(name='多机器人', kind='robot', configured=bool(robots), count=len(robots),
                             enabled_count=sum(r['enabled'] for r in robots))
         now = time.time()

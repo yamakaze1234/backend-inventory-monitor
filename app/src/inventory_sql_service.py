@@ -129,8 +129,8 @@ class SqlInventoryService(InventoryService):
                                         'unassigned_purchase_changed' if mode == 'erp_total' else 'purchase_changed')
             self.put(db, key, dict(current, available=True, checked_at=row['observed_at']))
 
-    def status(self):
-        result = super().status()
+    def status(self, *, include_notifications=True):
+        result = super().status(include_notifications=include_notifications)
         with self.db() as db:
             last = self.get(db, 'sql_last_success', 0)
             result['catalog_checked_at'] = self.get(db, 'sql_catalog_updated', 0)

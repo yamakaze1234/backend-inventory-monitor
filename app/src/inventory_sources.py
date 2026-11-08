@@ -107,11 +107,11 @@ class InventoryRuntimeService(SqlInventoryService):
         if self.sql_worker.thread:
             self.sql_worker.thread.join(timeout=2)
 
-    def status(self):
+    def status(self, *, include_notifications=True):
         if self.source_mode() == 'script':
-            result = InventoryService.status(self)
+            result = InventoryService.status(self,include_notifications=include_notifications)
         else:
-            result = super().status()
+            result = super().status(include_notifications=include_notifications)
         result['source_mode'] = self.source_mode()
         result['source_message'] = self.sql_worker.message
         result['source_busy'] = self.sql_worker.busy

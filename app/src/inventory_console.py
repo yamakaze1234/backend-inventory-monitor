@@ -29,6 +29,8 @@ class InventoryConsole:
         if not (self.assets / 'index.html').is_file():
             raise ValueError('工作台资源缺失，请先运行 dev.ps1 WebBuild')
         self.token = secrets.token_urlsafe(32)
+        # 机器人令牌只允许数据读取，不可调用业务操作或软件更新。
+        self.query_token = secrets.token_urlsafe(32)
         self.action_lock = threading.Lock()
         self.cache_lock = threading.Lock()
         self.cached = None
@@ -56,11 +58,12 @@ class InventoryConsole:
                 self.end_headers()
                 self.wfile.write(raw)
 
-            def trusted(self):
+            def trusted(self, read_only=False):
                 # 同源、固定 Host 以及自定义请求头共同阻止外部网页调用写接口。
                 return (self.headers.get('Host') == urlsplit(outer.url).netloc
                     and self.headers.get('Origin') in (None,outer.url)
-                    and secrets.compare_digest(self.headers.get('X-Console-Token',''),outer.token))
+                    and (secrets.compare_digest(self.headers.get('X-Console-Token',''),outer.token) or
+                        read_only and secrets.compare_digest(self.headers.get('X-Console-Token',''),outer.query_token)))
 
             def do_GET(self):
                 if self.headers.get('Host') != urlsplit(outer.url).netloc:
@@ -68,9 +71,18 @@ class InventoryConsole:
                 route = urlsplit(self.path)
                 try:
                     if route.path.startswith('/api/'):
-                        if not self.trusted():
+                        if not self.trusted(read_only=route.path in ('/api/data/catalog','/api/data/job')):
                             return self.reply(403,{'error':'来源不允许'})
                         query = parse_qs(route.query)
+                        if route.path == '/api/data/job' and outer.business:
+                            result=outer.business.job(query.get('id',[''])[0])
+                            if result.get('module')!='profit' or result.get('action')!='view-changes':return self.reply(403,dict(error='不允许读取该任务'))
+                            return self.reply(200,result)
+                        if route.path == '/api/data/catalog':
+                            from inventory_data_api import catalog
+                            return self.reply(200,catalog())
+                        if route.path == '/api/data/connection':
+                            return self.reply(200,dict(url=outer.url,token=outer.query_token,scope='read-only',expires='process-exit'))
                         if route.path == '/api/business/idle':
                             return self.reply(200,dict(state='idle'))
                         if route.path == '/api/business/job' and outer.business:
@@ -107,7 +119,7 @@ class InventoryConsole:
                     self.reply(503,{'error':'数据暂时无法读取，请重试或查看本机运行记录'})
 
             def do_POST(self):
-                if not self.trusted() or self.headers.get_content_type() != 'application/json':
+                if not self.trusted(read_only=urlsplit(self.path).path in ('/api/data/query','/api/data/refresh')) or self.headers.get_content_type() != 'application/json':
                     return self.reply(403,{'error':'来源不允许'})
                 self.connection.settimeout(15)
                 try:
@@ -117,6 +129,10 @@ class InventoryConsole:
                     body=json.loads(self.rfile.read(length))
                     if not isinstance(body,dict):
                         raise ValueError('请求必须是对象')
+                    if urlsplit(self.path).path == '/api/data/query':
+                        from inventory_data_api import query,DataError
+                        try:return self.reply(200,query(outer,body))
+                        except DataError as error:return self.reply(400,dict(error=str(error),code=error.code))
                     if not outer.action_lock.acquire(False):
                         return self.reply(409,{'error':'操作正在处理中，请稍后重试'})
                     try:
@@ -140,7 +156,7 @@ class InventoryConsole:
         with self.cache_lock:
             if self.cached is None or time.monotonic()-self.cached_at > 2:
                 state=self.service.status()
-                fields=('sku','name','threshold','enabled','able','stock','purchase','monitor_qty','risk','observed_at','warehouse_name')
+                fields=('sku','name','goods_id','threshold','enabled','able','stock','purchase','monitor_qty','risk','observed_at','warehouse_name')
                 self.cached={key:state.get(key) for key in ('enabled','connection','checked_at','next_check','source_mode','source_busy')}
                 self.cached['products']=[{key:p.get(key) for key in fields} for p in state['products']]
                 self.cached_at=time.monotonic()
@@ -149,6 +165,12 @@ class InventoryConsole:
     def action(self,path,body):
         if self.closing:
             raise ValueError('程序正在安全退出，暂不接收新操作')
+        if path == '/api/data/refresh':
+            if not self.business or self.updater.state['phase'] in ('preparing','installing'):
+                raise ValueError('业务服务未就绪或更新中')
+            if set(body)-{'dataset','request_id'} or body.get('dataset')!='price_changes':
+                raise ValueError('仅支持查看价格变动')
+            return self.business.submit('profit','view-changes',{},body.get('request_id'))
         if path == '/api/business/action' and self.business:
             return self.business.submit(body.get('module'),body.get('action'),body.get('values'),body.get('requestId'))
         if path == '/api/orders/action':
@@ -280,6 +302,19 @@ def preview(root,desktop=False,duration=None,check_host=False):
     if not service.products():
         for i in range(120):
             service.save_product(dict(sku=f'DEMO-{i:04}',name=['英特尔处理器','技嘉显卡','乔思伯机箱'][i%3]+f' · 样例 {i+1}',threshold=5,enabled=True))
+    # 仅隔离候选模式提供可重复的成本变化样例，真实 SQL 与发送均未接入。
+    from profit_manifest import sha
+    monitor=business.profit()
+    class PreviewCosts:
+        step=0
+        def read_profit_costs(self,ids):
+            self.step+=1
+            return dict(costs={gid:10000+self.step*100 for gid in ids},failed=[],sourceScope='isolated-preview',collectedAt=time.time())
+    source=PreviewCosts();monitor.source_provider=lambda:source
+    manifest=dict(contract='profit-monitor/v1',schemaVersion=1,complete=True,formulaVersion='profit/v1',sourceId='preview',workspaceId='preview',revision=1,publishedAt='2026-11-08T00:00:00+08:00',configs=[dict(shopId='76',configId='preview-config',product='样例整机链接',name='样例双内存配置',priceCents=100000,feeCents=0,installment=0,parts=[dict(lineId='memory',slot='内存',name='样例内存',goodsId='123',qty=2,taxCents=10000)])])
+    manifest['businessHash']=sha(manifest['configs']);manifest['contentHash']=sha(manifest)
+    fixture=Path(root)/'price-preview-manifest.json';fixture.write_text(json.dumps(manifest,ensure_ascii=False),encoding='utf-8')
+    monitor.bind(fixture);monitor.check(allow_notifications=False);business.preview_prices=True
     server=InventoryConsole(service,bot=DemoBot(),business=business)
     address=server.url+'/#'+server.token
     (Path(root)/'preview-url.txt').write_text(address,encoding='utf-8')

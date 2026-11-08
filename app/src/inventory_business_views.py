@@ -88,7 +88,7 @@ def build_view(b,module,q):
         sections=[source,robots,cache]
     elif module=='profit':
         state=b.profit().status();main=S('scope','价格监控配置')
-        main['forms']=[A('preview','选择并预览配置快照',[F('path','manifest.json 文件','file')],dict(path=state['path'])),A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('minutes','检测周期（分钟）','number')],dict(enabled=state['enabled'],minutes=state['intervalSeconds']//60)),A('check','立即检测'),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
+        main['forms']=[A('preview','选择并预览配置快照',[F('path','manifest.json 文件','file')],dict(path=state['path'])),A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('minutes','检测周期（分钟）','number')],dict(enabled=state['enabled'],minutes=state['intervalSeconds']//60)),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
         main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；累计涨跌达到 100 元提醒。来源状态：{state['sourceError'] or '正常'}"
         results=S('results','检测结果');rows=state['lastResults']
         for r in rows:
@@ -96,7 +96,14 @@ def build_view(b,module,q):
             r['delta']='—' if r['anchor_delta_cents'] is None else f"{r['anchor_delta_cents']/100:.2f}"
             r['_details']=[dict(label='关联配置',value=' / '.join(map(str,x))) for x in r.get('refs',[])]
         results['tables']=[T('配件价格变化',[('goods_id','ERP 编号'),('name','配件'),('price','当前单价'),('delta','累计变化'),('affectedConfigs','影响配置'),('reason','采集说明')],rows),T('近期异常事件',[('name','商品'),('status','状态'),('message','说明')],state['events'])]
-        sections=[main,results]
+        from inventory_price_changes import changes,result_tables
+        snapshot=changes(b.service,q)
+        changes_section=S('changes','查看价格变动');changes_section['description']=snapshot['message']
+        changes_section['forms']=[A('view-changes','一键查看价格变动',immediate=True)]
+        changes_section['tables']=result_tables(snapshot)
+        if snapshot.get('checked_at'):changes_section['text']='检测时间：'+time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(snapshot['checked_at']))
+        filters=[F('comparison','对比方式',options=[('batch','与上次检测比较'),('day','该日批次与前一日比较')]),F('direction','价格变化',options=[('all','全部'),('up','涨价'),('down','降价'),('same','未变化'),('baseline','建立基准'),('unknown','待核对')]),F('query','配件 / 链接 / 配置'),F('run_id','历史批次',options=[('','最近批次')]+[(r['id'],time.strftime('%m-%d %H:%M:%S',time.localtime(r['started']))) for r in snapshot['batches']])]
+        sections=[changes_section,main,results]
     elif module=='daily':
         from inventory_daily import settings
         from inventory_ai import config
@@ -116,7 +123,14 @@ def build_view(b,module,q):
         main=S('listener','消息监听');main['text']=f"监听状态：{state['state']} · 已连接 {state.get('ready',0)} 个来源"
         main['forms']=[A('start','启动监听'),A('stop','停止监听'),A('profiles','配置监控对象'),A('login','登录钉钉账号',values=dict(login=True))]
         main['tables']=[T('监控来源',[('GroupName','群名'),('SenderName','发送人'),('Terms','关键词'),('AllowReopen','允许重开成本表')],rows)]
-        sections=[main]
+        # 货源汇报归入钉钉货源监控，原动作仍交给 daily 服务，避免功能丢失。
+        daily=build_view(b,'daily',{})
+        for item in daily['sections']:
+            for action in item['forms']:action.setdefault('module','daily')
+            for listing in item['tables']:
+                for row in listing['rows']:
+                    for action in row.get('_forms',[]):action.setdefault('module','daily')
+        sections=[main,*daily['sections']]
     elif module=='douyin':return douyin_view(b,q)
     return dict(module=module,filters=filters,query=q,sections=sections)
 

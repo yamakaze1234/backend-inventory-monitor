@@ -369,3 +369,13 @@ def recovery_settings(b,v):
         b.service.put(db,'erp_native_enabled',bool(v.get('enabled')))
         if v.get('enabled'):b.service.put(db,'erp_native_state',{})
     return dict(message='自动重登设置已保存')
+
+@action('profit','view-changes')
+def view_price_changes(b,v):
+    # 手动查看只检测成本，不发送通知、不改变原定时提醒的累计基准。
+    if not (b.offline and getattr(b,'preview_prices',False)):b.external()
+    ident=b.profit().check(allow_notifications=False)
+    if not ident:raise ValueError('上一轮价格检测仍在执行，请稍后查看')
+    from inventory_price_changes import changes
+    current=changes(b.service,dict(run_id=ident))
+    return dict(message=f"检测完成：{current['changed_count']} 个配件价格变化，{current['unknown_count']} 个待核对。",select='changes')

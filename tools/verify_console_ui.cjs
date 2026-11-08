@@ -16,6 +16,7 @@ async function main() {
     // 界面验收不访问发布站；真实签名与下载失败由后端测试覆盖。
     await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,business:true}}));
     await page.goto(url);
+    assert.deepEqual(await page.locator('[data-slot=sidebar-menu-button] span').allTextContents(),['配件库存监控','订单巡检匹配','前台库存监控','钉钉货源监控','ERP调价监控','库存提醒记录','管理监控商品','连接与通知设置','软件更新']);
     const icon=await page.request.get(new URL('/app-icon.ico',url).href);
     assert.equal(icon.status(),200);
     assert.deepEqual(await icon.body(),fs.readFileSync('app/ui/monitor_assets/monitor.ico'));
@@ -23,7 +24,7 @@ async function main() {
     await updateLink.waitFor();
     const updateBox=await updateLink.boundingBox();
     assert.ok(updateBox.y>800&&updateBox.x<260,'更新入口固定在桌面左下角');
-    const nav=[['douyin','抖店库存'],['dingtalk','钉钉监控'],['profit','ERP 价格监控'],['daily','货源汇报'],['events','库存提醒记录'],['monitor','管理监控商品'],['settings','连接与通知设置']];
+    const nav=[['douyin','前台库存监控'],['dingtalk','钉钉货源监控'],['profit','ERP调价监控'],['events','库存提醒记录'],['monitor','管理监控商品'],['settings','连接与通知设置']];
     for(const [module,title] of nav){
       await page.getByRole('button',{name:title,exact:true}).click();
       await page.locator(`[data-business-module="${module}"]`).waitFor();
@@ -36,7 +37,7 @@ async function main() {
     }
     const modules=nav.map(item=>item[0]);
     assert.equal(page.context().pages().length,1,'切换业务页不得打开新页面');
-    await page.getByRole('button',{name:'库存监控',exact:true}).click();
+    await page.getByRole('button',{name:'配件库存监控',exact:true}).click();
 
 
     await page.getByText('1–25 / 共 120 条').waitFor();
@@ -44,7 +45,7 @@ async function main() {
     await page.screenshot({path:path.join(out,'inventory.png'),fullPage:true});
     await page.getByPlaceholder('输入商品名称或 SKU').fill('DEMO-0001');
     await page.getByText('1–1 / 共 1 条').waitFor();
-    await page.getByRole('button',{name:'订单匹配',exact:true}).click();
+    await page.getByRole('button',{name:'订单巡检匹配',exact:true}).click();
     await page.getByText('1–25 / 共 83 条').waitFor();
     await page.screenshot({path:path.join(out,'orders.png'),fullPage:true});
     await page.getByRole('button',{name:'下一页',exact:true}).click();
