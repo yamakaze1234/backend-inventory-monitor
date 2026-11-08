@@ -25,6 +25,20 @@ def product_save(b,v):
     b.service.save_product(payload)
     return dict(message='产品配置已保存')
 
+@action('monitor','catalog-add')
+def product_catalog_add(b,v):
+    from inventory_panel import ProductDraft
+    # 只接受目录中的同一商品，不信任表单传入的名称或其他默认配置。
+    goods_id=str(v.get('goods_id','')).strip()
+    sku=str(v.get('sku','')).strip()
+    if not goods_id or not sku:raise ValueError('请先选择 ERP 商品')
+    row=next((r for r in b.service.catalog(goods_id,limit=100,mode='goods_id') if r['sku']==sku),None)
+    if not row:raise ValueError('商品目录已变化，请重新搜索并选择')
+    if any(p['sku']==sku or str(p.get('goods_id',''))==goods_id for p in b.service.products()):raise ValueError('该商品已关注，请从列表选择编辑')
+    b.service.save_product(ProductDraft(sku=sku,goods_id=goods_id,name=row['name'],threshold=v.get('threshold','')).payload())
+    return dict(message='产品配置已保存')
+
+
 @action('monitor','remove-preview')
 def product_remove_preview(b,v):
     selected=ids(v.get('skus'))
@@ -423,6 +437,11 @@ def price_maintenance_bind(b,v):
     b.profit().bind_maintenance(plan['sources'],expected_preview=plan)
     return dict(message='主机维护表已绑定，每轮巡检重新读取配件 ID 和配置关系')
 
+
+@action('order-settings','backend-auto')
+def order_backend_auto(b,v):
+    from order_business import auto_backend
+    return auto_backend(b,v)
 
 @action('order-settings','backend-save')
 def order_backend_save(b,v):

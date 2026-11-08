@@ -73,6 +73,29 @@ function ResultPanel({result,onAction}:{result:Result;onAction:(a:Action)=>void}
   return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void download().catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
 }
 
+type CatalogProduct={sku:string;goods_id:string;name:string;watched?:boolean};
+/** 搜索与选择分离，只有选定目录商品才能添加。 */
+function ProductPicker({initial,busy,onCancel,onAdd}:{initial:Values;busy:boolean;onCancel:()=>void;onAdd:(v:Values)=>void}){
+  const [term,setTerm]=useState('');
+  const [found,setFound]=useState<{rows:CatalogProduct[];more:boolean}>();
+  const [selected,setSelected]=useState<CatalogProduct|undefined>(()=>initial.sku&&initial.goods_id?{sku:String(initial.sku),goods_id:String(initial.goods_id),name:String(initial.name)}:undefined);
+  const [threshold,setThreshold]=useState(String(initial.threshold??5));
+  const [searching,setSearching]=useState(false);const [error,setError]=useState('');
+  async function search(){
+    if(!term.trim()||searching)return;
+    setSearching(true);setFound(undefined);setSelected(undefined);setError('');
+    try{setFound(await api('/api/business/product-search?query='+encodeURIComponent(term.trim())));}
+    catch(e){setError(e instanceof Error?e.message:'搜索失败');}finally{setSearching(false);}
+  }
+  return <div className="flex min-w-0 flex-col gap-4">
+    <form className="flex items-end gap-2" onSubmit={e=>{e.preventDefault();void search();}}><label className="min-w-0 flex-1 text-sm">商品名称或 ERP ID<Input value={term} maxLength={100} disabled={searching||busy} onChange={e=>{setTerm(e.target.value);setSelected(undefined);setFound(undefined);setError('');}}/></label><Button type="submit" size="sm" variant="outline" disabled={!term.trim()||searching||busy}>搜索</Button></form>
+    {searching&&<p role="status" className="text-sm">正在搜索商品…</p>}{error&&<p role="alert" className="text-sm">{error}</p>}
+    {found&&<div className="max-h-56 space-y-1 overflow-y-auto">{found.rows.map(row=><Button type="button" key={row.sku} variant={selected?.sku===row.sku?'secondary':'outline'} className="h-auto w-full justify-start whitespace-normal break-all text-left" aria-pressed={selected?.sku===row.sku} disabled={row.watched||!row.goods_id||busy} onClick={()=>setSelected(row)}>{row.name} · {row.goods_id}{row.watched?' · 已关注':''}</Button>)}{!found.rows.length&&<p className="text-sm text-muted-foreground">未找到商品。若目录尚未同步，请在连接与通知设置中刷新 ERP 商品目录。</p>}{found.more&&<p className="text-sm text-muted-foreground">仅显示前 50 条，请缩小搜索范围。</p>}</div>}
+    {selected&&<p className="break-all text-sm">已选：{selected.name} · {selected.goods_id}</p>}
+    <form className="flex flex-col gap-4" onSubmit={e=>{e.preventDefault();if(selected&&!busy)onAdd({sku:selected.sku,goods_id:selected.goods_id,threshold});}}><label className="text-sm">预警阈值<Input type="number" min={0} step={1} required value={threshold} onChange={e=>setThreshold(e.target.value)}/></label><div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={onCancel}>取消</Button><Button type="submit" size="sm" disabled={!selected||busy||searching}>添加</Button></div></form>
+  </div>;
+}
+
 /** 七个业务页均由 React 控件组成；数据轮询不重置正在编辑的表单。 */
 function initialValues(action:Action){const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'?[]:'';}return initial;}
 export function BusinessPage({module,openAddProduct=false}:{module:string;openAddProduct?:boolean}){
@@ -93,7 +116,7 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
   useEffect(()=>{
     // 等管理页拿到原表单定义后打开一次，轮询不会打断编辑。
     if(module!=='monitor'||!openAddProduct||addOpened.current||busy)return;
-    const add=snapshot.data?.sections.find(s=>s.id==='products')?.forms.find(a=>a.action==='save');
+    const add=snapshot.data?.sections.find(s=>s.id==='products')?.forms.find(a=>a.action==='catalog-add');
     if(!add)return;
     addOpened.current=true;setSection('products');setValues(initialValues(add));setForm(add);
   },[module,openAddProduct,snapshot.data,busy]);
@@ -108,7 +131,7 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
     {job.data?.state==='failed'&&<p role="alert" className="text-sm">{job.data.message}</p>}
     {result&&<ResultPanel result={result} onAction={openAction}/>}
     {active&&<Frame spacing="sm"><FrameHeader><FrameTitle>{active.title}</FrameTitle><FrameDescription>{active.description||'查看当前状态，按需执行以下操作。'}</FrameDescription></FrameHeader><FramePanel><div className="flex min-w-0 flex-col gap-6">{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
-    <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className="max-h-[85dvh] overflow-y-auto"><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>修改后提交生效，未提交的内容不会保存。</DialogDescription></DialogHeader><form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy}>提交</Button></div></form></DialogContent></Dialog>
+    <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className="max-h-[85dvh] overflow-y-auto"><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.action==='catalog-add'?'选择 ERP 商品并设置低库存预警数量。':'修改后提交生效，未提交的内容不会保存。'}</DialogDescription></DialogHeader>{form?.action==='catalog-add'?<ProductPicker initial={form.values} busy={busy} onCancel={()=>setForm(null)} onAdd={v=>void submit(form,v)}/>:<form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy}>提交</Button></div></form>}</DialogContent></Dialog>
     <AlertDialog open={confirmation} onOpenChange={setConfirmation}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{form?.title}</AlertDialogTitle><AlertDialogDescription>{form?.confirm}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction disabled={busy} onClick={()=>void submit()}>确认执行</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;
 }

@@ -57,6 +57,19 @@ class BusinessTests(unittest.TestCase):
             payload=json.dumps(self.business.snapshot(module,{}))
             self.assertNotIn('SENTINEL_SECRET',payload)
 
+    def test_catalog_add_checks_identity_and_cannot_overwrite_existing(self):
+        # 同名商品也必须按 ERP ID 与 SKU 配对，重试不得覆盖阈值。
+        row=dict(sku='PICKER-SKU',goods_id='73001',name='目录商品')
+        with self.service.db() as db:
+            db.execute('INSERT INTO catalog VALUES (?,?)',(row['sku'],json.dumps(row)))
+        with self.assertRaisesRegex(ValueError,'重新搜索'):
+            self.act('monitor','catalog-add',dict(row,goods_id='73002',threshold=7))
+        self.act('monitor','catalog-add',dict(row,name='误填名称',threshold=7))
+        with self.assertRaisesRegex(ValueError,'已关注'):
+            self.act('monitor','catalog-add',dict(row,threshold=99))
+        saved=next(p for p in self.service.products() if p['sku']==row['sku'])
+        self.assertEqual((saved['name'],saved['threshold'],saved['stock_basis']),('目录商品',7,'company_able'))
+
     def test_product_create_edit_duplicate_and_remove_stale_review(self):
         value=dict(sku='NEW',goods_id='123',name='测试商品',category='内存',threshold='10',enabled=True)
         self.act('monitor','save',value)

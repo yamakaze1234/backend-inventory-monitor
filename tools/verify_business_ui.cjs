@@ -11,7 +11,7 @@ async function main(){
   await page.getByRole('button',{name:'添加产品',exact:true}).click();
   await page.locator('[data-business-module="monitor"]').waitFor();
   const quickAdd=page.getByRole('dialog',{name:'添加产品',exact:true});
-  await quickAdd.getByLabel('SKU 编码',{exact:true}).waitFor();
+  await quickAdd.getByLabel('商品名称或 ERP ID',{exact:true}).waitFor();
   await quickAdd.getByRole('button',{name:'取消',exact:true}).click();
   const nav=[['douyin','前台库存监控',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉货源监控',['消息监听','货源周报','定时日报','AI 接入','接收机器人']],['profit','ERP调价监控',['查看价格变动','价格监控配置','检测结果']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['order-settings','订单机器人设置',['匹配服务配置','订单匹配机器人']],['settings','连接与通知设置',['部门与工作区','库存数据来源','通知机器人','本地缓存']]];
   async function section(title){await page.getByRole('combobox',{name:'业务分区'}).click();await page.getByRole('option',{name:title,exact:true}).click();}
@@ -20,6 +20,12 @@ async function main(){
    for(const title of sections){await section(title);assert.equal(await page.locator('[data-native-module],iframe').count(),0);await page.screenshot({path:path.join(output,`${module}-${sections.indexOf(title)}.png`),fullPage:true,animations:'disabled'});}
    assert.equal(await page.getByRole('alert').count(),0,`${module} 读取失败`);
   }
+  await page.getByRole('button',{name:'订单机器人设置',exact:true}).click();await section('匹配服务配置');
+  await page.getByRole('button',{name:'一键配置',exact:true}).click();
+  await page.getByRole('button',{name:'核对并保存配置',exact:true}).click();
+  assert.ok((await page.getByRole('dialog').getByLabel('本部门运行数据目录').inputValue()).endsWith('order_matching'));
+  await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
+
   await page.getByRole('button',{name:'ERP调价监控',exact:true}).click();await section('查看价格变动');
   await page.getByRole('button',{name:'一键查看价格变动',exact:true}).click();
   assert.equal(await page.getByRole('dialog').count(),0,'一键查看不能再弹提交表单');
@@ -39,7 +45,15 @@ async function main(){
 
   await page.getByRole('button',{name:'管理监控商品',exact:true}).click();
   await page.getByRole('button',{name:'添加产品',exact:true}).click();
-  let dialog=page.getByRole('dialog');await dialog.getByLabel('SKU 编码',{exact:true}).fill('REUI-TEST');await dialog.getByLabel('ERP 商品编号',{exact:true}).fill('12345');await dialog.getByLabel('商品名称',{exact:true}).fill('ReUI 隔离测试商品');await dialog.getByLabel('预警阈值',{exact:true}).fill('7');await dialog.getByRole('button',{name:'提交',exact:true}).click();
+  let dialog=page.getByRole('dialog');
+  assert.equal(await dialog.getByRole('button',{name:'添加',exact:true}).isDisabled(),true);
+  await dialog.getByLabel('商品名称或 ERP ID').fill('ReUI 隔离测试');
+  await dialog.getByRole('button',{name:'搜索',exact:true}).click();
+  await dialog.getByRole('button',{name:'ReUI 隔离测试商品 · 12345',exact:true}).waitFor();
+  await dialog.getByLabel('商品名称或 ERP ID').fill('12345');
+  await dialog.getByRole('button',{name:'搜索',exact:true}).click();
+  await dialog.getByRole('button',{name:'ReUI 隔离测试商品 · 12345',exact:true}).click();
+  await dialog.getByLabel('预警阈值',{exact:true}).fill('7');await dialog.getByRole('button',{name:'添加',exact:true}).click();
   await page.getByText('产品配置已保存',{exact:true}).waitFor();
   // 顶部条件必须筛掉其他关注商品，并支持恢复列表。
   await page.getByRole('textbox',{name:'搜索商品或编号',exact:true}).fill('ReUI 隔离测试商品');

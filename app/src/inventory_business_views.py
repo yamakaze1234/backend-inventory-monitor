@@ -19,6 +19,12 @@ def robot_form(row=None):
         F('webhook','Webhook（留空保留原地址）','password',when=dict(mode='webhook')),F('group_name','目标群名称',when=dict(mode='enterprise')),F('robot_name','企业机器人名称',when=dict(mode='enterprise')),F('channels','通知类型','multi',options=CHANNELS),F('enabled','启用机器人','bool')]
     return A('robot-save','编辑机器人' if row.get('id') else '添加机器人',fields,values,module='settings')
 
+def catalog_add_form(row=None):
+    # 已选中的目录商品直接设置阈值；普通入口在弹窗内搜索。
+    row=row or {}
+    return A('catalog-add','关注此商品' if row else '添加产品',values=dict(threshold=5,sku=row.get('sku',''),goods_id=row.get('goods_id',''),name=row.get('name','')))
+
+
 def product_form(row=None):
     row=row or {}
     values=dict(category='内存',threshold=5,enabled=True,stock_basis='company_able',**{k:v for k,v in row.items() if k not in ('category','threshold','enabled','stock_basis','alerts')})
@@ -55,13 +61,11 @@ def build_view(b,module,q):
         rows=[p for p in all_products if matches_product(p,q)]
         for p in rows:p['_forms']=[product_form(p)]
         selected=[(p['sku'],p['name']+' · '+p['sku']) for p in rows]
-        main=S('products','关注产品');main['forms']=[product_form(),A('remove-preview','批量移除关注',[F('skus','选择产品','multi',options=selected)]),A('import-preview','导入表格',[F('path','Excel / CSV 文件','file')]),A('template','下载导入模板')]
+        main=S('products','关注产品');main['forms']=[catalog_add_form(),A('remove-preview','批量移除关注',[F('skus','选择产品','multi',options=selected)]),A('import-preview','导入表格',[F('path','Excel / CSV 文件','file')]),A('template','下载导入模板')]
         main['description']=f'当前筛选 {len(rows)} / {len(all_products)} 件关注商品'
         main['tables']=[T('已关注产品',[('name','商品'),('sku','SKU'),('threshold','提醒阈值'),('enabled','监控'),('warehouse_name','仓库')],rows)]
         catalog=b.service.catalog(q.get('query',''),limit=500,mode=q.get('mode','all'))
-        catalog=[dict(r,_forms=[product_form(dict(r,editing=False))]) for r in catalog]
-        # 搜索结果必须走新增校验，不能借编辑标记覆盖已有配置。
-        for r in catalog:r['_forms'][0]['values']['editing']=False;r['_forms'][0]['fields'][0]['readonly']=False;r['_forms'][0]['title']='关注此商品'
+        catalog=[dict(r,_forms=[catalog_add_form(r)]) for r in catalog]
         search=S('catalog','搜索 ERP 商品');search['tables']=[T('ERP 目录（最多 500 项）',[('name','商品'),('goods_id','ERP 编号'),('sku','SKU'),('able','可销')],catalog)]
         search['forms']=[A('warehouses','请求分库列表',[F('sku','SKU'),F('goods_id','ERP 商品编号')]),A('warehouse-result','查看分库',[F('goods_id','ERP 商品编号')])]
         filters=[F('query','搜索商品或编号'),F('mode','匹配方式',options=[('all','关键词'),('goods_id','完整 ERP 编号'),('name','名称')])]

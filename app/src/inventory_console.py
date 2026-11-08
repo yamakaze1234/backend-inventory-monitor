@@ -84,6 +84,14 @@ class InventoryConsole:
                             return self.reply(200,catalog())
                         if route.path == '/api/data/connection':
                             return self.reply(200,dict(url=outer.url,token=outer.query_token,scope='read-only',expires='process-exit'))
+                        if route.path == '/api/business/product-search' and outer.business:
+                            # 纯目录查询，不发起采集或写入 ERP。
+                            term=query.get('query',[''])[0].strip()
+                            if len(term)>100:raise ValueError('搜索词最多 100 字')
+                            rows=outer.service.catalog(term,limit=51,mode='goods_id' if term.isascii() and term.isdecimal() else 'name') if term else []
+                            watched=outer.service.products()
+                            skus={p['sku'] for p in watched};goods={str(p.get('goods_id','')) for p in watched}
+                            return self.reply(200,dict(more=len(rows)>50,rows=[dict(sku=r['sku'],goods_id=str(r.get('goods_id','')),name=r['name'],watched=r['sku'] in skus or str(r.get('goods_id','')) in goods) for r in rows[:50]]))
                         if route.path == '/api/business/idle':
                             return self.reply(200,dict(state='idle'))
                         if route.path == '/api/business/job' and outer.business:
@@ -307,6 +315,9 @@ def preview(root,desktop=False,duration=None,check_host=False):
     if not service.products():
         for i in range(120):
             service.save_product(dict(sku=f'DEMO-{i:04}',name=['英特尔处理器','技嘉显卡','乔思伯机箱'][i%3]+f' · 样例 {i+1}',threshold=5,enabled=True))
+    # 隔离样例目录用于验证按名称和编号添加。
+    with service.db() as db:
+        db.execute('INSERT OR REPLACE INTO catalog VALUES (?,?)',('REUI-TEST',json.dumps(dict(sku='REUI-TEST',goods_id='12345',name='ReUI 隔离测试商品'))))
     # 仅隔离候选模式提供可重复的成本变化样例，真实 SQL 与发送均未接入。
     from profit_manifest import sha
     monitor=business.profit()

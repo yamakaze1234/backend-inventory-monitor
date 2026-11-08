@@ -1,4 +1,8 @@
 """订单匹配专属配置页：后端、队列及接单机器人独立于库存通知。"""
+import json
+from pathlib import Path
+import shutil
+import sys
 from inventory_business_views import A,F,S,T
 
 
@@ -13,9 +17,7 @@ def view(b,q):
     state=adapter(b).configuration()
     backend=S('backend','匹配服务配置')
     backend['description']='为本部门连接独立匹配后端和运行队列；保存配置不会启动服务或修改 ERP。'
-    labels=[('match_root','匹配项目目录'),('control_root','机器人控制目录'),('state_root','本部门运行数据目录'),('python_path','Python 程序路径'),('dws_path','DWS 程序路径'),('pwsh_path','PowerShell 7 程序路径'),('node_path','Node 程序路径'),('agent_model','AI 模型标识')]
-    values={k:state.get(k,'') for k,_ in labels};values['shops']=state.get('shops') or [dict(id='',name='')]
-    backend['forms']=[A('backend-save','保存匹配服务配置',[*[F(k,label) for k,label in labels],F('shops','本部门匹配店铺','rows',columns=[('id','ERP 店铺编号'),('name','店铺名称')])],values),
+    backend['forms']=[A('backend-auto','一键配置',immediate=True), backend_form(state,'手动配置'),
         A('backend-deploy','安装部门兼容后端',confirm='将备份并更新所选后端的兼容文件。必须先停止原订单服务并核对未完成任务；本操作不会启动匹配或发送消息。')]
     backend['text']=state.get('message','')
     robot=S('robot','订单匹配机器人')
@@ -26,6 +28,45 @@ def view(b,q):
         robot['forms']=[A('robot-search','查找并配置匹配机器人',[F('groupQuery','群名称'),F('robotQuery','机器人名称'),F('intervalMinutes','订单巡检间隔（分钟）','number')],dict(groupQuery=target.get('groupName',''),robotQuery=target.get('robotName',''),intervalMinutes=target.get('intervalMinutes',120)))]
     else:robot['text']+='。请先保存匹配服务配置并安装兼容后端。'
     return dict(module='order-settings',filters=[],query=q,sections=[backend,robot])
+
+
+def backend_form(state,title):
+    labels=[('match_root','匹配项目目录'),('control_root','机器人控制目录'),('state_root','本部门运行数据目录'),('python_path','Python 程序路径'),('dws_path','DWS 程序路径'),('pwsh_path','PowerShell 7 程序路径'),('node_path','Node 程序路径'),('agent_model','AI 模型标识')]
+    values={k:state.get(k,'') for k,_ in labels};values['shops']=state.get('shops') or [dict(id='',name='')]
+    return A('backend-save',title,[*[F(k,label) for k,label in labels],F('shops','本部门匹配店铺','rows',columns=[('id','ERP 店铺编号'),('name','店铺名称')])],values)
+
+
+def auto_backend(b,v):
+    from order_bot_config import PATH_FIELDS
+    bot=adapter(b)
+    state=bot.configuration()
+    if state.get('configured'):return dict(message='匹配服务已配置，可通过手动配置修改。')
+    # 只检查安装位置附近的约定目录，不全盘搜索或接管旧队列。
+    install=Path(sys.executable if getattr(sys,'frozen',False) else __file__).resolve()
+    parents=install.parents
+    def unique(suffixes,required):
+        paths={p.resolve() for parent in parents for suffix in suffixes if (p:=parent/suffix).is_dir() and (p/required).is_file()}
+        return str(next(iter(paths))) if len(paths)==1 else ''
+    match=unique(('匹配/抖店SKU查询/抖店SKU查询','matching',''),'app/src/group_order_bot.py')
+    control=unique(('数据分析/机器人日报','PythonProject/数据分析/机器人日报','control',''),'robot_desktop_control.py')
+    def executable(name,*fallback):
+        paths=[shutil.which(name),*fallback]
+        return next((str(Path(p).resolve()) for p in paths if p and 'windowsapps' not in str(p).lower() and Path(p).is_file()),'')
+    values=dict(match_root=match,control_root=control,state_root=str((b.service.root/'order_matching').resolve()),
+                python_path=executable('python.exe',Path(install.anchor)/'python/python.exe'),dws_path=executable('dws.exe',Path.home()/'.local/bin/dws.exe'),
+                pwsh_path=executable('pwsh.exe'),node_path=executable('node.exe'))
+    shops=[]
+    if match:
+        try:
+            data=json.loads((Path(match)/'app/data/维护表设置.json').read_text(encoding='utf-8-sig'))
+            if data.get('version')==1:
+                shops=[dict(id=k,name=r['name']) for k,r in data['shops'].items() if r.get('name') and r.get('sheet') and Path(r.get('path','')).is_absolute()]
+        except (OSError,ValueError,TypeError,AttributeError,KeyError):pass
+    values['shops']=shops
+    # 自动发现的店铺范围需要回显，避免在共享匹配项目中默认接管其他部门店铺。
+    complete=all(values.get(key) for key in PATH_FIELDS) and bool(shops)
+    message='已识别运行环境和店铺，请核对本部门范围后保存。' if complete else '已填入可识别的配置，请补齐空项并核对本部门店铺。'
+    return dict(message=message,forms=[backend_form(values,'核对并保存配置')])
 
 
 def save_backend(b,v):
