@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { DataGridFeatures } from '@/components/reui/data-grid/data-grid';
 import { Frame, FrameHeader, FrameTitle, FrameDescription, FramePanel } from '@/components/reui/frame';
@@ -73,7 +73,8 @@ function ResultPanel({result,onAction}:{result:Result;onAction:(a:Action)=>void}
 }
 
 /** 七个业务页均由 React 控件组成；数据轮询不重置正在编辑的表单。 */
-export function BusinessPage({module}:{module:string}){
+function initialValues(action:Action){const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'?[]:'';}return initial;}
+export function BusinessPage({module,openAddProduct=false}:{module:string;openAddProduct?:boolean}){
   const [query,setQuery]=useState<Values>({});const [draft,setDraft]=useState<Values>({});const [section,setSection]=useState('');
   const params=new URLSearchParams(Object.entries(query).map(([k,v])=>[k,String(v)]));
   const snapshot=useSnapshot<View>(`/api/business/view/${module}?${params}`);
@@ -83,10 +84,18 @@ export function BusinessPage({module}:{module:string}){
   const busy=submitting||!!jobId&&!job.error&&(job.data?.id!==jobId||job.data?.state==='running');
   const [result,setResult]=useState<Result>();
   useEffect(()=>{if(job.data?.id!==jobId)return;if(job.data?.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,snapshot.refresh]);
-  const openAction=(action:Action)=>{if(action.immediate){void submit(action,action.values);return;}const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'?[]:'';}setValues(initial);setForm(action);};
+  const openAction=(action:Action)=>{if(action.immediate){void submit(action,action.values);return;}setValues(initialValues(action));setForm(action);};
   const submit=async(selected:Action|null=form,payload:Values=values)=>{if(!selected||busy)return;setSubmitting(true);setConfirmation(false);
     try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
     catch(e){toast.error(e instanceof Error?e.message:'操作未提交');}finally{setSubmitting(false);}};
+  const addOpened=useRef(false);
+  useEffect(()=>{
+    // 等管理页拿到原表单定义后打开一次，轮询不会打断编辑。
+    if(module!=='monitor'||!openAddProduct||addOpened.current||busy)return;
+    const add=snapshot.data?.sections.find(s=>s.id==='products')?.forms.find(a=>a.action==='save');
+    if(!add)return;
+    addOpened.current=true;setSection('products');setValues(initialValues(add));setForm(add);
+  },[module,openAddProduct,snapshot.data,busy]);
   const active=snapshot.data?.sections.find(s=>s.id===section)||snapshot.data?.sections[0];
   return <div data-business-module={module} className="flex min-w-0 flex-col gap-6">
     <div className="flex flex-wrap items-center justify-between gap-3">{snapshot.data&&<Select value={active?.id||''} onValueChange={v=>setSection(v||'')} items={Object.fromEntries(snapshot.data.sections.map(s=>[s.id,s.title]))}><SelectTrigger aria-label="业务分区"><SelectValue/></SelectTrigger><SelectContent>{snapshot.data.sections.map(s=><SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}</SelectContent></Select>}<Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}><RefreshCw/>刷新页面</Button></div>

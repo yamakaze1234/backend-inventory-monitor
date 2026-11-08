@@ -80,10 +80,10 @@ def events_export(b,v):
 @action('settings','source')
 def source_save(b,v):
     b.external()
-    if v.get('mode')=='script':b.service.use_script()
-    elif v.get('mode')=='sql':b.service.configure_sql({k:(int(v.get(k,1433)) if k=='port' else v.get(k,'')) for k in ('server','port','database','user')},v.get('password',''),remember=bool(v.get('remember')))
-    else:raise ValueError('请选择采集方式')
-    return dict(message='采集来源已应用')
+    # 设置页只接受 SQL，不允许旧页面继续切换到脚本采集。
+    if v.get('mode','sql')!='sql':raise ValueError('库存数据来源仅支持 SQL 查询')
+    b.service.configure_sql({k:(int(v.get(k,1433)) if k=='port' else v.get(k,'')) for k in ('server','port','database','user')},v.get('password',''),remember=bool(v.get('remember')))
+    return dict(message='SQL 连接已应用')
 
 @action('settings','catalog')
 def catalog_refresh(b,v):

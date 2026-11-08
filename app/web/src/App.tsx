@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { DataGridFeatures } from '@/components/reui/data-grid/data-grid';
-import { PackageSearch, ListChecks, Download, Settings, RefreshCw, Play, Pause, Moon, Sun, Boxes, Bell, ChartNoAxesCombined } from 'lucide-react';
+import { PackageSearch, ListChecks, Download, Settings, RefreshCw, Play, Pause, Moon, Sun, Boxes, Bell, ChartNoAxesCombined, Plus } from 'lucide-react';
 import { Sidebar, SidebarProvider, SidebarHeader, SidebarContent, SidebarGroup, SidebarGroupLabel, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarFooter, SidebarInset, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { Frame, FramePanel, FrameHeader, FrameTitle, FrameDescription } from '@/components/reui/frame';
 import { Badge } from '@/components/reui/badge';
@@ -48,7 +48,7 @@ function useAction(refresh:()=>void) {
   return {busy,run};
 }
 
-function InventoryPage(){
+function InventoryPage({onAddProduct}:{onAddProduct:()=>void}){
   const snapshot=useSnapshot<Inventory>('/api/inventory');
   const {busy,run}=useAction(snapshot.refresh);
   const [search,setSearch]=useState('');
@@ -63,7 +63,7 @@ function InventoryPage(){
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{[
       ['监控商品',String(snapshot.data?.products.length??'—')],['采集状态',names[snapshot.data?.connection||'waiting']],['上次采集',snapshot.data?.checked_at?new Date(snapshot.data.checked_at*1000).toLocaleString('zh-CN'):'尚未采集']
     ].map(([label,value])=><Frame key={label} spacing="sm"><FrameHeader><FrameDescription>{label}</FrameDescription></FrameHeader><FramePanel>{snapshot.loading?<Skeleton className="h-7 w-28"/>:<div className="text-lg font-semibold tabular-nums">{value}</div>}</FramePanel></Frame>)}</div>
-    <Frame spacing="sm"><FrameHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><FrameTitle>库存监控</FrameTitle><FrameDescription>库存以最近一次采集为准，未采集不显示为零。</FrameDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy||!snapshot.data} onClick={()=>void run('/api/inventory/enabled',{enabled:!snapshot.data?.enabled})}>{snapshot.data?.enabled?<Pause/>:<Play/>}{snapshot.data?.enabled?'暂停监控':'恢复监控'}</Button><Button size="sm" disabled={busy||snapshot.data?.source_busy} onClick={()=>void run('/api/inventory/check',{})}><RefreshCw/>立即检查</Button></div></div></FrameHeader>
+    <Frame spacing="sm"><FrameHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><FrameTitle>库存监控</FrameTitle><FrameDescription>库存以最近一次采集为准，未采集不显示为零。</FrameDescription></div><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={onAddProduct}><Plus/>添加产品</Button><Button size="sm" variant="outline" disabled={busy||!snapshot.data} onClick={()=>void run('/api/inventory/enabled',{enabled:!snapshot.data?.enabled})}>{snapshot.data?.enabled?<Pause/>:<Play/>}{snapshot.data?.enabled?'暂停监控':'恢复监控'}</Button><Button size="sm" disabled={busy||snapshot.data?.source_busy} onClick={()=>void run('/api/inventory/check',{})}><RefreshCw/>立即检查</Button></div></div></FrameHeader>
     <FramePanel><div className="flex flex-col gap-4"><label className="flex max-w-md flex-col gap-2"><span className="text-xs text-muted-foreground">搜索商品或 SKU</span><Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="输入商品名称或 SKU"/></label><Records rows={rows} columns={columns} loading={snapshot.loading}/>{!rows.length&&!snapshot.loading&&<Button variant="outline" size="sm" onClick={()=>{setSearch('');snapshot.refresh();}}>清空搜索并刷新</Button>}</div></FramePanel></Frame>
   </div>;
 }
@@ -115,7 +115,9 @@ function UpdatesPage(){
 function ConsoleLayout(){
   const [page,setPage]=useState('inventory');
   const {setOpenMobile}=useSidebar();
-  const navigate=(id:string)=>{setPage(id);setOpenMobile(false);};
+  // 快捷入口复用商品管理表单，普通导航不自动打开表单。
+  const [openAddProduct,setOpenAddProduct]=useState(false);
+  const navigate=(id:string,addProduct=false)=>{setOpenAddProduct(addProduct);setPage(id);setOpenMobile(false);};
   const [dark,setDark]=useState(()=>localStorage.getItem('console-theme')==='dark');
   const autoChecked=useRef(false);
   const info=useSnapshot<{autoCheck:boolean;version:string;business:boolean}>('/api/info',30000);
@@ -128,7 +130,7 @@ function ConsoleLayout(){
     {title:'设置',items:[{id:'monitor',title:'管理监控商品',icon:Boxes},{id:'settings',title:'连接与通知设置',icon:Settings}]},
   ];
   const pages=groups.flatMap(group=>group.items);
-  return <><Sidebar><SidebarHeader><div className="flex items-center gap-3 p-2"><img src="/app-icon.ico" alt="" className="size-8"/><div className="flex flex-col gap-0.5"><strong>后台库存监控</strong><span className="text-xs text-muted-foreground">库存 · 订单 · 运营</span></div></div></SidebarHeader><SidebarContent>{groups.map(group=><SidebarGroup key={group.title}><SidebarGroupLabel>{group.title}</SidebarGroupLabel><SidebarMenu>{group.items.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton aria-current={page===item.id?'page':undefined} isActive={page===item.id} onClick={()=>navigate(item.id)}><item.icon/><span>{item.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>)}</SidebarContent><SidebarFooter><SidebarMenu><SidebarMenuItem><SidebarMenuButton aria-current={page==='updates'?"page":undefined} isActive={page==='updates'} onClick={()=>navigate('updates')}><Download/><span>软件更新</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu><div className="flex items-center justify-between gap-2 p-2"><span className="text-xs text-muted-foreground">v{info.data?.version||'—'} · 本机工作台</span><Button variant="ghost" size="icon-sm" aria-label={dark?'切换浅色':'切换深色'} onClick={()=>setDark(v=>!v)}>{dark?<Sun/>:<Moon/>}</Button></div></SidebarFooter></Sidebar><SidebarInset><header className="flex items-center gap-3 border-b p-4"><SidebarTrigger aria-label="展开或收起导航"/><div className="flex flex-col gap-0.5"><h1 className="text-lg font-semibold tracking-tight">{[...pages,{id:'updates',title:'软件更新'}].find(p=>p.id===page)?.title}</h1><p className="text-xs text-muted-foreground">统一查看状态，按任务处理异常</p></div></header><div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:p-6">{page==='inventory'?<InventoryPage/>:page==='orders'?<OrdersPage/>:page==='updates'?<UpdatesPage/>:<BusinessPage key={page} module={page}/>}</div></SidebarInset><Toaster richColors theme={dark?'dark':'light'}/></>;
+  return <><Sidebar><SidebarHeader><div className="flex items-center gap-3 p-2"><img src="/app-icon.ico" alt="" className="size-8"/><div className="flex flex-col gap-0.5"><strong>后台库存监控</strong><span className="text-xs text-muted-foreground">库存 · 订单 · 运营</span></div></div></SidebarHeader><SidebarContent>{groups.map(group=><SidebarGroup key={group.title}><SidebarGroupLabel>{group.title}</SidebarGroupLabel><SidebarMenu>{group.items.map(item=><SidebarMenuItem key={item.id}><SidebarMenuButton aria-current={page===item.id?'page':undefined} isActive={page===item.id} onClick={()=>navigate(item.id)}><item.icon/><span>{item.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>)}</SidebarContent><SidebarFooter><SidebarMenu><SidebarMenuItem><SidebarMenuButton aria-current={page==='updates'?"page":undefined} isActive={page==='updates'} onClick={()=>navigate('updates')}><Download/><span>软件更新</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu><div className="flex items-center justify-between gap-2 p-2"><span className="text-xs text-muted-foreground">v{info.data?.version||'—'} · 本机工作台</span><Button variant="ghost" size="icon-sm" aria-label={dark?'切换浅色':'切换深色'} onClick={()=>setDark(v=>!v)}>{dark?<Sun/>:<Moon/>}</Button></div></SidebarFooter></Sidebar><SidebarInset><header className="flex items-center gap-3 border-b p-4"><SidebarTrigger aria-label="展开或收起导航"/><div className="flex flex-col gap-0.5"><h1 className="text-lg font-semibold tracking-tight">{[...pages,{id:'updates',title:'软件更新'}].find(p=>p.id===page)?.title}</h1><p className="text-xs text-muted-foreground">统一查看状态，按任务处理异常</p></div></header><div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:p-6">{page==='inventory'?<InventoryPage onAddProduct={()=>navigate('monitor',true)}/>:page==='orders'?<OrdersPage/>:page==='updates'?<UpdatesPage/>:<BusinessPage key={page} module={page} openAddProduct={openAddProduct}/>}</div></SidebarInset><Toaster richColors theme={dark?'dark':'light'}/></>;
 }
 
 // 导航由同一布局管理，移动侧栏选中后关闭，更新入口固定在页脚。

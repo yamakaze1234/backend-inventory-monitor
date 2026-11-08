@@ -8,6 +8,11 @@ async function main(){
  try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url);
+  await page.getByRole('button',{name:'添加产品',exact:true}).click();
+  await page.locator('[data-business-module="monitor"]').waitFor();
+  const quickAdd=page.getByRole('dialog',{name:'添加产品',exact:true});
+  await quickAdd.getByLabel('SKU 编码',{exact:true}).waitFor();
+  await quickAdd.getByRole('button',{name:'取消',exact:true}).click();
   const nav=[['douyin','前台库存监控',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉货源监控',['消息监听','货源周报','定时日报','AI 接入','接收机器人']],['profit','ERP调价监控',['查看价格变动','价格监控配置','检测结果']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['settings','连接与通知设置',['库存数据来源','通知机器人','本地缓存']]];
   async function section(title){await page.getByRole('combobox',{name:'业务分区'}).click();await page.getByRole('option',{name:title,exact:true}).click();}
   for(const [module,title,sections] of nav){

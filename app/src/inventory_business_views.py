@@ -77,10 +77,8 @@ def build_view(b,module,q):
     elif module=='settings':
         with b.service.db() as db:
             cfg=b.service.get(db,'sql_connection',{});remember=b.service.get(db,'sql_remember',False)
-        source=S('source','库存数据来源');source['forms']=[A('source','保存并应用采集来源',[F('mode','采集方式',options=[('sql','SQL 查询'),('script','脚本查询')]),F('server','服务器'),F('port','端口','number'),F('database','数据库'),F('user','查询账号'),F('password','密码（留空使用已保存密码）','password'),F('remember','加密保存密码','bool')],dict({k:cfg.get(k,1433 if k=='port' else 'ERP' if k=='database' else '') for k in ('server','port','database','user')},mode=b.service.source_mode(),remember=remember)),A('catalog','刷新完整 ERP 目录'),A('interval','保存监控周期',[F('minutes','分钟','number')],dict(minutes=b.service.status()['interval_seconds']//60))]
-        with b.service.db() as db:recovery=b.service.get(db,'erp_native_enabled',False)
-        source['forms'].append(A('recovery','保存自动重登设置',[F('enabled','自动重登（无人值守）','bool')],dict(enabled=recovery)))
-        source['text']='脚本模式：启用 inventory-erp.user.js，登录 ERP 分库库存页，选择公司大库并连接采集。SQL 查询按原服务校验连接与只读来源。'
+        source=S('source','库存数据来源');source['forms']=[A('source','保存 SQL 连接',[F('server','服务器'),F('port','端口','number'),F('database','数据库'),F('user','查询账号'),F('password','密码（留空使用已保存密码）','password'),F('remember','加密保存密码','bool')],dict({k:cfg.get(k,1433 if k=='port' else 'ERP' if k=='database' else '') for k in ('server','port','database','user')},remember=remember)),A('catalog','刷新完整 ERP 目录'),A('interval','保存监控周期',[F('minutes','分钟','number')],dict(minutes=b.service.status()['interval_seconds']//60))]
+        source['text']='使用 SQL 查询 ERP 库存。旧来源配置可通过保存 SQL 连接切换。'
         robots=S('robots','通知机器人');rows=b.robots().list_robots()
         for row in rows:row['_forms']=[robot_form(row),A('robot-toggle','暂停' if row['enabled'] else '启用',[],dict(id=row['id'],enabled=not row['enabled']),confirm='确认调整该机器人的通知开关？'),A('robot-delete','移除机器人',[],dict(id=row['id']),confirm='移除机器人，历史回执保留。')]
         robots['forms']=[robot_form(),A('enterprise-profiles','选择企业机器人')];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]
