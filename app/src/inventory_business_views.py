@@ -107,7 +107,16 @@ def build_view(b,module,q):
         department=S('workspace','部门与工作区');department['description']='新安装使用独立数据目录；现有工作区继续保留原有配置。未配置的业务模块不会自动接收任务。'
         department['forms']=[A('workspace','保存工作区信息',[F('department','部门名称'),F('name','工作区名称')],workspace)]
         department['text']='当前数据目录：'+workspace['data_dir']
-        sections=[department,source,robots,settings_section(b)]
+        from monitor_portable_install import autostart_available,autostart_enabled
+        startup=S('startup','启动与运行',description='登录 Windows 后在系统托盘启动后台库存监控。')
+        available=not b.offline and autostart_available()
+        try:
+            enabled=autostart_enabled() if available else False
+        except OSError:
+            available,enabled=False,False
+            startup['text']='无法读取 Windows 启动项，请检查当前用户权限。'
+        startup['autostart']=dict(available=available,enabled=enabled)
+        sections=[startup,department,source,robots,settings_section(b)]
     elif module=='profit':
         state=b.profit().status();main=S('scope','价格监控配置')
         # 价格监控仅展示维护表入口；旧快照数据仍保留以便历史查询。

@@ -91,6 +91,23 @@ def events_export(b,v):
     if v.get('id'):rows=[r for r in rows if r['id']==v['id']]
     return document(format_events(rows[:6],b.service) if v.get('kind')=='preview' else format_events_detailed(rows,b.service),'库存提醒记录.md')
 
+@action('settings','autostart')
+def monitor_autostart(b,v):
+    from monitor_portable_install import autostart_available,set_monitor_autostart
+    if b.offline or not autostart_available():
+        raise ValueError('请在 Windows 桌面程序中修改开机启动设置')
+    enabled=v.get('enabled')
+    if type(enabled) is not bool:
+        raise ValueError('开机启动设置无效')
+    try:
+        actual=set_monitor_autostart(enabled,b.service.root)
+    except OSError as exc:
+        raise ValueError('无法修改 Windows 启动项，请检查当前用户权限') from exc
+    if actual != enabled:
+        raise ValueError('Windows 启动项状态与设置不一致，请刷新后检查')
+    return dict(message='已开启登录后自动启动' if actual else '已关闭登录后自动启动')
+
+
 @action('settings','source')
 def source_save(b,v):
     b.external()

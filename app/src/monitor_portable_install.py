@@ -10,6 +10,7 @@ import sys
 
 VERSION = '2.0.0'
 _PRODUCT = 'DingTalkSourceMonitor'
+_RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 _SHORTCUT_SCRIPT = '''Option Explicit
 Dim shell, link
 Set shell = CreateObject("WScript.Shell")
@@ -120,9 +121,39 @@ def _set_autostart(executable: Path, data_dir: Path) -> None:
     # Always quote the executable, including paths currently without spaces.
     command = '"' + str(executable) + '" ' + subprocess.list2cmdline(['--tray', '--data-dir', str(data_dir)])
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,
-                            r'Software\Microsoft\Windows\CurrentVersion\Run',
+                            _RUN_KEY,
                             0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, _PRODUCT, 0, winreg.REG_SZ, command)
+
+
+def autostart_enabled() -> bool:
+    import winreg
+    # 读取旧安装器与设置共用的启动项，不依赖工作区数据库。
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as key:
+            command, kind = winreg.QueryValueEx(key, _PRODUCT)
+            return kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and bool(command.strip())
+    except FileNotFoundError:
+        return False
+
+
+def set_monitor_autostart(enabled: bool, data_dir: Path) -> bool:
+    import winreg
+    if enabled:
+        _set_autostart(Path(sys.executable).resolve(), data_dir.resolve())
+    else:
+        # 只删除本程序的登记；启动项不存在时允许重复关闭。
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, _PRODUCT)
+        except FileNotFoundError:
+            pass
+    return autostart_enabled()
+
+
+def autostart_available() -> bool:
+    # 开发环境不能把 Python 解释器登记为监控程序。
+    return os.name == 'nt' and bool(getattr(sys, 'frozen', False))
 
 
 def _create_shortcut(shortcut: Path, executable: Path, data_dir: Path) -> None:
@@ -159,8 +190,8 @@ def install_current_user(data_dir=None, source_executable=None, dry_run=False) -
         if source != target.resolve():
             shutil.copy2(source, target)
         _create_shortcut(shortcut, target, data)
-        _set_autostart(target, data)
-        result['autostart'] = True
+        # 新安装不自动登记；已存在的启动项交给设置管理。
+        result['autostart'] = autostart_enabled()
         return result
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f'当前用户安装失败：{exc}') from exc
