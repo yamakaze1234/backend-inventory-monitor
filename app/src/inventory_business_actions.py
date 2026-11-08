@@ -388,9 +388,9 @@ def price_maintenance_preview(b,v):
     from price_maintenance import inspect_sources, saved_sources
     sources=saved_sources(b.douyin.store) if v.get('reuse') else v.get('sources')
     preview=inspect_sources(sources)
-    result=dict(message=f"维护表：{preview['count']} 套配置 / {preview['goodsCount']} 个配件 ID。只读已保存内容。",
+    result=dict(message=f"维护表：{preview['count']} 套配置 / {preview['goodsCount']} 个配件 ID，跳过 {len(preview['issues'])} 项异常行。只读已保存内容。",
         tables=[T('维护表范围',[('path','文件'),('sheet','工作表'),('shop_id','店铺'),('count','配置数')],preview['files']),
-                T('需要处理的行',[('path','文件'),('sheet','工作表'),('row','行'),('reason','问题')],preview['issues'])])
+                T('跳过的异常行',[('path','文件'),('sheet','工作表'),('row','行'),('reason','问题')],preview['issues'])])
     if preview['complete']:
         token=b.review('price-maintenance',preview)
         result['forms']=[A('maintenance-bind','确认绑定维护表',values=dict(token=token),confirm='确认店铺和配件范围；首次有效采集只建立价格基准。')]

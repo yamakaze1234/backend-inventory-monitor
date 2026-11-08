@@ -27,7 +27,7 @@ async function main(){
   await page.getByText('+1.00',{exact:true}).waitFor();await page.getByText('+2.00',{exact:true}).waitFor();
   await page.screenshot({path:path.join(output,'price-changes.png'),fullPage:true,animations:'disabled'});
   // 固定时间保存到隔离服务，重新打开核对；维护表入口使用现有 React 文件字段。
-  await section('价格监控配置');await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
+  await section('价格监控配置');assert.equal(await page.getByRole('button',{name:'选择并预览配置快照',exact:true}).count(),0);await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
   const schedule=page.getByRole('dialog');await schedule.getByLabel('每天巡检时间（北京时间，多个用逗号分隔）',{exact:true}).fill('09:30');
   await schedule.getByRole('button',{name:'提交',exact:true}).click();await page.getByText('北京时间固定巡检时间已保存',{exact:true}).waitFor();
   await page.getByRole('button',{name:'保存定时检测',exact:true}).click();

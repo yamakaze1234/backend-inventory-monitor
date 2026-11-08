@@ -86,12 +86,13 @@ def build_view(b,module,q):
         sections=[source,robots,cache]
     elif module=='profit':
         state=b.profit().status();main=S('scope','价格监控配置')
-        main['forms']=[A('preview','选择并预览配置快照',[F('path','manifest.json 文件','file')],dict(path=state['path'])),A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('times','每天巡检时间（北京时间，多个用逗号分隔）')],dict(enabled=state['enabled'],times=', '.join(state['scheduleTimes']))),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
+        # 价格监控仅展示维护表入口；旧快照数据仍保留以便历史查询。
+        main['forms']=[A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('times','每天巡检时间（北京时间，多个用逗号分隔）')],dict(enabled=state['enabled'],times=', '.join(state['scheduleTimes']))),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
         from price_maintenance import saved_sources
         bindings=state['maintenanceSources'] or saved_sources(b.douyin.store) or [dict(path='',sheet='',shop_id='')]
         main['forms']=[A('maintenance-preview','预览已有主机维护表',values=dict(reuse=True)),A('maintenance-preview','选择主机维护表',[F('sources','维护表清单','rows',columns=[('path','文件完整路径'),('sheet','工作表'),('shop_id','ERP 店铺编号')])],dict(sources=bindings)),*main['forms']]
         main['tables']=[T('已绑定维护表',[('path','文件'),('sheet','工作表'),('shop_id','店铺')],state['maintenanceSources'])]
-        main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；累计涨跌达到 100 元提醒。涨幅 ≥5%（含从零上涨）/ 上涨 <5% / 降价分别展示。来源状态：{state['sourceError'] or state['lastError'] or '正常'}"
+        main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；跳过 {state.get('skippedRows',0)} 项异常行；累计涨跌达到 100 元提醒。涨幅 ≥5%（含从零上涨）/ 上涨 <5% / 降价分别展示。来源状态：{state['sourceError'] or state['lastError'] or '正常'}"
         from price_schedule import TZ
         from datetime import datetime
         next_time=datetime.fromtimestamp(state['nextCheck'],TZ).strftime('%Y-%m-%d %H:%M') if state['enabled'] and state['nextCheck'] else '未启用 / 待执行'

@@ -73,14 +73,24 @@ def send_enterprise(target, payload):
     client = EnterpriseClient()
     try:
         target = client.verify(target)
-        if payload.get('msgtype') != 'markdown' or not payload.get('markdown', {}).get('text'):
+        if payload.get('msgtype') == 'markdown':
+            markdown = payload.get('markdown', {})
+        elif payload.get('msgtype') == 'text':
+            # ERP 价格提醒沿用普通文本契约，企业发送统一转 Markdown 并保留逐行显示。
+            content = payload.get('text', {}).get('content')
+            if not isinstance(content, str) or not content.strip():
+                return dict(status='failed', retryable=False)
+            markdown = dict(title='通知', text=content.replace('\r\n', '\n').replace('\n', '  \n'))
+        else:
+            return dict(status='failed', retryable=False)
+        if not isinstance(markdown, dict) or not isinstance(markdown.get('text'), str) or not markdown['text'].strip():
             return dict(status='failed', retryable=False)
     except Exception:
         return dict(status='failed', retryable=False)
     try:
         value = client.call(['chat', '+messages-send', '--as', 'bot', '--robot-code', target['robot_code'],
-                             '--group', target['group_id'], '--title', payload['markdown'].get('title') or '通知',
-                             '--markdown', payload['markdown']['text'], '--yes'], target['profile'])
+                             '--group', target['group_id'], '--title', markdown.get('title') or '通知',
+                             '--markdown', markdown['text'], '--yes'], target['profile'])
         result = value.get('result', {})
         accepted = value.get('ok') is True and result.get('success') is True and result.get('result', {}).get('processQueryKey')
         return dict(status='sent' if accepted else 'unknown', retryable=False)

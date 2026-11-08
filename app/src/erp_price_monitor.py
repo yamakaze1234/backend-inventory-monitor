@@ -287,6 +287,7 @@ class ProfitMonitor:
                         sourceId=manifest['sourceId'] if manifest else None,
                         revision=manifest['revision'] if manifest else None,
                         count=len(manifest['configs']) if manifest else 0, goodsCount=len(goods), invalidIds=invalid,
+                        skippedRows=len(manifest.get('skippedMaintenanceRows', [])) if manifest else 0,
                         publishedAt=manifest['publishedAt'] if manifest else None,
                         lastReadAt=self._get(db, 'last_read_at'), sourceError=self._get(db, 'source_error', ''),
                         enabled=self._get(db, 'enabled', False), notify=self._get(db, 'notify', False),
@@ -428,36 +429,24 @@ class ProfitMonitor:
                 self.running = False
                 self.run_thread_ident = None
 
-    def _price_message(self, manifest, gid, info, before, after, cost_at, refs):
+    def _price_message(self, gid, info, before, after, cost_at):
+        # 群通知只说明配件变价；配置和链接关系仍保留在检测结果中供页面查询。
         direction = '上涨' if after > before else '下降'
-        lines = [f'ERP 单价累计变化达到 100 元 · goods_id {gid}',
+        percent = f'{(after-before)/before*100:+.2f}%' if before > 0 else '从零上涨（不计算百分比）'
+        lines = [f'ERP 配件调价提醒 · goods_id {gid}',
                  f'配件：{"、".join(info["names"][:3]) or "未命名配件"}',
-                 f'公司大库库存成本：上次提醒基准 {before/100:.2f} → 当前 {after/100:.2f} 元（累计{direction} {abs(after-before)/100:.2f} 元）',
-                 f'成本采集：{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cost_at))}',
-                 f'配置发布：{manifest["publishedAt"]}',
-                 f'受影响配置：{affected_config_count(info["refs"])} 套']
-        lines.extend(f'  {shop} / {product} / {name} / {slot}' for shop, _, product, name, slot in refs)
+                 f'公司大库库存成本：上次提醒基准 {before/100:.2f} → 当前 {after/100:.2f} 元',
+                 f'累计{direction} {abs(after-before)/100:.2f} 元；涨跌幅：{percent}',
+                 f'成本采集：{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cost_at))}']
         return '\n'.join(lines)
 
     def _insert_change_events(self, db, run_id, manifest, gid, info, before, after, cost_at, recipients):
-        chunks, pending = [], []
-        for ref in info['refs']:
-            candidate = pending + [ref]
-            if pending and len(self._price_message(manifest, gid, info, before, after, cost_at, candidate).encode('utf-8')) > 12000:
-                chunks.append(pending)
-                pending = [ref]
-            else:
-                pending = candidate
-            if len(self._price_message(manifest, gid, info, before, after, cost_at, pending).encode('utf-8')) > 12000:
-                raise ValueError('单个受影响配置超过消息上限')
-        if pending:
-            chunks.append(pending)
-        for index, refs in enumerate(chunks):
-            event_id = sha([PRICE_MODE, run_id, gid, index, before, after])
-            payload = canonical(dict(msgtype='text', text=dict(content=self._price_message(manifest, gid, info, before, after, cost_at, refs))))
-            db.execute('''INSERT INTO events(id,shop_id,created,payload,status,recipients,kind)
-                VALUES(?,?,?,?,?,?,?)''',
-                (event_id, 'ERP单价', time.time(), payload, 'pending' if recipients else 'skipped', canonical(recipients), PRICE_EVENT_KIND))
+        # 一个配件一次变化只生成一条提醒，不再按受影响配置拆成多条群消息。
+        event_id = sha([PRICE_MODE, run_id, gid, 0, before, after])
+        payload = canonical(dict(msgtype='text', text=dict(content=self._price_message(gid, info, before, after, cost_at))))
+        db.execute('''INSERT INTO events(id,shop_id,created,payload,status,recipients,kind)
+            VALUES(?,?,?,?,?,?,?)''',
+            (event_id, 'ERP单价', time.time(), payload, 'pending' if recipients else 'skipped', canonical(recipients), PRICE_EVENT_KIND))
 
     def deliver_pending(self):
         with self.db() as db:

@@ -42,7 +42,7 @@ def normalize_sources(bindings):
 
 
 def _read_sources(bindings):
-    """逐来源校验后合并；任何异常都保留在预览中，不生成看似完整的部分清单。"""
+    """逐来源校验后合并；异常行保留在预览中并排除，只监控有效配置中的配件。"""
     sources = normalize_sources(bindings)
     configs, issues, summaries, seen = [], [], [], set()
     for source in sources:
@@ -122,20 +122,22 @@ def _read_sources(bindings):
 
 
 def inspect_sources(bindings):
-    """返回稳定的可确认预览；异常行必须处理后才能绑定，不写文件或数据库。"""
+    """返回稳定的可确认预览；异常行明确排除，整体来源错误仍阻止绑定，不写文件或数据库。"""
     sources, configs, issues, summaries = _read_sources(bindings)
     return dict(sources=sources, files=summaries, count=len(configs),
                 goodsCount=len({p['goodsId'] for row in configs for p in row['parts']}),
                 shops=sorted({row['shopId'] for row in configs}), issues=issues,
-                complete=not issues, businessHash=sha(configs))
+                complete=not any(item['row']==0 or '相同店铺' in item['reason'] for item in issues), skippedRows=len(issues), businessHash=sha(configs))
 
 
 def read_sources(bindings, previous=None, expected=None):
     """每次巡检读取已保存内容；业务无变化保持修订号，有变化时单调递增。"""
     sources, configs, issues, summaries = _read_sources(bindings)
-    if issues:
-        first = issues[0]
-        raise ValueError(f"维护表有 {len(issues)} 项待核对，未更新清单：{first['sheet']} 第 {first['row']} 行 {first['reason']}")
+    # 用户选择按可识别范围监控；缺 SKU、配件 ID 或数量错误行不进入监控清单。
+    fatal=[item for item in issues if item['row']==0 or '相同店铺' in item['reason']]
+    if fatal:
+        first = fatal[0]
+        raise ValueError(f"维护表有 {len(fatal)} 项待核对，未更新清单：{first['sheet']} 第 {first['row']} 行 {first['reason']}")
     business_hash = sha(configs)
     if expected is not None:
         # 预览确认与正式绑定使用本次同一解析结果校验，避免两次读取间采用已改变内容。
@@ -151,7 +153,7 @@ def read_sources(bindings, previous=None, expected=None):
     manifest = dict(contract='profit-monitor/v1', schemaVersion=1, complete=True,
                     formulaVersion='profit/v1', sourceId=SOURCE_ID, workspaceId=workspace,
                     revision=revision, publishedAt=datetime.now(timezone.utc).isoformat(),
-                    configs=configs, businessHash=business_hash, maintenanceSources=summaries)
+                    configs=configs, businessHash=business_hash, maintenanceSources=summaries, skippedMaintenanceRows=issues)
     manifest['contentHash'] = sha(manifest)
     if len(canonical(manifest).encode('utf-8')) > MAX_BYTES:
         raise ValueError('维护表清单超过联动快照大小上限，请缩小巡检范围')

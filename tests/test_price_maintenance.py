@@ -74,6 +74,18 @@ class PriceMaintenanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '未更新清单'):
                     read_sources(bindings)
 
+    def test_bad_rows_are_skipped_while_valid_parts_are_monitored(self):
+        # 缺身份或配件编号行被明确排除，不能猜测编号或把整店漏掉。
+        bad=self.row();bad[1]=''
+        bad_part=self.row();bad_part[0]='3234567890123456789';bad_part[3]=''
+        bindings=self.book([self.row(),bad,bad_part])
+        preview=inspect_sources(bindings)
+        self.assertTrue(preview['complete']);self.assertEqual(preview['count'],1)
+        self.assertEqual(len(preview['issues']),2)
+        manifest=read_sources(bindings,expected=preview)
+        self.assertEqual(len(manifest['configs']),1)
+        self.assertEqual(len(manifest['skippedMaintenanceRows']),2)
+
     def test_blank_spu_not_monitored_and_empty_scope_is_rejected(self):
         row = self.row(); row[0] = ''
         bindings = self.book([self.row(), row])
