@@ -1,5 +1,8 @@
 #requires -Version 7.0
 $ErrorActionPreference='Stop'
+# 保留现用启动器的中文管道编码修复，避免读取机器人配置时解码失败。
+[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+$OutputEncoding=[Console]::OutputEncoding
 # 部门配置由库存工作台保存，连接器只继承明确的运行上下文。
 $configPath=$env:ORDER_BOT_CONFIG
 if(-not $configPath){$configPath=(Get-Content -LiteralPath "$PSScriptRoot/order-department.json" -Raw | ConvertFrom-Json).configPath}
