@@ -94,6 +94,7 @@ def reconcile(config, preview, snapshots, remote, fields):
     """按店铺＋商品＋SKU 对齐，只改程序负责的字段；重复业务键时停止同步。"""
     wanted = desired(preview, fields)
     # 精确身份未匹配项独立入表，不受零库存/配件齐全筛选限制。
+    # 单选列用已有的明确选项；传 None 可能不清空云端值，导致每轮回读失败。
     from douyin_scope import product_url
     for sku in snapshots:
         erp = sku.get('erp', {})
@@ -103,7 +104,7 @@ def reconcile(config, preview, snapshots, remote, fields):
         key = ':'.join((config['id'], sku['product_id'], sku['sku_id']))
         cells = {'店铺':config['name'], '商品名称':sku['product_name'], '配置名称':sku['sku_name'],
                  '商品链接':dict(text='打开商品', link=product_url(sku['product_id'])),
-                 '平台库存':sku.get('quantity'), '配件检查':'sku未匹配 待人工核对', '补库存标记':None,
+                 '平台库存':sku.get('quantity'), '配件检查':'sku未匹配 待人工核对', '补库存标记':'待人工核对',
                  '平台快照时间':stamp(config['checked']), '配件核对时间':stamp(erp.get('checked',0)),
                  '商品ID':sku['product_id'], 'SKU ID':sku['sku_id'], '关联键':key}
         wanted[key] = {fields[name]:value for name,value in cells.items()}

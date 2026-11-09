@@ -174,7 +174,14 @@ class OnlineTests(unittest.TestCase):
         self.sync();self.accept(quantity=5);self.sync(force=True)
         rows=self.store.snapshots(self.ident);rows[0]['erp']['matching_state']='sku_unmatched'
         _,changes,_,wanted=reconcile(self.store.store(self.ident),None,rows,self.client.rows,self.fields)
-        self.assertIsNone(changes[0]['cells'][self.fields['补库存标记']])
+        self.assertEqual(changes[0]['cells'][self.fields['补库存标记']], '待人工核对')
+        # 模拟钉钉忽略空值，并把单选返回为带名称的对象。
+        for change in changes:
+            actual=next(r for r in self.client.rows if r['recordId']==change['recordId'])
+            actual['cells'].update({k:v for k,v in change['cells'].items() if v is not None})
+            actual['cells'][self.fields['补库存标记']]={'name':'待人工核对'}
+        from douyin_online import verified
+        self.assertTrue(verified(self.client.query(),wanted,[],self.fields['关联键']))
         self.assertNotIn(self.fields['处理状态'],changes[0]['cells'])
 
     def test_incomplete_query_is_rejected(self):
