@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from contextvars import ContextVar
 from pathlib import Path
 
 from patrol_service import single_instance
@@ -28,6 +29,8 @@ DWS = DEPARTMENT['dws_path']
 SHOPS = tuple(item['id'] for item in DEPARTMENT['shops'])
 NAMES = {item['id']:item['name'] for item in DEPARTMENT['shops']}
 INTERVAL = 7200
+# 兼容旧的重匹配执行器：复用它已核对的网店单号，避免为通知再查一次 ERP。
+_resolved_numbers = ContextVar('resolved_web_order_numbers', default=None)
 
 
 def now_cn():
@@ -66,7 +69,7 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
     if kind in ('order', 'rematch_order'):
         number = str(number).strip().upper()
         if not re.fullmatch(r'(?:[1-9][0-9]{14,24}(?:A(?:-[0-9]+)?)?|NO-[A-Za-z0-9-]{4,70})', number, re.I):
-            raise ValueError('请提供完整网店订单号（支持数字、数字A、数字A-1）或 NO- 开头的 ERP 订单号')
+            raise ValueError('请提供完整网店单号（保留 A 或 A-1 后缀）；也可明确使用 NO- 开头的 ERP 单号')
     elif kind in ('spu','rematch_spu','number'):
         number = str(number).strip()
         if not re.fullmatch(r'[1-9]\d{14,24}',number):raise ValueError('请提供完整SPU或号码')
@@ -155,6 +158,24 @@ def summary_for(report):
             } for s in report['shops']]}
 
 
+def web_order_numbers(value):
+    """合单可能带有多个网店单号；拆开空格和逗号，保留完整后缀及原顺序。"""
+    return tuple(dict.fromkeys(part.strip() for part in re.split(r'[,，]', value or '') if part.strip()))
+
+
+def order_number_matches(number, row):
+    number = number.upper()
+    if number.startswith('NO-'):
+        return number == row['billcode'].upper()
+    return any(number in (part, re.sub(r'A(?:-[0-9]+)?$', '', part))
+               for part in (part.upper() for part in web_order_numbers(row.get('platformNo'))))
+
+
+def resolved_web_order_numbers(found):
+    return list(dict.fromkeys(number for rows in found.values() for row in rows
+                             for number in web_order_numbers(row.get('platformNo'))))
+
+
 def find_orders(number, shops, start, end, adapter_factory=BatchMatchAdapter):
     """先查完候选店铺和全部分页，唯一定位订单后才允许进入匹配流程。"""
     import batch_match as core
@@ -174,7 +195,7 @@ def find_orders(number, shops, start, end, adapter_factory=BatchMatchAdapter):
                     if row['shopId'] != shop or row['billcode'] in seen:
                         raise ValueError('订单查询店铺或分页不一致，未执行')
                     seen.add(row['billcode'])
-                    if core.order_number_matches(number, row):
+                    if order_number_matches(number, row):
                         matches.append(row)
                 rows_seen += len(rows)
                 if rows_seen >= first_total:
@@ -192,6 +213,9 @@ def find_orders(number, shops, start, end, adapter_factory=BatchMatchAdapter):
     for rows in found.values():
         for row in rows:
             core.order_gate(row)
+    captured = _resolved_numbers.get()
+    if captured is not None:
+        captured.extend(resolved_web_order_numbers(found))
     return found
 
 
@@ -199,7 +223,16 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
     # SPU、重匹配及裸号码交给专用入口；普通订单与当天巡检复用巡检执行器。
     if job['kind'] in ('spu','rematch_spu','rematch_order','number'):
         from manual_match_jobs import run_manual
-        return run_manual(job, root, adapter_factory, clock)
+        if job['kind'] != 'rematch_order':
+            return run_manual(job, root, adapter_factory, clock)
+        numbers = []
+        token = _resolved_numbers.set(numbers)
+        try:
+            report = run_manual(job, root, adapter_factory, clock)
+            report['webOrderNumbers'] = numbers
+            return report
+        finally:
+            _resolved_numbers.reset(token)
     if job['kind'] == 'shipping':
         from shipping_monitor import scan
         from shipping_online import sync
@@ -210,11 +243,12 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
         report['shortageSync'] = sync_shortages(report, root)
         return report
     now = clock()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 保留现用后端范围：巡检从昨天零点开始，指定订单查最近四个自然日。
+    start = midnight - timedelta(days=1 if job['kind'] == 'today' else 3)
     shops = (job['shop'],) if job['shop'] else SHOPS
     factory = adapter_factory
     if job['kind'] == 'order':
-        start -= timedelta(days=3)
         resolved = find_orders(job['number'], shops, start, now, adapter_factory)
         shops = tuple(resolved)
 
@@ -229,6 +263,8 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
     store = TaskStore(path)
     report = {'jobId': job['id'], 'kind': job['kind'], 'number': job['number'],
               'start': start.isoformat(), 'end': now.isoformat(), 'shops': [], 'complete': True}
+    if job['kind'] == 'order':
+        report['webOrderNumbers'] = resolved_web_order_numbers(resolved)
     try:
         worker = PatrolWorker(store, factory, page_limit=100, overlap_minutes=0, lease_seconds=3600)
         if job['kind'] == 'order':
@@ -278,29 +314,26 @@ def short_match_reason(reason):
 
 
 def match_exception_lines(rows, limit=12, compact=False):
-    # 同一 ERP 单据的相同异常合并展示；计数仍按商品明细行。
+    # ERP 单据仍用于内部归组；群里显示网店单号，合单不丢其中任一个。
     groups = {}
     for row in rows:
         reason = short_match_reason(row['reason'] or row['task_state'] or row['classification'])
-        key = (row.get('billcode'), row.get('platform_no'), None if compact else row.get('spu'), reason)
+        key = (row.get('billcode'), web_order_numbers(row.get('platform_no')), None if compact else row.get('spu'), reason)
         groups[key] = groups.get(key, 0) + 1
     details = []
     hidden = 0
-    for index, ((billcode, platform_no, spu, reason), count) in enumerate(groups.items()):
+    for index, ((_, platform_numbers, spu, reason), count) in enumerate(groups.items()):
         if index >= limit:
             hidden += count
             continue
-        # 合并订单用 ERP 单号定位，避免一行堆叠多个平台订单号。
+        order = '、'.join(platform_numbers) if platform_numbers else '网店单号未知'
         if compact:
-            order = billcode if billcode and (not platform_no or ',' in platform_no) else platform_no or '单号未知'
             reason = {
                 '商品行重复，需人工核对': '商品行重复，需核对',
                 '套餐不一致，核对后重新匹配': '套餐不一致，核对后重匹配',
             }.get(reason, reason)
-        elif billcode and (not platform_no or ',' in platform_no):
-            order = f'ERP单 {billcode}'
-        else:
-            order = f'订单 {platform_no or "未知"}'
+        elif platform_numbers:
+            order = f'网店单号 {order}'
         label = f'{order}｜SPU {spu}' if spu else order
         suffix = f'（{count} 行）' if count > 1 else ''
         details.append(f'{label}｜{reason}{suffix}')
@@ -326,17 +359,36 @@ def patrol_message(report):
     return '\n'.join(lines + details)
 
 
+def order_message_identifier(report):
+    """通知优先用已核对的网店单号；显式 ERP 输入只在网店单号未确认时作备用标识。"""
+    if report.get('webOrderNumbers'):
+        return '网店单号：' + '、'.join(report['webOrderNumbers'])
+    number = report.get('number', '')
+    if number.upper().startswith('NO-'):
+        return '网店单号：未确认｜ERP 单号（备用）：' + number
+    return '网店单号：' + (number or '未知')
+
+
 def message_for(report):
     # 固定结果消息的字段与单位，状态查询和群通知共用同一份文本。
     if report.get('manualItems') is not None:
         from manual_match_jobs import message
-        return message(report)
+        rendered = message(report)
+        if report.get('kind') == 'rematch_order':
+            # 保留原重匹配结果格式，只替换订单标识行；SPU 任务不受影响。
+            lines = rendered.splitlines()
+            if len(lines) > 1 and lines[1].startswith('号码：'):
+                lines[1] = order_message_identifier(report)
+                return '\n'.join(lines)
+        return rendered
     if report.get('kind') == 'shipping':
         from shipping_monitor import message
         return message(report)
     manual = report.get('kind') in ('order','rematch_order')
-    lines = ['【ERP 订单匹配结果】' if manual else '【ERP 今日订单匹配巡检】']
+    lines = ['【ERP 订单匹配结果】' if manual else '【ERP 订单匹配巡检】']
     if report.get('error'):
+        if manual:
+            lines.append(order_message_identifier(report))
         return '\n'.join(lines + ['执行状态：未确认完成', '异常原因：' + safe_error(report['error']),
                                   '任务编号：' + report['jobId'][:8]])
     if not manual:
@@ -345,8 +397,7 @@ def message_for(report):
     end = report['end'].replace('T', ' ')[:16]
     range_end = end[11:] if start[:10] == end[:10] else end
     lines += ['', '巡检时间：' + end + '（北京时间） 扫描范围：' + start + ' 至 ' + range_end]
-    if report.get('number'):
-        lines.append('订单：' + report['number'])
+    lines.append(order_message_identifier(report))
     lines += ['', '店铺结果（单位：商品明细行）', '']
     scanned = linked = verified = exceptions = skipped = 0
     details = []
@@ -425,8 +476,9 @@ def service(root=STATE, once=False):
             db.execute("INSERT OR REPLACE INTO settings VALUES('workerStopped','0')")
             # 上次进程中断的 running 任务转为 unknown，不自动重新执行其 ERP 写入。
             db.execute("UPDATE jobs SET state='unknown',updated=? WHERE state='running'", (time.time(),))
-            for interrupted in db.execute("SELECT id,kind FROM jobs WHERE state='unknown' AND delivery='pending'").fetchall():
-                report = {'jobId': interrupted['id'], 'kind': interrupted['kind'], 'error': '后台上次中断，匹配结果未核实；本任务不会自动重跑'}
+            for interrupted in db.execute("SELECT id,kind,number FROM jobs WHERE state='unknown' AND delivery='pending'").fetchall():
+                report = {'jobId': interrupted['id'], 'kind': interrupted['kind'], 'number': interrupted['number'],
+                          'error': '后台上次中断，匹配结果未核实；本任务不会自动重跑'}
                 db.execute('UPDATE jobs SET result=? WHERE id=?', (json.dumps(report, ensure_ascii=False), interrupted['id']))
                 deliver(interrupted['id'], report, root)
             for finished in db.execute("SELECT id,result FROM jobs WHERE state IN ('completed','needs_review') AND delivery='pending'").fetchall():
@@ -474,7 +526,8 @@ def service(root=STATE, once=False):
                         state = 'completed' if report.get('complete') else 'needs_review'
                     else:
                         state = 'unknown'
-                        report = {'jobId': job['id'], 'kind': job['kind'], 'error': '执行中断或超时；结果未核实，不自动重试本任务'}
+                        report = {'jobId': job['id'], 'kind': job['kind'], 'number': job['number'],
+                                  'error': '执行中断或超时；结果未核实，不自动重试本任务'}
                     db.execute('UPDATE jobs SET state=?,result=?,updated=? WHERE id=?',
                                (state, json.dumps(report, ensure_ascii=False), time.time(), job['id']))
                     deliver(job['id'], report, root)
@@ -507,7 +560,8 @@ def main():
         try:
             result = run_job(job)
         except Exception as error:
-            result = {'jobId': args.job, 'kind': job['kind'], 'complete': False, 'error': safe_error(error)}
+            result = {'jobId': args.job, 'kind': job['kind'], 'number': job['number'],
+                      'complete': False, 'error': safe_error(error)}
         target = STATE / (args.job + '.result.json')
         pending = target.with_suffix('.pending')
         pending.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

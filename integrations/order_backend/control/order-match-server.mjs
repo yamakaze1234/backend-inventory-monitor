@@ -16,14 +16,14 @@ function matchingPython(){
   return department.python_path;
 }
 const tools = [
-  {name:'match_order',description:'收到明确的匹配订单请求时调用；支持纯数字网店订单号、数字A、数字A-1和NO-开头ERP订单号，完整保留后缀，不要求改用NO-。裸数字用match_number。将订单加入当前机器人匹配队列；查最近四个自然日，范围仅限本部门配置的店铺。校验维护表和ERP后才自动匹配，结果由机器人发到设置中的目标群。queued仅表示入队，不能宣称完成。',inputSchema:{type:'object',properties:{number:{type:'string'},shopId:{type:'string',enum:shopIds}},required:['number'],additionalProperties:false}},
+  {name:'match_order',description:'收到明确的匹配订单请求时调用。默认使用完整网店单号，保留 A 或 A-1 后缀；只有用户明确提供 NO- 开头的 ERP 单号才使用备用入口。无任务指令的裸数字用 match_number。查最近四个自然日，仅限本部门配置的店铺。校验维护表和 ERP 后才匹配，通知默认显示网店单号。queued 仅表示入队。',inputSchema:{type:'object',properties:{number:{type:'string',description:'完整网店单号；明确使用 ERP 单号时保留 NO- 前缀。'},shopId:{type:'string',enum:shopIds}},required:['number'],additionalProperties:false}},
   ...[
-    ['rematch_order','用户明确说重新匹配订单时调用。支持纯数字、数字A、数字A-1和NO-订单号，保留完整后缀，不要求改用NO-。人工已核验并保存维护表，授权更新原套餐配件；引用该套餐的其他订单也可能受影响。'],
+    ['rematch_order','用户明确说重新匹配订单时调用。默认用完整网店单号并保留 A 或 A-1 后缀，明确给出 NO- 开头的 ERP 单号时也支持。人工已核验并保存维护表，授权更新原套餐配件；引用该套餐的其他订单也可能受影响。'],
     ['match_spu','匹配SPU：严格按维护表中的SKU处理整商品全部配置。异常跳过并汇总，不覆盖套餐差异。'],
     ['rematch_spu','用户明确说重新匹配SPU时调用。核对该SPU所有配置，授权按已保存维护表更新原套餐配件；引用该套餐的其他订单也可能受影响。'],
     ['match_number','用户只发送完整数字号码时调用。后端核对维护表SPU与订单，无法唯一判断则要求明确类型；仅普通匹配，不覆盖差异。'],
   ].map(([name,description])=>({name,description:description+' queued仅表示入队，不是完成。',inputSchema:{type:'object',properties:{number:{type:'string'},shopId:{type:'string',enum:shopIds}},required:['number'],additionalProperties:false}})),
-  {name:'patrol_today',description:'立即对今天北京时间零点到当前的ERP未匹配订单执行一轮巡检，可确定的自动匹配，异常汇总到设置中的目标群。任务异步执行，返回任务编号。',inputSchema:{type:'object',properties:{shopId:{type:'string',enum:shopIds}},additionalProperties:false}},
+  {name:'patrol_today',description:'立即对北京时间昨天零点到当前的 ERP 未匹配订单执行一轮巡检，可确定的自动匹配，异常按网店单号汇总到设置中的目标群。任务异步执行，返回任务编号。',inputSchema:{type:'object',properties:{shopId:{type:'string',enum:shopIds}},additionalProperties:false}},
   {name:'matching_status',description:'查询订单匹配后台及最近任务；有jobId则查该任务。向用户原样输出结果顶层replyText，它是固定巡检格式。禁止把扫描商品行数改称待处理订单数。',inputSchema:{type:'object',properties:{jobId:{type:'string',pattern:'^[a-f0-9]{32}$'}},additionalProperties:false}},
 ].map(t=>({...t,annotations:{readOnlyHint:t.name==='matching_status',destructiveHint:t.name!=='matching_status',idempotentHint:true,openWorldHint:true}}));
 export function matchCommand(name, number){
@@ -33,7 +33,7 @@ export function matchCommand(name, number){
   number=number.trim().toUpperCase();
   if(['order','rematch_order'].includes(kind)){
     if(!/^(?:[1-9][0-9]{14,24}(?:A(?:-[0-9]+)?)?|NO-[A-Za-z0-9-]{4,70})$/.test(number))
-      throw new Error('请提供完整网店订单号（支持数字、数字A、数字A-1）或 NO- 开头的 ERP 订单号');
+      throw new Error('请提供完整网店单号（保留 A 或 A-1 后缀）；也可明确使用 NO- 开头的 ERP 单号');
   }else if(!/^[1-9][0-9]{14,24}$/.test(number))throw new Error('请提供完整数字SPU或号码');
   return ['submit','--kind',kind,'--number',number];
 }

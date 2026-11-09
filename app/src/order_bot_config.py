@@ -211,7 +211,7 @@ def deploy(workspace):
         literal=lambda value:json.dumps(str(value),ensure_ascii=False)
         toml='[mcp_servers.erp_order_matching]\ncommand = '+literal(config['node_path'])+'\nargs = ['+literal(Path(config['control_root'])/'order-match-server.mjs')+']\nstartup_timeout_sec = 30\ntool_timeout_sec = 45\n[mcp_servers.erp_order_matching.env]\nORDER_BOT_CONFIG = '+literal(config_path(workspace).resolve())+'\n'
         (agent/'.codex/config.toml').write_text(toml,encoding='utf-8')
-        (agent/'AGENTS.md').write_text('订单匹配只使用 erp_order_matching 工具。仅在用户明确要求匹配时提交；号码保持字符串，店铺不明确时由后端识别。queued 只表示入队；未知写入不得重试。收到查询状态请求时原样返回 replyText。重新匹配需用户明确提出，不从普通匹配推断。\n',encoding='utf-8')
+        (agent/'AGENTS.md').write_text('订单匹配只使用 erp_order_matching 工具。仅在用户明确要求匹配时提交；默认使用网店单号，号码保持字符串并保留完整后缀。用户明确提供 NO- 开头的 ERP 单号时可按该单号查找。店铺不明确时由后端识别。queued 只表示入队；未知写入不得重试。收到查询状态请求时原样返回 replyText，不把网店单号改写为 ERP 单号。重新匹配需用户明确提出，不从普通匹配推断。\n',encoding='utf-8')
         result=dict(configPath=str(config_path(workspace).resolve()),config=config,backup=str(backup),files=[dict(path=str(target),sha256=hashlib.sha256(target.read_bytes()).hexdigest()) for _,target,_ in changes])
         for extra in extras:
             result['files'].append(dict(path=str(extra),sha256=hashlib.sha256(extra.read_bytes()).hexdigest()))
