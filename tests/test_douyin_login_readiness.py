@@ -23,7 +23,9 @@ class LoginReadinessTests(unittest.TestCase):
 
         def evaluate(expression):
             nonlocal current
-            current = next(pending, current)
+            # 路由预检不推进页面加载；真正的就绪轮询才消费下一帧。
+            if 'document.readyState' in expression:
+                current = next(pending, current)
             # 用真正的 JavaScript 执行生产等待条件，避免只模拟“等待成功”。
             script = r'''
 const vm = require('node:vm');
@@ -31,7 +33,7 @@ const {expression, state} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'
 const context = {
   location: {href: state.url || 'https://fxg.jinritemai.com/ffa/g/list'},
   navigator: {userAgent: 'Chrome/1'},
-  document: {readyState: state.ready || 'interactive', querySelector(selector) {
+  document: {readyState: state.ready || 'complete', querySelector(selector) {
     if (selector === '#exportSearchedGoods') return state.button === false ? null : {};
     if (selector === '[class*="index_userName"]') {
       return state.shop == null ? null : {textContent: state.shop};
@@ -54,8 +56,8 @@ process.stdout.write(JSON.stringify(vm.runInNewContext(expression, context)));
         # 导出按钮就绪时，缺失和空白店名均继续等；完整同店名称才允许校验。
         worker = self.worker([{}, dict(shop='  '), dict(shop='技嘉旗舰店')])
         worker.open_page(PRODUCT_URL, '#exportSearchedGoods')
-        self.assertEqual(worker.pause.call_count, 2)
-        worker._browser.navigate.assert_called_once_with(PRODUCT_URL)
+        self.assertEqual(worker.pause.call_count, 4)
+        worker._browser.navigate.assert_not_called()
 
     def test_loaded_wrong_shop_is_rejected_without_waiting_for_a_match(self):
         worker = self.worker([dict(shop='另一家店铺')])
@@ -65,10 +67,10 @@ process.stdout.write(JSON.stringify(vm.runInNewContext(expression, context)));
 
     def test_missing_identity_times_out_instead_of_accepting_the_page(self):
         worker = self.worker([{}])
-        with patch('douyin_managed_export.time.monotonic', side_effect=[0, 0, 21]):
+        with patch('douyin_managed_export.time.monotonic', side_effect=[0, 0, 46]):
             with self.assertRaisesRegex(ValueError, '页面未就绪或登录失效'):
                 worker.open_page(PRODUCT_URL, '#exportSearchedGoods')
-        self.assertEqual(worker.eval.call_count, 1)
+        self.assertEqual(worker.eval.call_count, 2)
 
 
 if __name__ == '__main__':

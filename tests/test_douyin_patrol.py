@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from douyin_export import ChromeMachineExportWorker, PRODUCT_URL
+from douyin_export import ChromeMachineExportWorker, PRODUCT_URL, REPORT_URL
 from douyin_inventory import DouyinInventory
 from douyin_inventory_runtime import DouyinRuntime
 from douyin_managed_export import ManagedExportWorker
@@ -160,7 +160,7 @@ class PatrolTests(unittest.TestCase):
                 worker.open_page = Mock()
                 with patch.object(ChromeMachineExportWorker, 'call', return_value=dict(ok=True)):
                     self.assertTrue(worker.call(operation)['ok'])
-                worker._browser.open.assert_called_once_with(PRODUCT_URL)
+                worker._browser.open.assert_called_once_with(REPORT_URL if operation == 'collect' else PRODUCT_URL)
         worker._browser.open.reset_mock()
         worker._browser.running.return_value = 'owned-browser'
         with patch.object(ChromeMachineExportWorker, 'call', return_value=dict(ok=True)):

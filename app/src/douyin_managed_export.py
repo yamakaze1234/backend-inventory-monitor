@@ -5,8 +5,8 @@ import re
 import threading
 import time
 
-from douyin_browser import ShopBrowser
-from douyin_export import ChromeMachineExportWorker, PRODUCT_URL, SHOP_SELECTOR
+from douyin_browser import ShopBrowser, PageLoading
+from douyin_export import ChromeMachineExportWorker, PRODUCT_URL, REPORT_URL, SHOP_SELECTOR
 
 
 class ManagedExportWorker(ChromeMachineExportWorker):
@@ -19,6 +19,9 @@ class ManagedExportWorker(ChromeMachineExportWorker):
         self.stopped = threading.Event()
         self.browser_profile = 'managed-' + self.ident
         self.download = None
+        self.last_navigation = None
+        self.last_click = None
+        self.poll_interval = .75
 
     def browser(self):
         if not hasattr(self, '_browser'):
@@ -38,26 +41,108 @@ class ManagedExportWorker(ChromeMachineExportWorker):
             raise ValueError('本店检查已停止')
         return self.browser().evaluate(expression)
 
-    def wait(self, expression, seconds=20):
+    def wait(self, expression, seconds=40):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if self.eval(expression):
                 return
-            self.pause(.2)
+            self.pause(.75)
         raise ValueError('页面未就绪或登录失效，请在本店浏览器完成登录后重新连接')
 
-    def open_page(self, url, ready):
-        self.browser().navigate(url)
+    def navigation_gap(self, seconds=5):
+        """页面切换至少间隔五秒，给页面自身的异步工作留出处理时间。"""
+        if self.last_navigation is not None:
+            remaining = seconds - (time.monotonic() - self.last_navigation)
+            if remaining > 0:
+                self.pause(remaining)
+
+    def open_page(self, url, ready, *, refresh=False):
         expected = json.dumps(url.split('?', 1)[0])
-        # 商品控件会先于顶部店名出现；店名未加载不能当作账号失效或店铺不符。
-        # 这里只等待非空店名，随后仍由 check_shop 严格拒绝其他店铺。
-        self.wait(f'location.href.split("?")[0] === {expected} && document.readyState !== "loading"'
-                  f' && !!document.querySelector({json.dumps(ready)})'
-                  f' && !!document.querySelector({json.dumps(SHOP_SELECTOR)})?.textContent?.trim()')
+        same_page = self.eval(f'location.href.split("?")[0] === {expected}')
+        previous_origin = None
+        if not same_page or refresh:
+            self.navigation_gap(15 if refresh else 5)
+            if same_page:
+                previous_origin = self.eval('performance.timeOrigin')
+                self.browser().reload()
+            else:
+                self.browser().navigate(url)
+            self.last_navigation = time.monotonic()
+        # 连续三次确认页面、店名和控件就绪；刷新时拒绝接受旧文档的 DOM。
+        expression = (f'location.href.split("?")[0] === {expected} && document.readyState === "complete"'
+                      f' && !!document.querySelector({json.dumps(ready)})'
+                      f' && !!document.querySelector({json.dumps(SHOP_SELECTOR)})?.textContent?.trim()')
+        if previous_origin is not None:
+            expression += f' && performance.timeOrigin !== {json.dumps(previous_origin)}'
+        stable, deadline = 0, time.monotonic() + 45
+        while time.monotonic() < deadline:
+            try:
+                stable = stable + 1 if self.eval(expression) else 0
+                if stable == 1:
+                    self.check_shop()
+            except PageLoading:
+                stable = 0
+            if stable >= 3:
+                break
+            self.pause(.75)
+        else:
+            raise ValueError('页面未就绪或登录失效，请在本店浏览器完成登录后重新连接')
         self.check_shop()
+
+    def refresh_reports(self):
+        """等待期间仅刷新报表页，取消商品页与报表页的反复往返。"""
+        self.open_page(REPORT_URL, 'table', refresh=True)
+        self.wait_report_records(seconds=20)
+
+    def before_export_submit(self, pending):
+        # 先持久化可能提交的任务，再点击；连接中断也绝不盲目补点。
+        self.save_pending(self.root / 'chrome' / (self.ident + '.pending.json'),
+                          dict(pending, submission_unknown=True))
+
+    def load_pending(self, path):
+        """损坏或身份不符的任务不得当作空记录重建，保留现场等待核对。"""
+        try:
+            pending = json.loads(path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            raise ValueError('导出任务记录无法核对；未重复提交，请检查本店导出记录') from None
+        if pending == {}:
+            return pending
+        if (not isinstance(pending, dict) or pending.get('shop') != self.expected_shop
+                or type(pending.get('count')) is not int or pending['count'] <= 0
+                or type(pending.get('started')) not in (int, float) or not pending['started'] > 0
+                or not isinstance(pending.get('old'), list)
+                or not all(isinstance(item, str) for item in pending['old'])):
+            raise ValueError('导出任务记录无法核对；未重复提交，请检查本店导出记录')
+        return pending
+
+    def check_pending_progress(self, pending, fresh, path):
+        if not pending.get('submission_unknown'):
+            return
+        if fresh:
+            pending.pop('submission_unknown')
+            self.save_pending(path, pending)
+        elif time.time() - pending['started'] >= 120:
+            raise ValueError('导出提交结果未确认；未重复提交，请核对本店官方导出记录')
+
+    def recover_browser(self):
+        """上层限制每轮恢复一次；恢复后的下一步仍须校验店铺与原导出任务。"""
+        if self.stopped.is_set():
+            raise ValueError('本店检查已停止')
+        self.report('正在恢复本店浏览器；先核对原导出任务，不重复提交')
+        self.pause(5)
+        self.browser().recover(REPORT_URL)
+        self.last_navigation = time.monotonic()
+        self.open_page(REPORT_URL, 'table')
 
     def click(self, selector, text, *, seconds=15):
         """等待本店唯一控件可操作；列表加载时不误判丢失，成功点击后不重试。"""
+        # 用户选择较慢的处理节奏；成功点击也至少间隔一秒，不连续抢操作。
+        if self.last_click is not None:
+            remaining = 1 - (time.monotonic() - self.last_click)
+            if remaining > 0:
+                self.pause(remaining)
         self.check_shop()
         if text == '下载报表':
             self.prepare_download()
@@ -80,6 +165,7 @@ class ManagedExportWorker(ChromeMachineExportWorker):
             if not isinstance(result, dict):
                 raise ValueError('页面控件状态读取失败，本轮未采用')
             if result.get('state') == 'clicked':
+                self.last_click = time.monotonic()
                 return
             if result.get('state') == 'wrong_shop':
                 raise ValueError('浏览器店铺与配置不一致或登录失效；未点击导出控件')
@@ -91,7 +177,7 @@ class ManagedExportWorker(ChromeMachineExportWorker):
                 reason = '仍被禁用' if result.get('reason') == 'disabled' else '尚未显示'
                 raise ValueError('等待“' + text + '”可操作超时：控件' + reason + '，本轮未采用')
             # 等待真实控件状态，不延长固定睡眠，也不重放已成功的点击。
-            self.pause(.2)
+            self.pause(.75)
 
     def prepare_download(self):
         if self.download:
@@ -157,7 +243,11 @@ class ManagedExportWorker(ChromeMachineExportWorker):
         if op in ('login', 'collect') and not self.browser().running():
             # 只启动本店已隔离的 Chrome/Edge；沿用登录目录，不接管日常浏览器。
             self.report('正在打开本店专用浏览器；登录失效时请在该窗口重新登录')
-            self.browser().open(PRODUCT_URL)
+            destination = REPORT_URL if op == 'collect' else PRODUCT_URL
+            ready = 'table' if op == 'collect' else '#exportSearchedGoods'
+            self.browser().open(destination)
+            self.last_navigation = time.monotonic()
+            self.open_page(destination, ready)
         if op == 'login':
             self.open_page(PRODUCT_URL, '#exportSearchedGoods')
             return dict(ok=True)

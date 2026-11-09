@@ -18,6 +18,7 @@ from douyin_export import ChromeExportWorker, ChromeMachineExportWorker
 from douyin_stock_page import ChromeStockWorker
 from douyin_erp import attach_maintenance
 from douyin_scope import MACHINE_SCOPE
+from douyin_browser import BrowserInterrupted
 
 
 # 每个店铺在自己的执行线程内记录阶段，失败原因不引用其他店铺的进度。
@@ -31,6 +32,9 @@ def _patrol_error(error):
     if isinstance(error, ValueError):
         # 只保存已知业务错误的固定说明，不持久化外部程序返回的原始内容。
         for phrase, label in (('登录失效', '页面未就绪或店铺登录失效'),
+                              ('本店浏览器', '本店浏览器崩溃、断开或响应超时'),
+                              ('导出提交结果未确认', '导出提交结果未确认，未重复提交'),
+                              ('导出任务记录无法核对', '导出任务记录无法核对，未重复提交'),
                               ('店铺与配置不一致', '浏览器店铺与配置不一致'),
                               ('等待超过一小时', '同一份官方报表等待超过一小时'),
                               ('报表下载超时', '官方报表下载超时'),
@@ -246,21 +250,34 @@ class DouyinRuntime:
         token = _patrol_stage.set('核对店铺身份' if confirm else '连接抖店')
         shop = None
         outcome, detail, delivery = 'cancelled', '巡检已中断', '未发送'
+        recoveries = 0
         try:
             shop = self.store.store(ident)['name']
-            if confirm:
-                # 先读到正确店名，才确认新基线；校验失败不清空原有快照。
-                self.validate_connection(self.store.store(ident))
-                self.worker(ident).call('login')
-                self.store.rebase(ident, confirmed=True)
             from douyin_export import ReportPending
             # 等待不阻塞界面，沿用已保存任务；取消勾选或退出即可停止续取。
             while True:
                 try:
+                    if confirm:
+                        # 恢复后仍先核对店铺，再建立基线；不重复清空已确认快照。
+                        self.validate_connection(self.store.store(ident))
+                        self.worker(ident).call('login')
+                        self.store.rebase(ident, confirmed=True)
+                        confirm = False
                     summary = self.collect(ident)
                     if summary is not None:
                         outcome, detail, delivery = summary
                     break
+                except BrowserInterrupted:
+                    if recoveries:
+                        raise BrowserInterrupted('本店浏览器恢复后仍异常；本轮停止自动重试，保留历史库存') from None
+                    if self.store.store(ident).get('connection_mode') != 'managed':
+                        raise
+                    if self.stop_event.is_set() or not self.store.store(ident).get('patrol_selected', True):
+                        detail = '已停止巡检，未自动恢复浏览器'
+                        break
+                    # 限额贯穿整轮与报表续取，不因 ReportPending 重新获得重试次数。
+                    recoveries += 1
+                    self.worker(ident).recover_browser()
                 except ReportPending:
                     if not hasattr(self, 'report_waiting'):
                         self.report_waiting = set()
@@ -277,6 +294,8 @@ class DouyinRuntime:
             raise
         finally:
             _patrol_stage.reset(token)
+            if recoveries:
+                detail = f'已尝试恢复本店浏览器 {recoveries} 次；' + detail
             if shop is not None:
                 try:
                     self.store.record_patrol(shop, trigger, started, outcome, detail, delivery)
