@@ -54,7 +54,7 @@ class OrderWebNumberTests(unittest.TestCase):
                       shops=[dict(shopId='1', exceptions=[row, row, dict(row, platform_no='')],
                                   verified=0, scan=dict(complete=True))])
         message = self.bot.message_for(report)
-        self.assertIn(f'{self.first}、{self.second}｜请核对（2 行）', message)
+        self.assertIn(f'{self.first}、{self.second}\n请核对（2 行）', message)
         self.assertIn('网店单号未知', message)
         self.assertNotIn(self.internal, message)
 
@@ -105,3 +105,20 @@ class OrderWebNumberTests(unittest.TestCase):
         self.assertTrue(adapter.unmatched_only)
         self.assertTrue(Adapter.audit_linked)
         self.assertFalse(Adapter.unmatched_only)
+
+    def test_order_counts_deduplicate_lines_and_do_not_count_partial_success(self):
+        """同单多行只算一单；部分成功归待处理，合单保留各网店单号。"""
+        row=dict(platform_no=self.first,billcode='internal',classification='ready',readback_state='verified')
+        self.assertEqual(self.bot.order_summary([row,row]),dict(success=1,pending=0))
+        self.assertEqual(self.bot.order_summary([row,dict(row,readback_state=None)]),dict(success=0,pending=1))
+        self.assertEqual(self.bot.order_summary([dict(row,platform_no=self.first+','+self.second)]),dict(success=2,pending=0))
+
+    def test_patrol_compact_shop_totals_and_real_elapsed(self):
+        """验证店铺、订单单位和耗时；扫描失败不能显示完成。"""
+        shop=dict(shopId='1',verified=2,exceptions=[],scan=dict(complete=True),orderSummary=dict(success=2,pending=0))
+        report=dict(kind='today',shops=[shop],elapsedSeconds=26.82)
+        text=self.bot.message_for(report)
+        self.assertIn('自动匹配完成｜耗时 27 秒',text)
+        self.assertIn('样例店：成功 2 单｜待处理 0 单',text)
+        shop['scan']['complete']=False
+        self.assertIn('自动匹配未完成',self.bot.message_for(report))

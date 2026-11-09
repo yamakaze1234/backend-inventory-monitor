@@ -242,6 +242,7 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
         from shipping_shortage import sync_shortages
         report['shortageSync'] = sync_shortages(report, root)
         return report
+    elapsed_start = time.monotonic()
     now = clock()
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     # 保留现用后端范围：巡检从昨天零点开始，指定订单查最近四个自然日。
@@ -304,17 +305,21 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
             item['skippedNonHost'] = sum(row['classification'] == 'non_host' for row in rows)
             item['exceptions'] = [dict(row) for row in rows if row['classification'] not in ('ignored', 'non_host')
                                   and row['readback_state'] != 'verified']
+            item['orderSummary'] = order_summary(rows)
             if item['exceptions']:
                 report['complete'] = False
             report['shops'].append(item)
         return report
     finally:
+        report['elapsedSeconds'] = round(time.monotonic() - elapsed_start, 2)
         store.close()
 
 
 def short_match_reason(reason):
     # 群消息只简化已知原因，原始原因仍保留在任务记录。
     return safe_error({
+        'ERP刷新后SKU仍未上架，需人工核对': 'SKU 未上架，暂未匹配。',
+        '平台SKU刷新失败': 'SKU 刷新失败，暂未匹配。',
         '订单商品行标识重复，禁止按序号自动定位': '商品行重复，需人工核对',
         '已关联套餐的配件或数量不同，请人工核验后发送重新匹配命令': '套餐不一致，核对后重新匹配',
         '订单已不存在或店铺已变化，请重新搜索': '订单不存在或店铺有变，请重查',
@@ -350,21 +355,48 @@ def match_exception_lines(rows, limit=12, compact=False):
     return details
 
 
+def order_summary(rows):
+    """按网店单号去重；同单尚有未完成行时不能把该单算作匹配成功。"""
+    groups = {}
+    for row in rows:
+        for number in web_order_numbers(row['platform_no']) or (row['billcode'],):
+            groups.setdefault(number, []).append(row)
+    pending = lambda row: row['classification'] not in ('ignored', 'non_host') and row['readback_state'] != 'verified'
+    return dict(success=sum(any(r['readback_state'] == 'verified' for r in items) and not any(pending(r) for r in items) for items in groups.values()),
+                pending=sum(any(pending(r) for r in items) for items in groups.values()))
+
+
+def elapsed_label(report):
+    # 历史任务没有实际耗时，不能拿查询时间范围伪装成运行耗时。
+    value = report.get('elapsedSeconds')
+    return f"耗时 {max(1, round(value))} 秒" if isinstance(value, (int, float)) else '耗时未记录'
+
+
+def shop_label(shop):
+    name = NAMES[shop['shopId']]
+    return {'英特尔官方旗舰店':'英特尔','技嘉旗舰店':'技嘉','乔思伯官方旗舰店':'乔思伯'}.get(name, name)
+
+
 def patrol_message(report):
-    # 群里只展示本轮回读成功和异常行数；未扫完的店单独说明。
-    end = datetime.fromisoformat(report['end'])
-    lines = [f'【订单匹配巡检｜{end.month}月{end.day}日 {end:%H:%M}】', '']
+    # 新任务按完整网店订单计数；历史数据缺少逐单成功信息时保留“行”单位。
+    incomplete = any(not shop['scan']['complete'] for shop in report['shops'])
+    lines = [f"{'自动匹配未完成' if incomplete else '自动匹配完成'}｜{elapsed_label(report)}", '']
     details = []
     for shop in report['shops']:
-        name = NAMES[shop['shopId']]
-        rows = shop['exceptions']
-        lines.append(f"{name}：成功 {shop['verified']} 行｜异常 {len(rows)} 行")
-        if rows or not shop['scan']['complete']:
-            details.extend(['', f'{name}异常'])
-            if not shop['scan']['complete']:
-                details.append('- 扫描不完整，未执行匹配')
-            details.extend(f'- {detail}' for detail in match_exception_lines(rows, compact=True))
-    return '\n'.join(lines + details)
+        name = shop_label(shop)
+        summary = shop.get('orderSummary')
+        if summary is not None:
+            lines.append(f"{name}：成功 {summary['success']} 单｜待处理 {summary['pending']} 单")
+        else:
+            lines.append(f"{name}：成功 {shop['verified']} 行｜待处理 {len(shop['exceptions'])} 行")
+        if not shop['scan']['complete']:
+            details.append(f'{name}：扫描不完整，未执行匹配。')
+        for detail in match_exception_lines(shop['exceptions'], compact=True):
+            order, _, reason = detail.partition('｜')
+            details.append(f'{name} · {order}\n{reason}')
+    if details:
+        lines += ['', '待处理：', '\n\n'.join(details)]
+    return '\n'.join(lines)
 
 
 def order_message_identifier(report):
@@ -401,35 +433,25 @@ def message_for(report):
                                   '任务编号：' + report['jobId'][:8]])
     if not manual:
         return patrol_message(report)
-    start = report['start'].replace('T', ' ')[:16]
-    end = report['end'].replace('T', ' ')[:16]
-    range_end = end[11:] if start[:10] == end[:10] else end
-    lines += ['', '巡检时间：' + end + '（北京时间） 扫描范围：' + start + ' 至 ' + range_end]
-    lines.append(order_message_identifier(report))
-    lines += ['', '店铺结果（单位：商品明细行）', '']
-    scanned = linked = verified = exceptions = skipped = 0
-    details = []
-    for shop in report['shops']:
-        scanned += shop['scan']['candidates']
-        linked += shop['alreadyLinked']
-        verified += shop['verified']
-        exceptions += len(shop['exceptions'])
-        skipped += shop.get('skippedNonHost', 0)
-        lines.append(f"* {NAMES[shop['shopId']]}：扫描{shop['scan']['candidates']}｜原已关联{shop['alreadyLinked']}｜本轮匹配成功{shop['verified']}｜剩余异常{len(shop['exceptions'])}")
-        if shop.get('skippedNonHost'):
-            lines.append(f"  已核验非主机跳过：{shop['skippedNonHost']} 行")
-        if 'orderCount' in shop:
-            lines.append(f"  查询订单数：{shop['orderCount']} 单｜待匹配SKU数：{shop['unmatchedSkuCount']} 个")
-        if not shop['scan']['complete'] or shop['exceptions']:
-            details += ['', '* ' + NAMES[shop['shopId']], '']
+    shops = report['shops']
+    failed = bool(report.get('complete') is False or any(s['exceptions'] or not s['scan']['complete'] for s in shops))
+    verified = sum(s['verified'] for s in shops)
+    heading = '匹配未完成' if failed else '匹配成功' if verified else '匹配检查完成'
+    names = '、'.join(shop_label(s) for s in shops)
+    lines = [f'{heading}｜{names}', order_message_identifier(report), elapsed_label(report)]
+    for shop in shops:
         if not shop['scan']['complete']:
-            details.append('扫描不完整，本店未执行；' + safe_error(shop['scan'].get('error') or '分页未完整返回'))
-        for detail in match_exception_lines(shop['exceptions']):
-            details.extend([detail, ''])
-    lines += ['', f'合计：扫描{scanned}｜原已关联{linked}｜本轮匹配成功{verified}｜剩余异常{exceptions}', '', '异常明细：']
-    if skipped:
-        lines.insert(-2, f'已核验非主机跳过：{skipped} 行（不计入主机匹配成功或异常）')
-    lines += details if details else ['无']
+            lines.append('原因：扫描不完整，未执行匹配。')
+        for detail in match_exception_lines(shop['exceptions'], compact=True):
+            lines.append('待处理：' + detail)
+    if verified:
+        lines.append(f'已匹配并回读通过：{verified} 行。')
+    elif not failed:
+        lines.append('无需新增匹配。')
+    else:
+        # 预检查未通过且没有执行任务时，才明确声明未产生匹配写入。
+        if not any(s.get('executions') for s in shops):
+            lines.append('未创建套餐，未修改关联。')
     return '\n'.join(lines)
 
 
