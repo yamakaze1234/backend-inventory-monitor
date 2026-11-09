@@ -66,7 +66,9 @@ def maintenance_dialog(panel):
                 sheet.set(data['sheets'][0])
             elif config['maintenance_sheet'] in data['sheets']:
                 sheet.set(config['maintenance_sheet'])
-            hint.set('表内店铺编号：' + data['shop_id'] + '。请选择实际维护的配置工作表。')
+            from inventory_shop_names import shop_label, shop_names
+            workbook_shop = shop_label(shop_names(panel.runtime.service.root), data['shop_id'])
+            hint.set('表内店铺：' + workbook_shop + '。请选择实际维护的配置工作表。')
             save.config(state='normal')
         def failed(reason):
             pick.config(state='normal'); hint.set(reason)

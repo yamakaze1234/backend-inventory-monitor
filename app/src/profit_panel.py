@@ -2,6 +2,7 @@
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from inventory_shop_names import shop_label, shop_names
 from inventory_theme import BG, INK, MUTED, BORDER, RoundedCard, ScrollBar, button, wrap_label
 
 
@@ -57,15 +58,17 @@ class ProfitPanel(tk.Frame):
     def preview(self):
         try:
             result = self.monitor.preview(self.path.get())
-            self.message.set(f"待绑定：{result['count']} 套配置 · {result['goodsCount']} 个 ERP 商品 ID · 店铺 {', '.join(result['shops'])} · 来源 {result['sourceId']} · 修订 {result['revision']}")
+            names = shop_names(self.monitor.root)
+            self.message.set(f"待绑定：{result['count']} 套配置 · {result['goodsCount']} 个 ERP 商品 ID · 店铺 {'、'.join(shop_label(names, ident) for ident in result['shops'])} · 来源 {result['sourceId']} · 修订 {result['revision']}")
         except Exception as error:
             self.message.set(str(error))
 
     def bind(self):
         try:
             preview = self.monitor.preview(self.path.get())
+            names = shop_names(self.monitor.root)
             text = (f"来源：{preview['sourceId']}\n工作区：{preview['workspaceId']}\n"
-                    f"修订：{preview['revision']}\n店铺：{', '.join(preview['shops'])}\n"
+                    f"修订：{preview['revision']}\n店铺：{'、'.join(shop_label(names, ident) for ident in preview['shops'])}\n"
                     f"配置：{preview['count']} 套 · ERP 商品 ID：{preview['goodsCount']} 个\n"
                     f"无效 ERP ID 行：{preview['invalidIds']} 条\n发布时间：{preview['publishedAt']}\n\n"
                     '首次有效价仅建立基准，不发送变化提醒。绑定这份完整快照？')
@@ -145,6 +148,7 @@ class ProfitPanel(tk.Frame):
         if not status['count']:
             lines = ['尚未绑定配置文件。', '', '点击“选择配置文件”并绑定后，首次检测会建立价格基准。',
                      '后续在这里查看配件单价变化及受影响配置。']
+        stores = shop_names(self.monitor.root)
         for row in status['lastResults']:
             value = f"{row['unit_cents']/100:.2f} 元" if row['valid'] else '无法采集'
             anchor = row['anchor_cents']
@@ -157,7 +161,7 @@ class ProfitPanel(tk.Frame):
             if row['changed']:
                 refs = row['refs']
                 shown = refs if self.show_all_refs.get() else refs[:5]
-                lines.extend(f"  {shop} / {product} / {name} / {slot}" for shop, _, product, name, slot in shown)
+                lines.extend(f"  {shop_label(stores, shop)} / {product} / {name} / {slot}" for shop, _, product, name, slot in shown)
                 if len(refs) > len(shown):
                     lines.append(f"  另 {len(refs)-len(shown)} 条关联，勾选“展开全部受影响配置”查看")
         self.summary.config(state='normal')

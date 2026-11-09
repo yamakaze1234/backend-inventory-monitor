@@ -81,7 +81,7 @@ function OrdersPage({onConfigure}:{onConfigure?:()=>void}){
   const columns=useMemo<ColumnDef<DataGridFeatures,Job>[]>(()=>[
     {accessorKey:'number',header:'订单 / SPU',size:220,cell:({row})=><Button variant="link" size="sm" onClick={()=>setSelected(row.original)}>{row.original.number||'当天已配置店铺巡检'}</Button>},
     {accessorKey:'kind',header:'任务类型',cell:({row})=>names[row.original.kind]||row.original.kind},
-    {accessorKey:'shop',header:'店铺',cell:({row})=>(shopNames[row.original.shop]||row.original.shop||'自动识别')},
+    {accessorKey:'shop',header:'店铺',cell:({row})=>(shopNames[row.original.shop]||(row.original.shop?'未配置店铺名称':'自动识别'))},
     {accessorKey:'state',header:'执行状态',cell:({row})=><StateBadge value={row.original.state}/>},
     {accessorKey:'delivery',header:'通知状态',cell:({row})=><StateBadge value={row.original.delivery}/>},
     {accessorKey:'created',header:'提交时间',size:180,cell:({row})=>new Date(row.original.created*1000).toLocaleString('zh-CN')}],[shopNames]);

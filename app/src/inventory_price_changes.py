@@ -5,6 +5,8 @@ from pathlib import Path
 import sqlite3
 from contextlib import closing
 
+from inventory_shop_names import named_shop_rows, shop_label
+
 TZ=timezone(timedelta(hours=8))
 
 
@@ -18,7 +20,7 @@ def movement(before, after):
 
 
 
-def changes(service, options=None):
+def changes(service, options=None, *, shop_names=None):
     options=options or {};path=Path(service.root)/'profit_monitor.sqlite3'
     empty=dict(parts=[],configs=[],batches=[],run_id=None,checked_at=None,comparison=options.get('comparison','batch'),message='尚无成本检测记录；先绑定配置快照，再查看价格变动。')
     if not path.is_file():return empty
@@ -53,7 +55,9 @@ def changes(service, options=None):
         classification=movement(before,after)
         selected=classification['band']=='high' if direction=='high' else classification['band']=='up' if direction=='small_up' else kind==direction
         if direction!='all' and not selected:continue
-        if needle and needle not in json.dumps([name,row['goods_id'],refs],ensure_ascii=False).casefold():continue
+        # 保留原搜索项，同时允许按关联店铺名称查找配件变化。
+        labels=[shop_label(shop_names, ref[0]) for ref in refs] if needle and shop_names else []
+        if needle and needle not in json.dumps([name,row['goods_id'],refs,labels],ensure_ascii=False).casefold():continue
         quantity={(str(s),str(c)):q for s,c,q in detail.get('configQuantities',[])}
         unique={}
         for shop,config,product,title,slot in refs:
@@ -78,14 +82,13 @@ def changes(service, options=None):
         changed_count=sum(r['direction'] in ('up','down') for r in parts),unknown_count=sum(r['direction']=='unknown' for r in parts))
 
 
-def result_tables(snapshot):
+def result_tables(snapshot, shop_names):
     from inventory_business_views import table as T
     money=lambda value:'—' if value is None else f'{value/100:+.2f}'
     price=lambda value:'—' if value is None else f'{value/100:.2f}'
-    labels=dict(up='涨价',down='降价',same='未变化',baseline='建立基准',unknown='待核对')
     parts=[dict(r,before=price(r['before_cents']),after=price(r['after_cents']),delta=money(r['delta_cents']),state=dict(high='上涨 ≥5% / 从零上涨',up='上涨 <5%',down='降价',same='未变化',first='首次采集',missing='价格缺失')[r['band']],percent_text='—' if r['percent'] is None else f"{r['percent']:+.2f}%",
-        _details=[dict(label=c['product']+' / '+c['name'],value='店铺 '+c['shop_id']+' · 配置 '+c['config_id']) for c in r['configs']]) for r in snapshot['parts']]
+        _details=[dict(label=c['product']+' / '+c['name'],value='店铺 '+shop_label(shop_names,c['shop_id'])+' · 配置 '+c['config_id']) for c in r['configs']]) for r in snapshot['parts']]
     configs=[dict(r,delta=money(r['cost_delta_cents']),count=len(r['changes']),
-        _details=[dict(label=c['name']+' · '+c['goods_id'],value=price(c['before_cents'])+' → '+price(c['after_cents'])+'；每台数量 '+str(c['quantity'] or '未知')+'；成本影响 '+money(c['cost_delta_cents'])) for c in r['changes']]) for r in snapshot['configs']]
+        _details=[dict(label=c['name']+' · '+c['goods_id'],value=price(c['before_cents'])+' → '+price(c['after_cents'])+'；每台数量 '+str(c['quantity'] or '未知')+'；成本影响 '+money(c['cost_delta_cents'])) for c in r['changes']]) for r in named_shop_rows(snapshot['configs'],shop_names)]
     return [T('配件价格变化',[('name','配件'),('goods_id','ERP 编号'),('before','调整前成本'),('after','调整后成本'),('delta','涨跌金额'),('percent_text','涨跌幅'),('state','变化划分'),('affected_count','关联配置')],parts),
-        T('受影响的配置',[('shop_id','店铺'),('product','链接'),('name','配置'),('count','变动配件数'),('delta','筛选内每台成本变化')],configs)]
+        T('受影响的配置',[('shop_name','店铺'),('product','链接'),('name','配置'),('count','变动配件数'),('delta','筛选内每台成本变化')],configs)]

@@ -290,11 +290,16 @@ def preview(root,desktop=False,duration=None,check_host=False):
     controller=SimpleNamespace(root=Path(root),status=lambda:dict(state='paused',ready=0,sources=[]))
     business=BusinessConsole(service,controller,runtime,offline=True)
     with service.db() as db:service.put(db,'daily_source_root',str(Path(root).resolve()))
+    # 样例店铺身份仅供隔离验收；和正式部门配置没有关联。
+    demo_shops=[dict(id=ident,name=name) for ident,name in zip(('76','32','33'),('英特尔旗舰店（样例）','技嘉旗舰店（样例）','乔思伯旗舰店（样例）'))]
     if not runtime.store.stores():
         from douyin_scope import MACHINE_SCOPE
-        for index,name in enumerate(('英特尔旗舰店（样例）','技嘉旗舰店（样例）','乔思伯旗舰店（样例）')):
+        for index,shop in enumerate(demo_shops):
+            name=shop['name']
             ident=runtime.store.add_store(name)
             runtime.store.rebase(ident,confirmed=True)
+            with runtime.store.db() as db:
+                db.execute('UPDATE stores SET maintenance_shop_id=? WHERE id=?',(shop['id'],ident))
             config=runtime.store.store(ident)
             runtime.store.accept(ident,config['revision'],[dict(product_id=str(90000+index),product_name=name+'整机',monitor_scope=MACHINE_SCOPE,
                 skus=[dict(sku_id=str(91000+index),sku_name='标准配置',export_sellable=0,components={'现货可售':0,'预售库存':0,'阶梯库存':0},
@@ -307,7 +312,7 @@ def preview(root,desktop=False,duration=None,check_host=False):
             rows=[dict(id=f'demo-{i}',kind='order',number=f'10987654321000{i:04}',shop=['76','32','33'][i%3],
                        state=['queued','running','verified','needs_review'][i%4],created=1794000000-i*60,delivery='pending') for i in range(83)]
             return dict(available=True,workerOnline=False,schedulePaused=True,serviceEnabled=False,
-                        active=0,total=len(rows),jobs=rows[page*size:(page+1)*size])
+                        active=0,total=len(rows),shops=demo_shops,jobs=rows[page*size:(page+1)*size])
         def action(self,action,payload=None):
             if action=='detail':
                 return {'replyText':'隔离样例结果：本次验收没有执行 ERP 写入或发送群消息。'}

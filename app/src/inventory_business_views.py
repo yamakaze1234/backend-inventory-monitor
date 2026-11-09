@@ -118,13 +118,15 @@ def build_view(b,module,q):
         startup['autostart']=dict(available=available,enabled=enabled)
         sections=[startup,department,source,robots,settings_section(b)]
     elif module=='profit':
+        from inventory_shop_names import named_shop_rows, shop_label, shop_names
+        names=shop_names(b.service.root)
         state=b.profit().status();main=S('scope','价格监控配置')
         # 价格监控仅展示维护表入口；旧快照数据仍保留以便历史查询。
         main['forms']=[A('unbind','解除绑定',confirm='停止价格定时检测及通知，保留历史记录。'),A('schedule','保存定时检测',[F('enabled','启用定时检测','bool'),F('times','每天巡检时间（北京时间，多个用逗号分隔）')],dict(enabled=state['enabled'],times=', '.join(state['scheduleTimes']))),A('notify','关闭价格通知',values=dict(enabled=False)) if state['notify'] else A('notify-preview','预览并启用价格通知')]
         from price_maintenance import saved_sources
         bindings=state['maintenanceSources'] or saved_sources(b.douyin.store) or [dict(path='',sheet='',shop_id='')]
         main['forms']=[A('maintenance-preview','预览已有主机维护表',values=dict(reuse=True)),A('maintenance-preview','选择主机维护表',[F('sources','维护表清单','rows',columns=[('path','文件完整路径'),('sheet','工作表'),('shop_id','ERP 店铺编号')])],dict(sources=bindings)),*main['forms']]
-        main['tables']=[T('已绑定维护表',[('path','文件'),('sheet','工作表'),('shop_id','店铺')],state['maintenanceSources'])]
+        main['tables']=[T('已绑定维护表',[('path','文件'),('sheet','工作表'),('shop_name','店铺')],named_shop_rows(state['maintenanceSources'],names))]
         main['text']=f"已绑定 {state['count']} 套配置 / {state['goodsCount']} 个 ERP 商品；跳过 {state.get('skippedRows',0)} 项异常行；累计涨跌达到 100 元提醒。涨幅 ≥5%（含从零上涨）/ 上涨 <5% / 降价分别展示。来源状态：{state['sourceError'] or state['lastError'] or '正常'}"
         from price_schedule import TZ
         from datetime import datetime
@@ -134,15 +136,15 @@ def build_view(b,module,q):
         for r in rows:
             r['price']='—' if not r['valid'] else f"{r['unit_cents']/100:.2f}"
             r['delta']='—' if r['anchor_delta_cents'] is None else f"{r['anchor_delta_cents']/100:.2f}"
-            r['_details']=[dict(label='关联配置',value=' / '.join(map(str,x))) for x in r.get('refs',[])]
+            r['_details']=[dict(label='关联配置',value=' / '.join([shop_label(names,shop),*map(str,ref)])) for shop,*ref in r.get('refs',[])]
         results['tables']=[T('配件价格变化',[('goods_id','ERP 编号'),('name','配件'),('price','当前单价'),('delta','累计变化'),('affectedConfigs','影响配置'),('reason','采集说明')],rows),T('近期异常事件',[('name','商品'),('status','状态'),('message','说明')],state['events'])]
         from inventory_price_changes import changes,result_tables
-        snapshot=changes(b.service,q)
+        snapshot=changes(b.service,q,shop_names=names)
         changes_section=S('changes','查看价格变动');changes_section['description']=snapshot['message']
         changes_section['forms']=[A('view-changes','一键查看价格变动',immediate=True)]
-        changes_section['tables']=result_tables(snapshot)
+        changes_section['tables']=result_tables(snapshot,names)
         if snapshot.get('checked_at'):changes_section['text']='检测时间：'+time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(snapshot['checked_at']))
-        filters=[F('comparison','对比方式',options=[('batch','与上次检测比较'),('day','该日批次与前一日比较')]),F('direction','价格变化',options=[('all','全部'),('up','全部涨价'),('high','上涨 ≥5% / 从零上涨'),('small_up','上涨 <5%'),('down','降价'),('same','未变化'),('baseline','建立基准'),('unknown','待核对')]),F('query','配件 / 链接 / 配置'),F('run_id','历史批次',options=[('','最近批次')]+[(r['id'],time.strftime('%m-%d %H:%M:%S',time.localtime(r['started']))) for r in snapshot['batches']])]
+        filters=[F('comparison','对比方式',options=[('batch','与上次检测比较'),('day','该日批次与前一日比较')]),F('direction','价格变化',options=[('all','全部'),('up','全部涨价'),('high','上涨 ≥5% / 从零上涨'),('small_up','上涨 <5%'),('down','降价'),('same','未变化'),('baseline','建立基准'),('unknown','待核对')]),F('query','配件 / 链接 / 配置 / 店铺'),F('run_id','历史批次',options=[('','最近批次')]+[(r['id'],time.strftime('%m-%d %H:%M:%S',time.localtime(r['started']))) for r in snapshot['batches']])]
         sections=[changes_section,main,results]
     elif module=='daily':
         from inventory_daily import settings

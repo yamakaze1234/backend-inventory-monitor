@@ -191,8 +191,11 @@ def enterprise_bots(b,v):
 
 @action('profit','preview')
 def profit_preview(b,v):
+    from inventory_shop_names import shop_label, shop_names
     result=b.profit().preview(v['path']);token=b.review('profit-bind',dict(path=v['path'],preview=result))
-    return dict(tables=[T('配置范围',[('label','项目'),('value','内容')],[dict(label=k,value=x) for k,x in result.items()])],forms=[A('bind','确认绑定配置',[],dict(token=token),confirm='首次有效价格仅建立基准，不发送变化提醒。确认此来源、店铺和配置范围？')])
+    names=shop_names(b.service.root)
+    display=dict(result,shops='、'.join(shop_label(names,ident) for ident in result['shops']))
+    return dict(tables=[T('配置范围',[('label','项目'),('value','内容')],[dict(label='店铺' if k=='shops' else k,value=x) for k,x in display.items()])],forms=[A('bind','确认绑定配置',[],dict(token=token),confirm='首次有效价格仅建立基准，不发送变化提醒。确认此来源、店铺和配置范围？')])
 
 @action('profit','bind')
 def profit_bind(b,v):
@@ -341,8 +344,10 @@ def maintenance_preview(b,v):
     from douyin_maintenance import inspect_maintenance,KNOWN_SHOPS
     data=inspect_maintenance(v['path']);config=b.douyin.store.store(v['shop'])
     if KNOWN_SHOPS.get(config['name'],data['shop_id'])!=data['shop_id']:raise ValueError('维护表店铺编号与当前店铺不符')
+    from inventory_shop_names import shop_label, shop_names
+    workbook_shop=shop_label(shop_names(b.service.root),data['shop_id'])
     token=b.review('maintenance',dict(shop=v['shop'],data=data))
-    return dict(message='表内店铺编号：'+data['shop_id'],forms=[A('maintenance-save','保存本店维护表',[F('sheet','配置工作表',options=[(s,s) for s in data['sheets']])],dict(token=token),confirm='读取本店已保存的配置工作表，不修改文件。')])
+    return dict(message=f"当前店铺：{config['name']}；表内店铺：{workbook_shop}",forms=[A('maintenance-save','保存本店维护表',[F('sheet','配置工作表',options=[(s,s) for s in data['sheets']])],dict(token=token),confirm='读取本店已保存的配置工作表，不修改文件。')])
 
 @action('douyin','maintenance-save')
 def maintenance_save(b,v):
@@ -436,9 +441,11 @@ def price_maintenance_preview(b,v):
     # 复用已配置的维护表也先预览，不能静默扩大价格巡检范围。
     from price_maintenance import inspect_sources, saved_sources
     sources=saved_sources(b.douyin.store) if v.get('reuse') else v.get('sources')
+    from inventory_shop_names import named_shop_rows, shop_names
     preview=inspect_sources(sources)
+    names=shop_names(b.service.root)
     result=dict(message=f"维护表：{preview['count']} 套配置 / {preview['goodsCount']} 个配件 ID，跳过 {len(preview['issues'])} 项异常行。只读已保存内容。",
-        tables=[T('维护表范围',[('path','文件'),('sheet','工作表'),('shop_id','店铺'),('count','配置数')],preview['files']),
+        tables=[T('维护表范围',[('path','文件'),('sheet','工作表'),('shop_name','店铺'),('count','配置数')],named_shop_rows(preview['files'],names)),
                 T('跳过的异常行',[('path','文件'),('sheet','工作表'),('row','行'),('reason','问题')],preview['issues'])])
     if preview['complete']:
         token=b.review('price-maintenance',preview)
