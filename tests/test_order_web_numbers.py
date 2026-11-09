@@ -90,3 +90,18 @@ class OrderWebNumberTests(unittest.TestCase):
         with patch.object(self.bot, 'TaskStore', return_value=store), patch.object(self.bot, 'PatrolWorker', return_value=worker):
             self.bot.run_job(job, clock=lambda: now)
         worker.scan.assert_called_once_with('1', datetime.fromisoformat('2026-11-08T00:00:00+08:00'), now)
+
+    def test_daily_patrol_uses_unmatched_adapter_without_changing_manual_defaults(self):
+        """每日巡检关掉已关联补查；不修改共享类，人工重匹配仍使用原入口。"""
+        class Adapter:
+            audit_linked = True
+            unmatched_only = False
+        store = Mock();store.db.execute.return_value.fetchall.return_value = []
+        worker = Mock();worker.scan.return_value = dict(complete=False, scanId='fixture')
+        with patch.object(self.bot, 'TaskStore', return_value=store), patch.object(self.bot, 'PatrolWorker', return_value=worker) as constructor:
+            self.bot.run_job(dict(id='fixture',kind='today',shop='1',number=''), adapter_factory=Adapter)
+        adapter=constructor.call_args.args[1]()
+        self.assertFalse(adapter.audit_linked)
+        self.assertTrue(adapter.unmatched_only)
+        self.assertTrue(Adapter.audit_linked)
+        self.assertFalse(Adapter.unmatched_only)

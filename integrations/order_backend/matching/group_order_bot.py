@@ -248,6 +248,14 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
     start = midnight - timedelta(days=1 if job['kind'] == 'today' else 3)
     shops = (job['shop'],) if job['shop'] else SHOPS
     factory = adapter_factory
+    if job['kind'] == 'today':
+        # 日常巡检沿用 ERP 未匹配筛选（b_match_goods=2），不补查已关联订单。
+        # 部分匹配订单仍需逐行跳过已有 goodsId，避免把同单已关联套餐拿来复核。
+        def factory():
+            adapter = adapter_factory()
+            adapter.audit_linked = False
+            adapter.unmatched_only = True
+            return adapter
     if job['kind'] == 'order':
         resolved = find_orders(job['number'], shops, start, now, adapter_factory)
         shops = tuple(resolved)
