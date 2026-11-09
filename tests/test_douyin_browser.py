@@ -180,7 +180,8 @@ class BrowserTests(unittest.TestCase):
     def test_collect_closes_only_after_successful_snapshot_acceptance(self):
         runtime = object.__new__(DouyinRuntime)
         runtime.store = MagicMock()
-        runtime.store.store.return_value = dict(confirmed=True, name='测试店铺', revision=1, status='查询成功')
+        runtime.store.store.return_value = dict(confirmed=True, enabled=True, name='测试店铺', revision=1, status='查询成功')
+        runtime.store.restock_preview.return_value = None
         runtime.validate_connection = Mock()
         runtime.stop_event = Mock(); runtime.stop_event.is_set.return_value = False
         runtime.notification_ready = Mock(return_value=False)

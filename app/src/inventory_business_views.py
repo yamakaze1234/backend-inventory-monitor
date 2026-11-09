@@ -182,11 +182,23 @@ def douyin_view(b,q):
     options=[(s['id'],s['name']) for s in stores]
     base=dict(shop=shop)
     main=S('stock','整机库存');main['forms']=[A('check-all','检查参与巡检店铺'),A('toggle','启动 / 暂停所选监控'),A('export-file','下载本店原始导出表',values=base),A('patrol','选择参与巡检店铺',[F('shops','店铺','multi',options=options)],dict(shops=[s['id'] for s in stores if s.get('patrol_selected')]))]
+    from douyin_restock import stamp
+    from douyin_inventory import PATROL_HISTORY_LIMIT
+    # 运行记录覆盖所有店铺，不受当前店铺或 SKU 筛选条件影响。
+    runs = [dict(id=str(r['id']), finished=stamp(r['finished']), duration=f"{max(0, round(r['finished']-r['started']))} 秒",
+                 shop=r['shop'], trigger=r['trigger'], status=r['outcome'],
+                 detail=r['detail'], delivery=r['delivery']) for r in b.douyin.store.patrol_history()]
+    main['tables'].append(T(f'最近运行记录（最多 {PATROL_HISTORY_LIMIT} 条）',
+        [('finished','结束时间'),('duration','用时'),('shop','店铺'),('trigger','触发方式'),
+         ('status','巡检结果'),('delivery','钉钉提醒'),('detail','运行说明')],runs,compact=True,
+        widths=dict(finished=132,duration=55,shop=116,trigger=72,status=76,delivery=170,detail=200)))
     for s in stores:s['activity']=b.douyin.activity(s['id']) or s['status']
     shops=S('shops','店铺管理');shops['forms']=[A('add','添加店铺',[F('name','与抖店后台一致的店名')])]
     shops['tables']=[T('店铺状态',[('name','店铺'),('activity','状态'),('enabled','定时监控'),('patrol_selected','参与巡检')],stores)]
     filters=[F('shop','当前店铺',options=options),F('query','搜索链接 / SKU'),F('filter','库存筛选',options=[(x,x) for x in ('全部库存','低库存预警','库存为零','ERP 缺货','ERP 待核对','有库存','库存未知')])]
-    if not shop:return dict(module='douyin',sections=[shops],filters=filters,query=q)
+    if not shop:
+        main['forms']=[]
+        return dict(module='douyin',sections=[shops,main],filters=filters,query=q)
     config=b.douyin.store.store(shop)
     from douyin_scope import machine_rows
     from douyin_low_stock import is_low
@@ -199,7 +211,7 @@ def douyin_view(b,q):
         r['id']=r['product_id']+':'+r['sku_id'];r['url']='https://haohuo.jinritemai.com/views/product/item2?id='+r['product_id']
         r['_details']=[dict(label='SKU 编号',value=r['sku_id']),dict(label='售卖状态',value=r.get('stock_state','未核对')),dict(label='维护表',value=erp.get('workbook','未配置')),dict(label='工作表 / 行',value=str(erp.get('sheet',''))+' / '+str(erp.get('row',''))),*[dict(label=p.get('name',p.get('goods_id','配件')),value=f"编号 {p.get('goods_id')} · 每台 {p.get('required')} · 可销 {p.get('available')} · 缺 {p.get('shortage','—')} · 待入 {p.get('incoming','—')}") for p in erp.get('parts',[])+erp.get('shortages',[])],*[dict(label='待核对',value=x) for x in erp.get('unknown',[])]]
     from douyin_online import status as online_status
-    main['text']=(b.douyin.activity(shop) or config['status'])+'\n'+str(online_status(b.douyin.store.root,shop).get('message',''));main['tables']=[T('整机商品与 SKU',[('product_name','链接商品'),('sku_name','SKU'),('quantity','商家库存'),('erp_state','ERP 配件'),('stock_state','售卖状态')],rows)]
+    main['text']=(b.douyin.activity(shop) or config['status'])+'\n'+str(online_status(b.douyin.store.root,shop).get('message',''));main['tables'].append(T('整机商品与 SKU',[('product_name','链接商品'),('sku_name','SKU'),('quantity','商家库存'),('erp_state','ERP 配件'),('stock_state','售卖状态')],rows))
     connection=S('connection','本店连接与维护表');connection['forms']=[A('browser-profiles','刷新已有扩展连接'),A('browser','保存浏览器设置',[F('browser','浏览器',options=[('chrome','Chrome'),('edge','Edge')]),F('mode','连接方式',options=[('managed','独立店铺浏览器'),('extension','已有 OpenCLI 扩展')]),F('profile','扩展配置标识'),F('open','保存后打开本店浏览器','bool')],dict(base,browser=config['browser'],mode=config.get('connection_mode','managed'),profile=config.get('browser_profile',''),open=False)),A('operation','校验本店连接',values=dict(base,operation='login')),A('operation','确认店铺并建立基线',values=dict(base,operation='confirm'),confirm='确认当前浏览器登录的店铺是“'+config['name']+'”？首次导出建立基线。'),A('maintenance-preview','选择并检查维护表',[F('path','本店维护表','file')],dict(base,path=config['maintenance_path'])),A('operation','核对 ERP 配件',values=dict(base,operation='parts')),A('interval','保存本店巡检周期',[F('minutes','分钟','number')],dict(base,minutes=config['interval']//60)),A('remove','移除本店监控',values=base,confirm='移除当前店铺监控并同步移除在线提醒，保留历史导出。')]
     low=S('rules','低库存预警');low['forms']=[A('rules','保存预警规则',[F('default','默认库存阈值','number'),F('parts','配件例外','rows',columns=[('goods_id','ERP 配件编号'),('threshold','阈值'),('muted','不预警')])],dict(base,default=rules['default'],parts=[dict(goods_id=k,threshold=v if v is not None else 1,muted=v is None) for k,v in rules['parts'].items()]))]
     excluded=S('excluded','人工排除链接');excluded['tables']=[T('已排除链接',[('product_id','商品 ID'),('product_name','商品'),('reason','备注')],b.douyin.store.excluded_products(shop))];excluded['forms']=[A('exclusions','更新排除名单',[F('products','商品链接或 ID（每行一个）','textarea'),F('reason','备注'),F('remove','从排除名单移出','bool')],dict(base,reason='手动标记下架',remove=False))]

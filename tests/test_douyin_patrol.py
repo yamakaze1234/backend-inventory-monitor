@@ -34,12 +34,31 @@ class PatrolTests(unittest.TestCase):
         ident = self.ids[0]
         self.runtime.stop_event = Mock()
         self.runtime.stop_event.wait.return_value = False
-        self.runtime.collect.side_effect = [ReportPending('等待'), None]
+        self.runtime.collect.side_effect = [ReportPending('等待'), ('success', '完成', '本轮已发送')]
         self.runtime.collect_reserved(ident)
         self.assertEqual(self.runtime.collect.call_count, 2)
         self.runtime.stop_event.wait.assert_called_once_with(30)
         self.runtime.worker.assert_not_called()
         self.assertNotIn(ident, self.runtime.report_waiting)
+        self.assertEqual([r['outcome'] for r in self.store.patrol_history()], ['success'])
+
+    def test_recent_runs_persist_across_shops_and_keep_only_ten(self):
+        self.runtime.stop_event = threading.Event()
+        self.runtime.collect.return_value = ('success', '完成', '未发送：同一清单已发过')
+        for i in range(11):
+            self.runtime.execute('scheduled-inspect', self.ids[i % 3])
+        self.runtime.collect.side_effect = PermissionError(13, '不应记录的原始报错')
+        self.runtime.execute_job('inspect', self.ids[0])
+        reopened = DouyinInventory(self.root)
+        rows = reopened.patrol_history()
+        self.assertEqual(len(rows), 10)
+        self.assertEqual([r['id'] for r in rows], list(range(12, 2, -1)))
+        self.assertEqual({r['shop'] for r in rows}, {self.store.store(i)['name'] for i in self.ids})
+        self.assertEqual((rows[0]['trigger'], rows[0]['outcome']), ('手动', 'failed'))
+        self.assertEqual(rows[0]['detail'], '连接抖店：PermissionError（错误码 13）')
+        self.assertEqual((rows[1]['trigger'], rows[1]['delivery']), ('定时', '未发送：同一清单已发过'))
+        with reopened.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM patrol_history').fetchone()[0], 10)
 
     def test_pending_report_stops_when_unselected(self):
         from douyin_export import ReportPending

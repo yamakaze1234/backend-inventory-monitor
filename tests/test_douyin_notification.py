@@ -50,9 +50,16 @@ class NotificationTests(unittest.TestCase):
 
     def test_current_first_round_sends_once_and_restart_keeps_dedupe(self):
         self.accept()
-        self.send(); self.accept(); self.send()
+        first = self.send()
+        self.accept()
+        duplicate = self.send()
         self.store = DouyinInventory(self.root)
         self.send()
+        from douyin_inventory_runtime import _patrol_delivery
+        config = self.store.store(self.ident)
+        self.assertEqual(_patrol_delivery(config, True, 1, first), '本轮已发送')
+        self.assertEqual(_patrol_delivery(config, True, 1, duplicate), '未发送：同一清单已发过')
+        self.assertEqual(_patrol_delivery(config, True, 0, []), '未发送：无符合条件的 SKU')
         self.assertEqual(self.transport.call_count, 1)
         self.assertIn('1 个链接', self.transport.call_args.args[1]['markdown']['text'])
 

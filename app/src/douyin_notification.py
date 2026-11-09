@@ -37,7 +37,8 @@ def deliver_current(store, robots, ident, *, online_ready=True, pending_only=Fal
                 continue
             # 空清单也保存，后续再次缺货才能形成新的提醒周期。
             if same and not old.get('retryable'):
-                results.append(dict(robot=robot, status=old['status']))
+                # 保留历史回执状态，同时让巡检记录知道本轮没有再次投递。
+                results.append(dict(robot=robot, status=old['status'], deduplicated=True))
                 continue
             state = (old if same else dict(job=uuid.uuid4().hex, signature=preview['signature'],
                                           epoch=epoch, occurred=time.time(), payload=payload))
