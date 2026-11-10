@@ -16,7 +16,7 @@ from sql_inventory_source import warehouse_key
 SETTINGS=dict(server='offline-test',port=1433,database='ERP',user='fixture')
 
 def raw(stock=8,pending=0):
-    return dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',库房='公司大库',分库数=stock,分库可销数=stock,分库待入=pending)
+    return dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',库房='公司大库',分库数=stock,分库可销数=stock,分库待入=pending,分库待审=0)
 
 class Connector:
     def __init__(self): self.rows=[raw()]; self.closed=0; self.queries=[]; self.fail=False

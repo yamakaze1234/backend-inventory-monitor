@@ -176,7 +176,7 @@ def attach_maintenance(service, config, products):
                     if item.get('able') is None:
                         depots = details.get(item['sku'], {}).get('depots', [])
                         main = next((d for d in depots if d['name'] == '公司大库'), None)
-                        item['unknown_reason'] = ('公司大库可销数为空，未当作零库存' if main else
+                        item['unknown_reason'] = ('公司大库可销或待审数量未知，未当作零库存' if main else
                             'ERP 未返回公司大库记录；其他库：' + ('、'.join(d['name'] for d in depots) or '无分库记录'))
                     stock[item['goods_id']] = item
             except Exception:

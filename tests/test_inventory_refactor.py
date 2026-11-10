@@ -112,9 +112,10 @@ class RefactorTests(unittest.TestCase):
         body = format_events(events, self.s)
         self.assertEqual(body.count('采集时间：'), 1)
         self.assertEqual(body.count('不等同于确认入库'), 1)
-        self.assertIn('8 → 14（+6）', body)
-        self.assertIn('8 → 9（+1）', body)
-        self.assertIn('可销 8 → 8（+0）', body)
+        self.assertIn('实物库存 8 → 14（+6）', body)
+        self.assertIn('实物库存 8 → 9（+1）', body)
+        self.assertIn('实际可销 8（持平）｜ERP 分库可销 8 − 待审 0', body)
+        self.assertEqual(body.count('分库待入：无（0）'), 2)
         self.assertNotIn('预警值', body)
 
     def test_delivery_chunks_no_loss_and_unknown_chunk_never_retried(self):

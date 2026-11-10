@@ -30,6 +30,7 @@ class WarehousePresentationTests(unittest.TestCase):
         body = format_inventory_report(dict(products=[self.product()], checked_at=1))
         self.assertIn('稀缺货源', body)
         self.assertIn('库存：20', body)
+        self.assertIn('**分库待入：无（0）**', body)
         self.assertNotIn('可销库存：20', body)
         self.assertNotIn('# 公司大库', body)
 
@@ -88,6 +89,29 @@ class WarehouseNullDisplayTests(unittest.TestCase):
         self.assertNotIn('None', body)
         self.assertNotIn('99', body)
         self.assertNotIn('88', body)
+        self.assertIn('**<font color="#6B7280">分库待入：未知</font>**', body)
+
+    def test_company_report_replaces_available_with_formula_and_pending_status(self):
+        product = dict(sku='S', goods_id='G', name='显卡', threshold=5, enabled=True,
+                       able=42, erp_able=55, pending_review=13, stock=67, purchase=3, risk='normal')
+        body = format_inventory_report(dict(products=[product], checked_at=1))
+        self.assertIn('**实际可销 42｜ERP 分库可销 55 − 待审 13**', body)
+        self.assertIn('实物库存 67· 公司大库', body)
+        self.assertIn('**分库待入：有，3**', body)
+
+
+class CompactOutOfStockTests(unittest.TestCase):
+    def test_zero_warning_stays_with_its_product(self):
+        zero = dict(kind='out_of_stock', sku='ZERO', name='归零配件', threshold=1,
+                    observed_at=1, after=dict(able=0, stock=101, purchase=0,
+                                              goods_id='G-ZERO', warehouse_name='公司大库'))
+        low = dict(kind='low', sku='LOW', name='低库存配件', threshold=5,
+                   observed_at=1, after=dict(able=5, stock=6, purchase=0,
+                                             goods_id='G-LOW', warehouse_name='公司大库'))
+        body = format_events([low, zero], Service(), now=2)
+        warning = body.index('实际可销已降至 0，请核对受影响配置和商品链接。')
+        self.assertGreater(warning, body.index('归零配件'))
+        self.assertLess(warning, body.index('低库存配件'))
 
 
 if __name__ == '__main__': unittest.main()

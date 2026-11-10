@@ -223,7 +223,8 @@ class InventoryService(WarehouseLookups):
                 mapped[sku]['goods_id'] = str(row['goods_id'])
         for row in rows:
             mapped[str(row['sku']).strip()].update({k: row[k] for k in
-                ('catalog_stock', 'catalog_able', 'catalog_purchase', 'catalog_source', 'warehouse_missing') if k in row})
+                ('catalog_stock', 'catalog_able', 'catalog_purchase', 'catalog_source', 'warehouse_missing',
+                 'erp_able', 'pending_review') if k in row})
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             if config_revision is not None and config_revision != self.get(db, 'config_revision', 0):

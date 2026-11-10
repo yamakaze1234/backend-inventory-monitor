@@ -19,7 +19,7 @@ def run(output_directory):
     from sql_inventory_source import warehouse_key
     from PIL import ImageGrab
     import pymssql
-    warehouses=[dict(goods_id='101',库房=w,商品编码='DEMO101',商品名称='界面验证商品（模拟数据）',分库数=q,分库可销数=q,分库待入=0)
+    warehouses=[dict(goods_id='101',库房=w,商品编码='DEMO101',商品名称='界面验证商品（模拟数据）',分库数=q,分库可销数=q,分库待入=0,分库待审=0)
                 for w,q in [('公司大库',8),('样品库',2),('京仓',20)]]
     catalog=[dict(goods_id=str(g),商品编码=s,商品名称=n,总数量=q,可销数=q,待入=0)
              for g,s,n,q in [(101,'DEMO101','界面验证商品（模拟数据）',30),(102,'DEMO102','零库存商品（模拟数据）',0),

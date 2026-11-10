@@ -5,7 +5,7 @@ import json
 import math
 import re
 
-FIELDS = ('goods_id', '库房', '商品编码', '商品名称', '分库数', '分库可销数', '分库待入')
+FIELDS = ('goods_id', '库房', '商品编码', '商品名称', '分库数', '分库可销数', '分库待入', '分库待审')
 SELECT = 'SELECT ' + ', '.join('[' + f + ']' for f in FIELDS) + ' FROM [库存].[分库库存]'
 CATALOG_FIELDS = ('goods_id', '商品编码', '商品名称', '总数量', '可销数', '待入')
 CATALOG_SELECT = 'SELECT ' + ', '.join('[' + f + ']' for f in CATALOG_FIELDS) + ' FROM [库存].[库存查询]'
@@ -116,14 +116,21 @@ def normalize(raw, legacy_text=None, issues=None):
         group = groups.setdefault(gid, dict(sku=sku, goods_id=gid, name=name, depots=[]))
         if group['sku'] != sku:
             raise ValueError('同一 goods_id 出现不同商品编码。')
+        # ERP 分库可销仅扣待出；每轮再扣同库房待审。
+        # 已与总表对账：无待审记录的分库返回 NULL，按零处理；缺字段仍拒收。
+        erp_able = numeric(row['分库可销数'], '分库可销数')
+        pending_review = numeric(row['分库待审'], '分库待审', null_zero=True)
+        available = None if erp_able is None or pending_review is None else erp_able - pending_review
         group['depots'].append(dict(id=warehouse_key(warehouse), name=warehouse,
-            stock=numeric(row['分库数'], '分库数'), able=numeric(row['分库可销数'], '分库可销数'),
+            stock=numeric(row['分库数'], '分库数'), able=available,
+            erp_able=erp_able, pending_review=pending_review,
             purchase=numeric(row['分库待入'], '分库待入', null_zero=True)))
     catalog, details = [], {}
     for group in groups.values():
         depots = group.pop('depots')
         main = next((d for d in depots if d['name'] == '公司大库'), {})
-        row = dict(group, able=main.get('able'), stock=main.get('stock'), purchase=main.get('purchase'))
+        row = dict(group, able=main.get('able'), stock=main.get('stock'), purchase=main.get('purchase'),
+                   erp_able=main.get('erp_able'), pending_review=main.get('pending_review'))
         if row['able'] is None or row['stock'] is None:
             row.update(able=None, stock_unknown=True)
         catalog.append(row)

@@ -42,19 +42,61 @@ def transition(previous, current):
     return f'{number(previous)} → {number(current)}{delta}'
 
 
+def change_text(previous, current):
+    """生成较上次的变化；缺少任一侧数字时不推断。"""
+    if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
+        return ''
+    delta = current - previous
+    return '持平' if delta == 0 else f'较上次 {delta:+g}'
+
+
+def stock_text(previous, current, key):
+    """展示实物库存及其变化；没有上次有效快照时只展示当前值。"""
+    value = current.get(key)
+    if isinstance(previous.get(key), (int, float)) and isinstance(value, (int, float)):
+        return transition(previous[key], value)
+    return number(value)
+
+
+def actual_available_text(current, previous):
+    """首行展示实际可销结果、变化和 ERP 扣减来源。"""
+    text = f"实际可销 {number(current.get('able'))}"
+    change = change_text(previous.get('able'), current.get('able'))
+    if change:
+        text += f"（{change}）"
+    erp_able = current.get('erp_able')
+    pending_review = current.get('pending_review')
+    if erp_able is not None and pending_review is not None:
+        text += f"｜ERP 分库可销 {number(erp_able)} − 待审 {number(pending_review)}"
+    return text
+
+
+def pending_inbound_text(current, previous, key):
+    """把分库待入转换成有、无或未知，避免用户再次判断数字。"""
+    value = current.get(key)
+    if value is None:
+        return '分库待入：未知'
+    if isinstance(value, (int, float)) and value < 0:
+        return f'分库待入：异常（{number(value)}）'
+    if isinstance(value, (int, float)) and value == 0:
+        return '分库待入：无（0）'
+    change = change_text(previous.get(key), value)
+    return f"分库待入：有，{number(value)}" + (f"（{change}）" if change else '')
+
+
 def event_change(event):
-    """表格与消息共用变化口径，库存增加始终使用实际库存差值。"""
+    """表格与消息共用变化口径，库存增加始终使用实物库存差值。"""
     current, previous = event.get('after') or {}, event.get('before') or {}
     special = current.get('stock_basis') == 'warehouse_stock'
     kind = event['kind']
     if kind == 'stock_increase':
-        key, label = ('warehouse_stock', '分库库存') if special else ('stock', '实际库存')
+        key, label = ('warehouse_stock', '分库库存') if special else ('stock', '实物库存')
     elif kind == 'pending_inbound':
         key, label = ('warehouse_purchase', '分库待入') if special else ('purchase', '待入')
         if current.get('pending_source') == 'erp_total':
             key, label = 'purchase', 'ERP 总待入'
     else:
-        key, label = ('monitor_qty', '分库库存') if special else ('able', '可销')
+        key, label = ('monitor_qty', '分库库存') if special else ('able', '实际可销')
     return f'{label} {transition(previous.get(key), current.get(key))}'
 
 
@@ -96,19 +138,31 @@ def compact_events(events, service, now):
         if current.get('pending_source') == 'erp_total':
             detail = colored(f"ERP 总待入：{number(current.get('purchase'))} 件", color)
             detail += colored(f" · 仓库未确认；上次 {number(previous.get('purchase'))}", MUTED)
+            detail += f"\n**{colored('分库待入：未知（仓库未确认）', MUTED)}**"
             notes.add('总待入不代表所选仓库待入，也不代表已入库。')
-        else:
+        elif special:
             detail = '**' + colored(event_change(event), color) + '**' + colored(f' · {plain(depot)}', MUTED)
-            if kind == 'stock_increase' and not special:
-                detail += f"\n可销 {transition(previous.get('able'), current.get('able'))}"
             if kind in ('low', 'oversold', 'negative_stock', 'out_of_stock', 'recovery'):
                 detail += colored(f" · 预警值 {number(event['threshold'])}", MUTED)
-            if special and kind == 'recovery':
+            if kind == 'recovery':
                 detail += f" · 上次分库库存：{number(previous.get('monitor_qty'))}"
+            pending_text = pending_inbound_text(current, previous, 'warehouse_purchase')
+            pending_color = color if isinstance(current.get('warehouse_purchase'), (int, float)) and current['warehouse_purchase'] > 0 else MUTED
+            detail += f"\n**{colored(pending_text, pending_color)}**"
+        else:
+            detail = '**' + colored(actual_available_text(current, previous), color) + '**'
+            physical = f"实物库存 {stock_text(previous, current, 'stock')}· {plain(depot)}"
+            detail += f"\n{colored(physical, MUTED)}"
+            if kind in ('low', 'oversold', 'negative_stock', 'out_of_stock', 'recovery'):
+                detail += colored(f" · 预警值 {number(event['threshold'])}", MUTED)
+            pending_text = pending_inbound_text(current, previous, 'purchase')
+            pending_color = color if isinstance(current.get('purchase'), (int, float)) and current['purchase'] > 0 else MUTED
+            detail += f"\n**{colored(pending_text, pending_color)}**"
         if kind == 'stock_increase':
-            notes.add('库存增加不等同于确认入库；本轮依据实际库存快照变化。')
+            notes.add('库存增加不等同于确认入库；本轮依据实物库存快照变化。')
         if kind == 'out_of_stock':
-            notes.add('分库库存已降至 0，请核对受影响配置和商品链接。' if special else '可销库存已降至 0，请核对受影响配置和商品链接。')
+            # 归零提示必须紧跟对应配件，避免多个事件合并时被放到整条消息末尾。
+            detail += '\n' + ('分库库存已降至 0，请核对受影响配置和商品链接。' if special else '实际可销已降至 0，请核对受影响配置和商品链接。')
         inbound = current.get('inbound')
         if kind == 'inbound' and isinstance(inbound, dict):
             detail += f"\n入库单：{plain(inbound.get('bill_code'))} · {plain(inbound.get('kind'))} · 入库数量：{number(inbound.get('in_qty'))} · {stamp(inbound.get('created_at'))}"
