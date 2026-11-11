@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import urllib.request
 from pathlib import Path
@@ -24,6 +26,21 @@ SOURCES = (
 PREFIXES = ('https://gitea.cq360.top/CoreStudio/backend-inventory-monitor/releases/download/',
             'https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/')
 MAX_BINARY = 512 * 1024 * 1024
+
+
+def powershell_executable():
+    """安装后无需重新登录；优先 PATH，其次使用 PowerShell 7 标准安装位置。"""
+    found = shutil.which('pwsh.exe')
+    if found:
+        return found
+    for variable in ('ProgramFiles', 'LOCALAPPDATA'):
+        root = os.environ.get(variable)
+        if root:
+            suffix = 'PowerShell/7/pwsh.exe' if variable == 'ProgramFiles' else 'Microsoft/PowerShell/7/pwsh.exe'
+            candidate = Path(root) / suffix
+            if candidate.is_file():
+                return str(candidate)
+    raise ValueError('缺少 PowerShell 7，请先运行安装包中的“一键部署环境.cmd”')
 
 
 def restart_arguments(arguments):
@@ -61,15 +78,15 @@ def verify_manifest(envelope, public_key):
         manifest = json.loads(payload)
     except Exception:
         raise ValueError('更新清单签名无效') from None
-    if manifest.get('app') != 'backend-inventory-monitor' or manifest.get('platform') != 'windows-x86_64':
+    if not isinstance(manifest, dict) or manifest.get('app') != 'backend-inventory-monitor' or manifest.get('platform') != 'windows-x86_64':
         raise ValueError('更新包与当前程序不匹配')
     version_key(manifest.get('version'))
-    if not isinstance(manifest.get('size'), int) or not 0 < manifest['size'] <= MAX_BINARY:
+    if type(manifest.get('size')) is not int or not 0 < manifest['size'] <= MAX_BINARY:
         raise ValueError('更新包大小无效')
     if not re.fullmatch(r'[a-fA-F0-9]{64}', str(manifest.get('sha256', ''))):
         raise ValueError('更新摘要无效')
     urls = manifest.get('urls', [])
-    if not urls or any(not isinstance(u,str) or not u.startswith(PREFIXES) or urlparse(u).username for u in urls):
+    if not isinstance(urls, list) or not urls or any(not isinstance(u,str) or not u.startswith(PREFIXES) or urlparse(u).username for u in urls):
         raise ValueError('更新下载地址不在发布源内')
     return manifest
 
@@ -104,7 +121,8 @@ class InventoryUpdater:
             raise ValueError('更新任务正在进行')
         try:
             self.release = self.staged = None
-            self.state.update(phase='checking', error='', available=False)
+            # 重新检查时清空上一轮下载展示，避免把旧版本进度当成本轮结果。
+            self.state.update(phase='checking', error='', available=False, received=0, total=0, notes='', version='')
             key = self.public_key or (UI_ROOT / 'update-public-key.txt').read_text(encoding='ascii').strip()
             for url in SOURCES:
                 try:
@@ -132,6 +150,7 @@ class InventoryUpdater:
         try:
             if not self.release or not self.state['available']:
                 raise ValueError('请先检查可用更新')
+            self.staged = None
             self.root.mkdir(parents=True, exist_ok=True)
             target = self.root / (self.release['sha256'] + '.exe')
             self.state.update(phase='downloading', received=0, error='')
@@ -169,19 +188,31 @@ class InventoryUpdater:
             raise ValueError('存在排队、执行中或待核验的匹配任务，请完成后更新')
         if not getattr(sys, 'frozen', False):
             raise ValueError('源码运行不替换 Python，请在正式安装版中更新')
+        shell = powershell_executable()
         if self.state['phase'] not in ('downloaded','preparing') or not self.staged or not self.release:
             raise ValueError('尚未准备好更新包')
         if hashlib.sha256(self.staged.read_bytes()).hexdigest() != self.release['sha256'].lower():
             raise ValueError('暂存更新包已改变，请重新下载')
         plan = self.root / 'install.json'
+        ready = self.root / ('helper-ready-' + uuid.uuid4().hex + '.txt')
         target = Path(sys.executable).resolve()
         # 安装计划仅包含本进程确定的路径，不接受网页传入可执行路径。
         plan.write_text(json.dumps(dict(pid=os.getpid(), target=str(target), source=str(self.staged.resolve()),
             sha256=self.release['sha256'], marker=str((self.root/('healthy-'+uuid.uuid4().hex+'.txt')).resolve()),
-            expected=self.release['version'],arguments=restart_arguments(sys.argv[1:])), ensure_ascii=False), encoding='utf-8')
+            expected=self.release['version'],ready=str(ready.resolve()),arguments=restart_arguments(sys.argv[1:])), ensure_ascii=False), encoding='utf-8')
         helper = self.root / 'apply-update.ps1'
         helper.write_bytes((UI_ROOT / 'apply-update.ps1').read_bytes())
-        subprocess.Popen(['pwsh.exe','-NoProfile','-NonInteractive','-File',str(helper),'-Plan',str(plan)],
+        process = subprocess.Popen([shell,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(helper),'-Plan',str(plan)],
                          creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        # 助手先确认能读计划并等待父进程，再允许主程序退出；启动失败仍保留旧程序。
+        deadline = time.monotonic() + 15
+        while not ready.is_file():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                if process.poll() is None:
+                    # 父进程仍在运行，助手尚不能替换文件；取消本次助手，防止以后退出时误安装。
+                    process.terminate()
+                    process.wait(timeout=5)
+                raise ValueError('更新助手未就绪，当前程序继续运行，请检查 PowerShell 环境')
+            time.sleep(.1)
         self.state['phase'] = 'installing'
         return dict(message='正在安全退出并安装更新')

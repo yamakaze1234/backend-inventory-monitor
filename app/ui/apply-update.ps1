@@ -19,6 +19,8 @@ function Start-Inventory([string[]]$ExtraArgs=@()) {
 }
 try {
     if([IO.Path]::GetExtension($target) -ne '.exe' -or !(Test-Path -LiteralPath $target)){throw '目标程序无效'}
+    # 唯一握手文件避免脚本被执行策略阻止时主程序误以为助手已接管。
+    if($p.ready){'ready' | Set-Content -LiteralPath $p.ready}
     $old=Get-Process -Id $p.pid -ErrorAction SilentlyContinue
     if($old -and !$old.WaitForExit(120000)){throw '原程序未安全退出，取消更新'}
     $oldExited=$true

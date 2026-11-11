@@ -31,8 +31,11 @@ foreach($case in @('success','rollback','bad-hash')){
     $oldHash=(Get-FileHash -LiteralPath $target).Hash
     $hash=(Get-FileHash -LiteralPath $source).Hash
     $plan=Join-Path $folder 'install.json'
-    @{pid=2147483646;target=$target;source=$source;sha256=$(if($case -eq 'bad-hash'){'0'*64}else{$hash});marker=(Join-Path $folder 'healthy.txt');expected='99.0';arguments=@('--data-dir',(Join-Path $folder '中文 工作区'))} | ConvertTo-Json | Set-Content -LiteralPath $plan
-    & pwsh.exe -NoProfile -NonInteractive -File $helper -Plan $plan
+    $ready=Join-Path $folder 'helper-ready.txt'
+    @{pid=2147483646;target=$target;source=$source;sha256=$(if($case -eq 'bad-hash'){'0'*64}else{$hash});marker=(Join-Path $folder 'healthy.txt');ready=$ready;expected='99.0';arguments=@('--data-dir',(Join-Path $folder '中文 工作区'))} | ConvertTo-Json | Set-Content -LiteralPath $plan
+    # 与真实更新一致，使用进程级执行策略并核验助手握手。
+    & pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -Plan $plan
+    if(!(Test-Path -LiteralPath $ready)){throw '更新助手没有产生就绪握手'}
     $actual=(Get-FileHash -LiteralPath $target).Hash
     if($case -eq 'success' -and $actual -ne $hash){throw '成功替换验收失败'}
     if($case -ne 'success' -and $actual -ne $oldHash){throw "$case 未保留或恢复原程序"}

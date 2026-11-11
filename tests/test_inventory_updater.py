@@ -5,10 +5,11 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from inventory_updater import InventoryUpdater, verify_manifest, version_key, restart_arguments
+from inventory_updater import InventoryUpdater, verify_manifest, version_key, restart_arguments, powershell_executable
 
 
 class UpdaterTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class UpdaterTests(unittest.TestCase):
         self.key=Ed25519PrivateKey.generate()
         self.public=base64.b64encode(self.key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)).decode()
         self.binary=b'MZ'+b'isolated-test-binary'*20
-        self.manifest=dict(app='backend-inventory-monitor',platform='windows-x86_64',version='1.07',
+        self.manifest=dict(app='backend-inventory-monitor',platform='windows-x86_64',version='99.0',
             sha256=hashlib.sha256(self.binary).hexdigest(),size=len(self.binary),notes='隔离测试',
             urls=['https://gitea.cq360.top/CoreStudio/backend-inventory-monitor/releases/download/v1.07/test.exe'])
 
@@ -70,6 +71,35 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(version_key('1.06'),version_key('1.6.0'))
         for value in ('1.7-rc1','latest','1.2.exe',None):
             with self.assertRaises(ValueError):version_key(value)
+
+    def test_manifest_rejects_boolean_size_and_string_urls(self):
+        # JSON 布尔值不能充当文件大小，地址必须是列表。
+        self.manifest['size'] = True
+        with self.assertRaises(ValueError):verify_manifest(self.envelope(),self.public)
+        self.manifest['size'] = len(self.binary)
+        self.manifest['urls'] = self.manifest['urls'][0]
+        with self.assertRaises(ValueError):verify_manifest(self.envelope(),self.public)
+
+    def test_shell_finds_new_install_before_path_refresh(self):
+        # 部署完成但当前进程 PATH 尚未刷新时仍可更新。
+        with patch('inventory_updater.shutil.which',return_value=None), patch('inventory_updater.Path.is_file',return_value=True), patch.dict('os.environ',{'ProgramFiles':str(self.temp)}):
+            self.assertEqual(str(self.temp/'PowerShell/7/pwsh.exe'),powershell_executable())
+        with patch('inventory_updater.shutil.which',return_value=None), patch('inventory_updater.Path.is_file',return_value=False):
+            with self.assertRaisesRegex(ValueError,'一键部署环境'):powershell_executable()
+
+    def test_helper_launch_failure_does_not_report_installing(self):
+        # 模拟助手被系统阻止，必须保留主程序而非报告已接管更新。
+        updater=InventoryUpdater(self.temp,self.public)
+        updater.root.mkdir(parents=True,exist_ok=True)
+        updater.staged=updater.root/'candidate.exe'
+        updater.staged.write_bytes(self.binary)
+        updater.release=self.manifest
+        updater.state['phase']='downloaded'
+        with patch('inventory_updater.sys.frozen',True,create=True), patch('inventory_updater.powershell_executable',return_value='pwsh.exe'), patch('inventory_updater.subprocess.Popen') as launch:
+            launch.return_value.poll.return_value=1
+            with self.assertRaisesRegex(ValueError,'更新助手未就绪'):updater.install()
+            self.assertNotEqual('installing',updater.state['phase'])
+            self.assertIn('Bypass',launch.call_args.args[0])
 
     def test_restart_preserves_workspace_but_not_worker_or_old_receipt(self):
         args=restart_arguments(['--data-dir',str(self.temp/'中文 工作区'),'--tray','--worker','--update-health','old.txt'])
