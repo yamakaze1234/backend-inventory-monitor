@@ -99,7 +99,7 @@ class PriceMonitorTest(unittest.TestCase):
         self.monitor.check()
         self.assertEqual(len(self.events()), 2)
         text = '\n'.join(json.loads(event['payload'])['text']['content'] for event in self.events())
-        for word in ('goods_id 123', '累计上涨 100.00', '累计下降 100.00', '受影响配置', '配置1', '公司大库库存成本'):
+        for word in ('goods_id 123', '累计上涨 100.00', '累计下降 100.00', '+100.00%', '-50.00%', '公司大库库存成本'):
             self.assertIn(word, text)
         self.assertNotIn('利润', text)
         self.assertNotIn('核算', text)
@@ -180,9 +180,10 @@ class PriceMonitorTest(unittest.TestCase):
         self.assertEqual(self.source.calls, [{'123'}, {'123'}, {'123'}])
         self.assertEqual(len(self.events()), 1)
         text = json.loads(self.events()[0]['payload'])['text']['content']
-        self.assertIn('配置1', text)
-        self.assertIn('配置2', text)
-        self.assertIn('受影响配置：2 套', text)
+        self.assertNotIn('配置1', text)
+        self.assertNotIn('配置2', text)
+        self.assertNotIn('受影响配置', text)
+        self.assertEqual(self.monitor.status()['lastResults'][0]['affectedConfigs'], 2)
 
     def test_failed_missing_and_zero_cost_preserve_baseline(self):
         self.write(manifest())
@@ -284,7 +285,7 @@ class PriceMonitorTest(unittest.TestCase):
         self.assertEqual(len(self.source.calls[-1]), 1)
         self.assertEqual(self.results(run)[0]['changed'], 1)
         self.assertEqual(self.monitor.status()['lastResults'][0]['affectedConfigs'], 1)
-        self.assertIn('受影响配置：1 套', json.loads(self.events()[0]['payload'])['text']['content'])
+        self.assertNotIn('受影响配置', json.loads(self.events()[0]['payload'])['text']['content'])
 
     def test_external_bind_during_query_cannot_resurrect_deleted_baseline(self):
         import threading
@@ -449,7 +450,7 @@ class PriceMonitorTest(unittest.TestCase):
         finally:
             migrated.stop()
 
-    def test_restart_baseline_and_long_message_splitting(self):
+    def test_restart_baseline_and_many_configs_send_one_component_notice(self):
         value = manifest()
         value['configs'][0]['name'] = '长名称' * 75
         for index in range(1, 30):
@@ -464,9 +465,14 @@ class PriceMonitorTest(unittest.TestCase):
         self.source.cost += 10000
         self.monitor.check()
         events = self.events()
-        self.assertGreater(len(events), 1)
-        self.assertTrue(all(len(json.loads(event['payload'])['text']['content'].encode('utf-8')) <= 12000 for event in events))
-        self.assertEqual(sum(json.loads(event['payload'])['text']['content'].count('长名称') for event in events), 30 * 75)
+        self.assertEqual(len(events), 1)
+        text=json.loads(events[0]['payload'])['text']['content']
+        self.assertLessEqual(len(text.encode('utf-8')),12000)
+        self.assertNotIn('长名称',text)
+        self.assertNotIn('链接',text)
+        self.assertNotIn('配置发布',text)
+        # 不发送配置列表，但历史检测结果仍完整保留全部关联配置。
+        self.assertEqual(len(self.monitor.status()['lastResults'][0]['refs']),30)
 
     def test_coordinated_source_keeps_scope_with_captured_connection(self):
         import threading
@@ -485,6 +491,17 @@ class PriceMonitorTest(unittest.TestCase):
         result = CoordinatedProfitSource(worker).read_profit_costs({'123'})
         self.assertEqual(result['sourceScope'], 'sql:A')
         self.assertEqual(result['costs']['123'], 1)
+
+
+    def test_zero_price_change_notice_does_not_invent_percentage(self):
+        # 原价为零时仅展示真实金额，不能除零或生成虚构涨幅。
+        self.write(manifest());self.monitor.bind(self.file)
+        self.source.cost=0;self.monitor.check()
+        self.source.cost=10000;self.monitor.check()
+        self.assertEqual(len(self.events()),1)
+        text=json.loads(self.events()[0]['payload'])['text']['content']
+        self.assertIn('0.00 → 当前 100.00 元',text)
+        self.assertIn('从零上涨（不计算百分比）',text)
 
 
 if __name__ == '__main__':

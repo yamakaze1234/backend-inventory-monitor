@@ -180,7 +180,8 @@ class BrowserTests(unittest.TestCase):
     def test_collect_closes_only_after_successful_snapshot_acceptance(self):
         runtime = object.__new__(DouyinRuntime)
         runtime.store = MagicMock()
-        runtime.store.store.return_value = dict(confirmed=True, name='测试店铺', revision=1, status='查询成功')
+        runtime.store.store.return_value = dict(confirmed=True, enabled=True, name='测试店铺', revision=1, status='查询成功')
+        runtime.store.restock_preview.return_value = None
         runtime.validate_connection = Mock()
         runtime.stop_event = Mock(); runtime.stop_event.is_set.return_value = False
         runtime.notification_ready = Mock(return_value=False)
@@ -190,9 +191,16 @@ class BrowserTests(unittest.TestCase):
         order = []
         runtime.store.accept.side_effect = lambda *a, **k: order.append('accept')
         worker.finish_collection.side_effect = lambda: order.append('close')
-        runtime.sync_online = Mock(side_effect=lambda *a: order.append('sync') or dict(ok=True))
+        runtime.sync_online = Mock(side_effect=lambda *a, **k: order.append('sync') or dict(ok=True, signature='synced-preview'))
         runtime.collect(self.ident)
         self.assertEqual(order, ['accept', 'close', 'sync'])
+        runtime.sync_online.assert_called_once_with(self.ident, force=False)
+        runtime.notification_ready.return_value = True
+        runtime.sync_online.reset_mock()
+        runtime.collect(self.ident)
+        runtime.sync_online.assert_called_once_with(self.ident, force=True)
+        runtime.notify_current.assert_called_with(self.ident, online_ready=True, online_signature='synced-preview',
+                                                  manual=False)
         worker.finish_collection.reset_mock()
         worker.call.side_effect = ValueError('采集失败，需要保留现场')
         with self.assertRaises(ValueError):

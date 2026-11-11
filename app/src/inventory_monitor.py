@@ -223,7 +223,8 @@ class InventoryService(WarehouseLookups):
                 mapped[sku]['goods_id'] = str(row['goods_id'])
         for row in rows:
             mapped[str(row['sku']).strip()].update({k: row[k] for k in
-                ('catalog_stock', 'catalog_able', 'catalog_purchase', 'catalog_source', 'warehouse_missing') if k in row})
+                ('catalog_stock', 'catalog_able', 'catalog_purchase', 'catalog_source', 'warehouse_missing',
+                 'erp_able', 'pending_review') if k in row})
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             if config_revision is not None and config_revision != self.get(db, 'config_revision', 0):
@@ -289,11 +290,12 @@ class InventoryService(WarehouseLookups):
         terms = query.casefold().split()
         if mode == 'name':
             return [r for r in rows if all(t in r['name'].casefold() for t in terms)][:limit]
-        return [r for r in rows if all(t in (r['name'] + ' ' + r['sku']).casefold() for t in terms)][:limit]
+        return [r for r in rows if all(t in (r['name'] + ' ' + r['sku'] + ' ' + str(r.get('goods_id',''))).casefold() for t in terms)][:limit]
 
-    def status(self):
+    def status(self, *, include_notifications=True):
         from notification_robots import store_for_service
-        robots = [r for r in store_for_service(self).list_robots() if 'inventory' in r['channels']]
+        # 机器人只读查询不触发通知配置初始化或迁移。
+        robots = [r for r in store_for_service(self).list_robots() if 'inventory' in r['channels']] if include_notifications else []
         robot_status = dict(name='多机器人', kind='robot', configured=bool(robots), count=len(robots),
                             enabled_count=sum(r['enabled'] for r in robots))
         now = time.time()

@@ -227,7 +227,7 @@ class ChromeExportWorker:
             rows = self.records()
             if any(row.get('time') for row in rows) or time.monotonic() >= deadline:
                 return rows
-            self.pause(.25)
+            self.pause(getattr(self, 'poll_interval', .25))
 
     def refresh_reports(self):
         """同 URL 导航可能复用旧 DOM；切回商品列表再进报表，确保获取新任务状态。"""
@@ -259,9 +259,33 @@ class ChromeExportWorker:
         self.click('#exportSearchedGoods', '导出查询商品')
         self.wait_export_count(count)
         started = time.time()
+        pending = {"started": started, "count": count, "old": sorted(old), "shop": self.expected_shop}
+        self.before_export_submit(pending)
         self.click('button.ecom-g-btn-primary', '导出')
         self.pause(4)
-        return {"started": started, "count": count, "old": sorted(old), "shop": self.expected_shop}
+        return pending
+
+    def before_export_submit(self, pending):
+        """专用浏览器在提交前落盘意向；旧扩展流程保持兼容。"""
+
+    def load_pending(self, path):
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+
+    def save_pending(self, path, pending):
+        """原子替换任务记录，避免写入中断把未确认提交误判为无任务。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix('.tmp')
+        with temporary.open('w', encoding='utf-8') as output:
+            json.dump(pending, output, ensure_ascii=False)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+
+    def check_pending_progress(self, pending, fresh, path):
+        """专用浏览器核对提交结果；旧扩展流程继续原有等待策略。"""
 
     def wait_export_count(self, expected, seconds=10):
         """弹窗标题先于数量渲染，等待完整数值，不把加载中的空白当作零。"""
@@ -273,7 +297,7 @@ class ChromeExportWorker:
             observed = int(raw) if isinstance(raw, str) and raw.isascii() and raw.isdigit() else None
             if observed == expected:
                 return observed
-            self.pause(.2)
+            self.pause(getattr(self, 'poll_interval', .2))
         if observed in (None, 0):
             raise ValueError(f'导出窗口数量尚未加载完成（查询 {expected} 个商品），本轮未采用，请稍后重试。')
         raise ValueError(f'导出数量与查询不一致（查询 {expected} 个，导出 {observed} 个），本轮未采用。')
@@ -293,17 +317,13 @@ class ChromeExportWorker:
             if not self.page:
                 raise ValueError('请先连接所选浏览器，确认店铺后再导出。')
             pending_file = self.root / 'chrome' / (self.ident + '.pending.json')
-            try:
-                pending = json.loads(pending_file.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                pending = {}
+            pending = self.load_pending(pending_file)
             if pending.get('shop') == self.expected_shop and pending.get('started') and time.time() - pending['started'] > 3600:
                 raise ValueError('同一报表已等待超过一小时，请核对平台导出记录；未重复提交报表。')
             if pending.get('shop') != self.expected_shop or not pending.get('started'):
                 self.report('正在提交官方商品表导出；保留上次有效库存')
                 pending = self.request_export()
-                pending_file.parent.mkdir(parents=True, exist_ok=True)
-                pending_file.write_text(json.dumps(pending, ensure_ascii=False), encoding='utf-8')
+                self.save_pending(pending_file, pending)
             started, count, old = pending['started'], pending['count'], set(pending['old'])
             deadline = time.monotonic() + min(timeout, 600)
             # 按本次新生成时间匹配报表，不点击历史第一条，也不复用旧下载。
@@ -317,6 +337,7 @@ class ChromeExportWorker:
                          and started - 5 <= datetime.strptime(r['time'], '%Y-%m-%d %H:%M:%S').timestamp() <= started + 60]
                 if len(fresh) > 1:
                     raise ValueError('同时出现多份新报表，无法确定归属，本轮未采用。')
+                self.check_pending_progress(pending, fresh, pending_file)
                 if fresh and fresh[0]['ready']:
                     record = fresh[0]
                     break

@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 MAX_BYTES = 20_000_000
-MAX_CONFIGS = 5000
+# 三店维护表合并超过五千套，仍保留二十 MB 内容上限。
+MAX_CONFIGS = 20000
 
 
 def canonical(value):

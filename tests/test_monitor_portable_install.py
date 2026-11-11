@@ -47,14 +47,14 @@ class InstallTests(unittest.TestCase):
         m = self.module()
         # Retain the test directory; project policy forbids forced deletion.
         root = Path(tempfile.mkdtemp(prefix='monitor-install-test-'))
-        with patch.dict(os.environ, {'LOCALAPPDATA': str(root)}), patch.object(m, '_desktop_dir', return_value=root / '桌面'), patch.object(m, '_set_autostart') as reg, patch.object(m, '_create_shortcut') as shortcut, patch.object(m.shutil, 'copy2') as copy:
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(root)}), patch.object(m, '_desktop_dir', return_value=root / '桌面'), patch.object(m, '_set_autostart') as reg, patch.object(m, '_create_shortcut') as shortcut, patch.object(m.shutil, 'copy2') as copy, patch.object(m, 'autostart_enabled', return_value=False):
             target = root / 'DingTalkSourceMonitor' / 'app-2.0.0' / '钉钉货源监控.exe'
             target.parent.mkdir(parents=True)
             target.write_bytes(b'test executable')
             result = m.install_current_user(source_executable=target)
             copy.assert_not_called()
-            self.assertTrue(result['autostart'])
-            reg.assert_called_once()
+            self.assertFalse(result['autostart'])
+            reg.assert_not_called()
             shortcut.assert_called_once()
 
     def test_registry_command_quotes_unicode_executable(self):

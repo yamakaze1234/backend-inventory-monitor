@@ -7,3 +7,5 @@ pymssql==2.4.1
 
 websockets==15.0.1
 pyxlsb==1.0.10
+
+-r tools/packaging/requirements-update.txt

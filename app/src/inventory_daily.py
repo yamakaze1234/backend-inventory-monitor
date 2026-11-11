@@ -37,12 +37,11 @@ def save_settings(service, values):
 def render(service, config, now=None):
     import sqlite3
     from pathlib import Path
-    from monitor_portable_install import default_data_dir
     now = time.time() if now is None else now
     today = datetime.fromtimestamp(now, TZ)
     start = today.replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
     with service.db() as db:
-        source_root = service.get(db, 'daily_source_root', str(default_data_dir()))
+        source_root = service.get(db, 'daily_source_root', str(service.root))
     from inventory_history import collect
     try:
         collect(source_root, now)

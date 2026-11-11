@@ -92,6 +92,10 @@ def resolve_destination(service, setup=None):
     setup = setup or delivery_setup(service)
     with service.db() as db:
         previous = service.get(db, 'destination')
+    # 旧个人身份发送兼容入口必须已有明确目标，不能为新部门默认查找固定群。
+    if not previous or not str(previous.get('name', '')).strip():
+        raise ValueError('尚未配置库存通知目标，请在通知机器人中选择接收群')
+    group_name = str(previous['name']).strip()
     profiles = setup.profiles()
     if previous and previous.get('profile'):
         candidates = [p for p in profiles if p['key'] == previous['profile']]
@@ -100,17 +104,17 @@ def resolve_destination(service, setup=None):
     if len(candidates) != 1:
         raise ValueError('库存通知账号未唯一确定，请核对钉钉当前默认账号。')
     profile = candidates[0]['key']
-    result = setup.cli(['chat', '+chat-search', '--query', '牛马群', '--page-all', '--page-limit', '10'], profile=profile)
+    result = setup.cli(['chat', '+chat-search', '--query', group_name, '--page-all', '--page-limit', '10'], profile=profile)
     if result.get('complete') is not True or result.get('partial') or result.get('hasMore') or result.get('failures'):
-        raise ValueError('牛马群搜索未完整完成，库存通知保持待发送。')
+        raise ValueError('目标群搜索未完整完成，库存通知保持待发送。')
     matches = {g['openConversationId']: g for g in result.get('chats', [])
-               if g.get('title', g.get('name')) == '牛马群' and g.get('openConversationId')}
+               if g.get('title', g.get('name')) == group_name and g.get('openConversationId')}
     if len(matches) != 1:
-        raise ValueError('牛马群未唯一匹配，库存通知保持待发送。')
+        raise ValueError('目标群未唯一匹配，库存通知保持待发送。')
     ident = next(iter(matches))
     if previous and previous.get('group_id') and previous['group_id'] != ident:
-        raise ValueError('牛马群标识发生变化，库存通知暂停，请核对原接收群。')
-    metadata = dict(name='牛马群', group_id=ident, profile=profile, verified_at=time.time())
+        raise ValueError('目标群标识发生变化，库存通知暂停，请核对原接收群。')
+    metadata = dict(name=group_name, group_id=ident, profile=profile, verified_at=time.time())
     with service.db() as db:
         service.put(db, 'destination', metadata)
     return metadata
@@ -140,6 +144,8 @@ def format_events(events, service, now=None):
 
 
 def format_events_detailed(events, service, now=None):
+    from inventory_message_view import actual_available_text, pending_inbound_text, stock_text
+
     now = time.time() if now is None else now
     order = {'negative_stock': 0, 'oversold': 0, 'out_of_stock': 0, 'low': 1, 'inbound': 2, 'stock_increase': 2, 'pending_inbound': 2, 'recovery': 3}
     labels = dict(negative_stock='负库存', oversold='超售', out_of_stock='库存归零预警', low='低库存', inbound='确认入库', stock_increase='库存增加', pending_inbound='待入库提醒', recovery='风险恢复')
@@ -165,33 +171,33 @@ def format_events_detailed(events, service, now=None):
             last_heading = heading
         parts.append(f"**{event['name']}**")
         if kind == 'out_of_stock':
-            parts.append('**分库库存已降至 0，请检查相关配置和商品链接。**' if _warehouse(current) else '**可销库存已降至 0，请检查相关配置，并下架相关商品链接。**')
+            parts.append('**分库库存已降至 0，请检查相关配置和商品链接。**' if _warehouse(current) else '**实际可销已降至 0，请检查相关配置，并下架相关商品链接。**')
         if goods_id:
             parts.append(f"商品编号：{goods_id}")
         if current.get('pending_source') == 'erp_total':
             parts += [f"**ERP 总待入：{_quantity(current, 'purchase')} 件 · 仓库未确认**",
                       f"上次总待入：{_quantity(previous, 'purchase')} 件",
+                      '**分库待入：未知（仓库未确认）**',
                       f"采集时间：{local_time(event['observed_at'])}",
                       '此数量来自库存查询总览，不代表所选仓库待入，也不代表已入库。', '---']
             continue
         if _warehouse(current):
-            parts += [f"**{current.get('warehouse_name') or event.get('warehouse') or '指定分库'} · 库存：{_quantity(current, 'monitor_qty')}　｜　预警值：{event['threshold']}**",
-                      f"分库待入库：{_quantity(current, 'warehouse_purchase')}",
+            depot = current.get('warehouse_name') or event.get('warehouse') or '指定分库'
+            parts += [f"**{depot} · 库存：{_quantity(current, 'monitor_qty')}　｜　预警值：{event['threshold']}**",
+                      f"**{pending_inbound_text(current, previous, 'warehouse_purchase')}**",
                       f"采集时间：{local_time(event['observed_at'])}"]
         else:
-            parts += [f"**可销库存：{current.get('able', '未知')}　｜　预警值：{event['threshold']}**",
-                  f"实际库存：{current.get('stock', '未知')}　·　待入库：{current.get('purchase', '未知')}",
+            depot = current.get('warehouse_name') or event.get('warehouse') or '公司大库'
+            parts += [f"**{actual_available_text(current, previous)}**",
+                  f"实物库存 {stock_text(previous, current, 'stock')}· {depot}　｜　预警值：{event['threshold']}",
+                  f"**{pending_inbound_text(current, previous, 'purchase')}**",
                   f"采集时间：{local_time(event['observed_at'])}"]
-        if kind == 'pending_inbound' and _warehouse(current):
-            parts.append(f"**分库待入库：{_quantity(current, 'warehouse_purchase')}**（上次：{_quantity(previous, 'warehouse_purchase')}）")
-        elif kind == 'pending_inbound':
-            parts.append(f"**待入库：{current.get('purchase', '未知')}**（上次：{previous.get('purchase', 0)}）")
         if previous and _warehouse(current):
             parts.append(f"上次分库库存：{_quantity(previous, 'monitor_qty')}")
         elif previous:
-            parts.append(f"上次可销：{previous.get('able', '未知')}；上次实际库存：{previous.get('stock', '未知')}")
+            parts.append(f"上次实际可销：{previous.get('able', '未知')}；上次实物库存：{previous.get('stock', '未知')}")
         if kind == 'stock_increase':
-            parts.append('库存增加不等同于确认入库；当前依据实际库存快照变化，本轮没有对应的新入库单确认。')
+            parts.append('库存增加不等同于确认入库；当前依据实物库存快照变化，本轮没有对应的新入库单确认。')
         inbound = current.get('inbound')
         if kind == 'inbound' and isinstance(inbound, dict):
             parts.append(f"入库单：{inbound.get('bill_code', '未知')}；类型：{inbound.get('kind', '未知')}；入库数量：{inbound.get('in_qty', '未知')}")
@@ -210,6 +216,8 @@ def format_events_detailed(events, service, now=None):
 
 def format_inventory_report(status, refresh_pending=False):
     """Manual detection reports share the robot presentation rules; never show SKU."""
+    from inventory_message_view import actual_available_text, pending_inbound_text, stock_text
+
     products = [p for p in status.get('products', []) if p.get('enabled', True)]
     order = {'negative_stock': 0, 'oversold': 0, 'low': 1, 'unknown': 2, 'normal': 3}
     labels = {'negative_stock': '🟥 负库存', 'oversold': '🟥 超售', 'low': '🟧 低库存', 'normal': '🟩 库存正常', 'unknown': '⬜ 待检查'}
@@ -229,10 +237,15 @@ def format_inventory_report(status, refresh_pending=False):
         qty = lambda key: product.get(key) if product.get(key) is not None else '未知'
         if _warehouse(product):
             parts += [f"**{product.get('warehouse_name') or '指定分库'} · 库存：{qty('monitor_qty')}　｜　预警值：{product['threshold']}**",
-                      f"分库待入库：{qty('warehouse_purchase')}"]
+                      f"**{pending_inbound_text(product, {}, 'warehouse_purchase')}**"]
         else:
-            parts += [f"**可销库存：{qty('able')}　｜　预警值：{product['threshold']}**",
-                  f"实际库存：{qty('stock')}　·　待入库：{qty('purchase')}"]
+            depot = product.get('warehouse_name') or '公司大库'
+            pending_text = ('分库待入：未知（仓库未确认）'
+                            if product.get('pending_source') == 'erp_total'
+                            else pending_inbound_text(product, {}, 'purchase'))
+            parts += [f"**{actual_available_text(product, {})}**",
+                      f"实物库存 {stock_text({}, product, 'stock')}· {depot}　｜　预警值：{product['threshold']}",
+                      f"**{pending_text}**"]
         if product.get('pending_source') == 'erp_total' and product.get('pending_quantity') is not None:
             parts.append(f"ERP 总待入：{product['pending_quantity']} 件 · 仓库未确认（不替代分库待入）")
     return '\n\n'.join(parts)

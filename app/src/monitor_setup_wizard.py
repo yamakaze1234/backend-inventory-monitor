@@ -286,7 +286,7 @@ class SetupWizard:
                 self.controller.settings['executable'] = value['executable']
                 write_json(self.controller.root / 'installation.json', value)
                 self.prepare_button.config(text='安装完成', state='disabled')
-                self.status.set('安装完成。桌面图标和开机启动已配置，请继续登录钉钉。')
+                self.status.set('安装完成。桌面图标已创建，请继续登录钉钉。')
             elif kind == 'profiles':
                 self.accounts = value
                 self.account_box.config(values=[p['label'] for p in value])

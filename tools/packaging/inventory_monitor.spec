@@ -7,6 +7,10 @@ import runpy
 root = Path(SPECPATH).parents[1]
 source = root / 'app' / 'src'
 ui = root / 'app' / 'ui'
+# 仅收录兼容后端的公开源码，保持目录结构，排除编译缓存与运行数据。
+order_root = root / 'integrations' / 'order_backend'
+order_sources = [(str(p), str(Path('order_backend') / p.parent.relative_to(order_root))) for p in sorted(order_root.rglob('*')) if p.is_file() and p.suffix in {'.py', '.pyw', '.ps1', '.mjs'}]
+# 运行依赖统一由构建解释器的 requirements 安装，不借用作者电脑的缓存。
 a = Analysis(
     [str(source / 'inventory_app.py')],
     pathex=[str(source)],
@@ -15,9 +19,16 @@ a = Analysis(
            (str(source / 'douyin_dom_bridge.mjs'), '.'),
            (str(source / 'douyin_erp_bridge.py'), '.'),
            (str(ui / 'inventory-erp.user.js'), '.'),
-           (str(ui / 'monitor_assets' / 'monitor.ico'), 'monitor_assets')],
+           # 只打包已构建的网页与更新公钥，不包含开发依赖或签名私钥。
+           (str(ui / 'console'), 'console'),
+           (str(ui / 'console-host'), 'console-host'),
+           (str(ui / 'update-public-key.txt'), '.'),
+           (str(ui / 'apply-update.ps1'), '.'),
+           (str(root / 'THIRD_PARTY_LICENSES' / 'WebView2-LICENSE.txt'), 'licenses'),
+           (str(ui / 'monitor_assets' / 'monitor.ico'), 'monitor_assets')] + order_sources,
     hiddenimports=['pystray._win32', 'inventory_monitor', 'inventory_rules',
-                   'profit_monitor', 'erp_price_monitor', 'profit_manifest', 'profit_rules', 'profit_panel',
+                   'notification_resolver', 'notification_business', 'order_business', 'order_bot_config', 'inventory_workspace_config', 'inventory_cache_schedule', 'inventory_price_changes', 'inventory_data_api', 'inventory_business', 'inventory_business_actions', 'inventory_business_views', 'inventory_console', 'order_bot_adapter', 'inventory_updater',
+                   'price_maintenance', 'price_schedule', 'profit_monitor', 'erp_price_monitor', 'profit_manifest', 'profit_rules', 'profit_panel',
                    'inventory_panel', 'inventory_bridge', 'inventory_delivery', 'inventory_inbound', 'source_monitor_supervisor', 'monitor_portable_install', 'monitor_setup_service'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['numpy', 'pandas', 'scipy', 'matplotlib'],

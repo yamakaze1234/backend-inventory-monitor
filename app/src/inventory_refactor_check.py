@@ -28,7 +28,7 @@ class DemoSource:
                  'GIGABYTE技嘉 GV-N506TGAMING OC-16GD（RTX5060Ti魔鹰 16G）',
                  'XPG 威龙 D300G 24G 6000 C40 RGB', 'Intel Ultra 7 270K Plus', '技嘉 B860M 魔鹰 X']
         self.rows = [dict(goods_id=str(94015+i), 商品编码=f'SAMPLE-{i}', 商品名称=name,
-                          库房='公司大库', 分库数=8, 分库可销数=8, 分库待入=0) for i,name in enumerate(names)]
+                          库房='公司大库', 分库数=8, 分库可销数=8, 分库待入=0,分库待审=0) for i,name in enumerate(names)]
         self.catalog = [dict(goods_id=r['goods_id'], 商品编码=r['商品编码'], 商品名称=r['商品名称'], 总数量=8, 可销数=8, 待入=0) for r in self.rows]
 
     def read_bundle(self, goods_ids=None):

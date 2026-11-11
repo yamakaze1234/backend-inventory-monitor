@@ -77,6 +77,49 @@ class CacheTests(unittest.TestCase):
         with store.db() as db:
             self.assertEqual(db.execute('SELECT value FROM preferences WHERE key=?',('manual-note',)).fetchone()[0],'保留备注')
 
+    def test_archive_failure_preserves_evidence_and_can_retry(self):
+        _,_,groups,_=self.export_fixture()
+        archive,raw,evidence=groups[0]
+        def fail_archive(path):
+            if path==archive:raise OSError('locked archive')
+            self.recycle(path)
+        result=execute(self.service,preview(self.service,0,now=self.now),recycler=fail_archive)
+        self.assertTrue(result['errors']);self.assertTrue(archive.exists());self.assertTrue(evidence.exists())
+        self.assertFalse(raw.exists())
+        execute(self.service,preview(self.service,0,now=self.now),recycler=self.recycle)
+        self.assertFalse(archive.exists());self.assertFalse(evidence.exists())
+
+    def test_raw_failure_after_archive_recycles_keeps_recoverable_evidence(self):
+        _,_,groups,_=self.export_fixture()
+        archive,raw,evidence=groups[0]
+        def fail_raw(path):
+            if path==raw:raise OSError('locked raw')
+            self.recycle(path)
+        result=execute(self.service,preview(self.service,0,now=self.now),recycler=fail_raw)
+        self.assertTrue(result['errors']);self.assertFalse(archive.exists());self.assertTrue(evidence.exists())
+        retry=preview(self.service,0,now=self.now)
+        self.assertEqual({x['path'] for x in retry['files']},{str(raw.resolve()),str(evidence.resolve())})
+        execute(self.service,retry,recycler=self.recycle)
+        self.assertFalse(raw.exists());self.assertFalse(evidence.exists())
+
+    def test_old_evidence_does_not_remove_a_young_archive_proof(self):
+        import os
+        _,_,groups,_=self.export_fixture();archive,raw,evidence=groups[0]
+        os.utime(archive,(self.now,self.now))
+        execute(self.service,preview(self.service,30,now=self.now),recycler=self.recycle)
+        self.assertTrue(archive.exists());self.assertTrue(evidence.exists())
+        self.assertFalse(raw.exists())
+
+    def test_evidence_only_failure_can_be_retried(self):
+        _,_,groups,_=self.export_fixture();archive,raw,evidence=groups[0]
+        def fail_proof(path):
+            if path==evidence:raise OSError('locked evidence')
+            self.recycle(path)
+        execute(self.service,preview(self.service,0,now=self.now),recycler=fail_proof)
+        self.assertFalse(archive.exists());self.assertFalse(raw.exists());self.assertTrue(evidence.exists())
+        execute(self.service,preview(self.service,0,now=self.now),recycler=self.recycle)
+        self.assertFalse(evidence.exists())
+
     def test_export_becoming_current_after_preview_is_preserved(self):
         store,ident,groups,_ = self.export_fixture()
         plan = preview(self.service,0,now=self.now)
@@ -129,7 +172,7 @@ class CacheTests(unittest.TestCase):
         for days in (7,30,90,0):
             plan=preview(self.service,days,now=self.now+1)
             self.assertEqual(plan['row_count'],4 if days==0 else 0 if days==90 else 3)
-        for days in (-1,None,1):
+        for days in (-1,None,3651,True):
             with self.assertRaises(ValueError):preview(self.service,days)
 
     def test_completed_record_becoming_pending_is_preserved(self):

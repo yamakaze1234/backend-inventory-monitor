@@ -125,10 +125,9 @@ sources 必须引用支持该产品所有陈述的消息，无明确产品则空
 
 
 def generate(service, period='本周', progress=lambda value: None, now=None, output_dir=None):
-    from monitor_portable_install import default_data_dir
     start,end=week_range(period,now)
     with service.db() as db:
-        source_root=service.get(db,'daily_source_root',str(default_data_dir()))
+        source_root=service.get(db,'daily_source_root',str(service.root))
     progress('正在完整读取周消息…')
     rows,sources=collect_range(source_root,start,end,progress)
     progress('正在按产品整理周报…')

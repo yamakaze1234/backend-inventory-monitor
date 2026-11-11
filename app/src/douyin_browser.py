@@ -16,6 +16,16 @@ import socket
 import subprocess
 import time
 import uuid
+from websockets.exceptions import ConnectionClosed
+
+
+class BrowserInterrupted(ValueError):
+    """专用页面崩溃或连接中断；调用方先核对任务，再决定是否恢复。"""
+
+
+class PageLoading(ValueError):
+    """导航时旧脚本上下文已销毁，仅就绪轮询可以等待新文档。"""
+
 
 
 def owns_port(port, process_id):
@@ -72,31 +82,69 @@ class CdpChannel:
         if connector is None:
             from websockets.sync.client import connect
             connector = connect
-        self.socket = connector(socket_url(url, port), open_timeout=5, close_timeout=1, proxy=None, max_size=4 * 1024 * 1024)
+        verified_url = socket_url(url, port)
+        try:
+            self.socket = connector(verified_url, open_timeout=5, close_timeout=1, proxy=None, max_size=4 * 1024 * 1024)
+        except (ConnectionClosed, OSError, TimeoutError):
+            raise BrowserInterrupted('本店浏览器连接中断；保留历史库存') from None
         self.sequence = 0
         self.events = deque()
 
     def command(self, method, params=None, timeout=15):
+        # 不在通道层重发命令，点击导出可能已经生效。
+        try:
+            return self._command(method, params, timeout)
+        except (ConnectionClosed, OSError, TimeoutError):
+            raise BrowserInterrupted('本店浏览器连接中断或响应超时；保留历史库存') from None
+
+    def check_event(self, value):
+        method = value.get('method')
+        if method in ('Target.targetCrashed', 'Target.targetDestroyed'):
+            # 下载期间监听浏览器通道，只认当前巡检页，其他标签不触发本轮恢复。
+            if value.get('params', {}).get('targetId') != getattr(self, 'watched_target', None):
+                return
+        if method in ('Inspector.targetCrashed', 'Inspector.detached', 'Target.targetCrashed', 'Target.targetDestroyed'):
+            raise BrowserInterrupted('本店浏览器页面崩溃或已断开；保留历史库存')
+
+    def _command(self, method, params, timeout):
         self.sequence += 1
         self.socket.send(json.dumps(dict(id=self.sequence, method=method, params=params or {})))
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             value = json.loads(self.socket.recv(timeout=max(.01, deadline - time.monotonic())))
+            self.check_event(value)
             if value.get('id') == self.sequence:
                 if 'error' in value:
+                    # 仅识别固定类型，不暴露浏览器响应原文。
+                    message = str(value['error'].get('message', '')).lower()
+                    if any(s in message for s in ('target crashed', 'target closed', 'session closed')):
+                        raise BrowserInterrupted('本店浏览器页面崩溃或已断开；保留历史库存')
+                    if any(s in message for s in ('execution context was destroyed', 'cannot find context with specified id')):
+                        raise PageLoading('页面正在切换，等待新文档就绪')
                     raise ValueError('浏览器未完成操作，请重新连接本店窗口')
                 return value.get('result', {})
             if value.get('method', '').startswith('Browser.download'):
                 self.events.append(value)
-        raise ValueError('浏览器操作超时，原库存已保留')
+        raise BrowserInterrupted('本店浏览器响应超时；保留历史库存')
 
     def event(self, timeout):
         if self.events:
             return self.events.popleft()
-        return json.loads(self.socket.recv(timeout=timeout))
+        try:
+            value = json.loads(self.socket.recv(timeout=timeout))
+        except TimeoutError:
+            # 下载通道短轮询没有事件很正常，不能误判成断线并重启页面。
+            raise
+        except (ConnectionClosed, OSError):
+            raise BrowserInterrupted('本店浏览器下载连接中断；保留历史库存') from None
+        self.check_event(value)
+        return value
 
     def close(self):
-        self.socket.close()
+        try:
+            self.socket.close()
+        except (ConnectionClosed, OSError):
+            pass
 
     def __enter__(self):
         return self
@@ -197,7 +245,7 @@ class ShopBrowser:
     def target(self):
         browser_url = self.running()
         if not browser_url:
-            raise ValueError('本店浏览器未打开，请在登录设置点击“打开本店浏览器”')
+            raise BrowserInterrupted('本店浏览器未打开或已经退出；保留历史库存')
         port = self.state['port']
         pages = self.read(port, 'list')
         target = next((p for p in pages if p.get('type') == 'page' and p.get('id') == self.state.get('page')), None)
@@ -213,8 +261,12 @@ class ShopBrowser:
 
     @contextmanager
     def page(self):
-        with CdpChannel(self.target(), self.state['port']) as channel:
-            yield channel
+        try:
+            with CdpChannel(self.target(), self.state['port']) as channel:
+                channel.command('Inspector.enable')
+                yield channel
+        except (ConnectionClosed, OSError, TimeoutError):
+            raise BrowserInterrupted('本店浏览器连接中断；保留历史库存') from None
 
     def evaluate(self, expression):
         with self.page() as channel:
@@ -228,6 +280,26 @@ class ShopBrowser:
             result = channel.command('Page.navigate', dict(url=url))
         if result.get('errorText'):
             raise ValueError('页面未打开，请检查本店浏览器网络连接')
+
+    def reload(self):
+        """在原报表页刷新一次，避免为刷新数据往返两个页面。"""
+        with self.page() as channel:
+            channel.command('Page.reload')
+
+    def recover(self, url):
+        """只替换已验证实例的巡检标签，不关闭其他店铺或日常窗口。"""
+        browser_url = self.running()  # 浏览器 ID 不符时抛错，绝不接管端口。
+        if not browser_url:
+            self.open(url)
+            return
+        old_page = self.state.get('page')
+        with CdpChannel(browser_url, self.state['port']) as channel:
+            page = channel.command('Target.createTarget', dict(url='about:blank'))['targetId']
+            self.state['page'] = page
+            self.save()
+            if old_page:
+                channel.command('Target.closeTarget', dict(targetId=old_page))
+        self.navigate(url)
 
     def close_after_collection(self):
         """仅关闭已校验浏览器 ID 的本店专属实例，保留登录目录。"""
@@ -255,5 +327,12 @@ class ShopBrowser:
     def browser_channel(self):
         url = self.running()
         if not url:
-            raise ValueError('本店浏览器已关闭，请重新打开')
-        return CdpChannel(url, self.state['port'])
+            raise BrowserInterrupted('本店浏览器已关闭；保留历史库存')
+        channel = CdpChannel(url, self.state['port'])
+        channel.watched_target = self.state.get('page')
+        try:
+            channel.command('Target.setDiscoverTargets', dict(discover=True))
+        except Exception:
+            channel.close()
+            raise
+        return channel

@@ -10,6 +10,7 @@ import uuid
 FIELDS = {'export_sellable': '现货＋预售＋阶梯库存',
           'dom_stock': '在售 SKU 未占用库存（无活动占用）',
           'unoccupied_stock': '未占用库存（旧版）', 'total_stock': '总库存（旧版）'}
+PATROL_HISTORY_LIMIT = 10
 
 
 def stock_number(value):
@@ -53,6 +54,10 @@ class DouyinInventory:
                     store TEXT NOT NULL, product TEXT NOT NULL, reason TEXT NOT NULL, created REAL NOT NULL,
                     PRIMARY KEY(store,product));
                 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS patrol_history (
+                    id INTEGER PRIMARY KEY, shop TEXT NOT NULL, trigger TEXT NOT NULL,
+                    started REAL NOT NULL, finished REAL NOT NULL, outcome TEXT NOT NULL,
+                    detail TEXT NOT NULL, delivery TEXT NOT NULL);
             ''')
             # 新字段只记录官方导出的文件位置，不改变现有 ERP 数据库。
             if 'export_file' not in [r[1] for r in db.execute('PRAGMA table_info(stores)')]:
@@ -155,20 +160,9 @@ class DouyinInventory:
                        ('patrol_selected:' + ident, '1' if selected else '0'))
 
     def ensure_default_stores(self):
-        """首次启用三店配置时补齐常用店铺；删除后不在下一次启动时自动加回。"""
-        from douyin_maintenance import KNOWN_SHOPS
-        from douyin_online import binding
-        online = binding(self.root)
+        """旧入口保留兼容；空工作区不预置其他部门店铺，也不自动恢复已删除店铺。"""
         with self.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM preferences WHERE key='default_shops_v1'").fetchone():
-                return
-            names = {r[0] for r in db.execute('SELECT name FROM stores')}
-            for name in KNOWN_SHOPS:
-                if name not in names:
-                    db.execute('INSERT INTO stores(id,name,field,interval,online_url,connection_mode) VALUES (?,?,?,?,?,?)',
-                               (uuid.uuid4().hex, name, 'export_sellable', 1800, online['url'] if online else '', 'managed'))
-            db.execute("INSERT INTO preferences VALUES ('default_shops_v1','1')")
+            db.execute("INSERT OR IGNORE INTO preferences VALUES ('default_shops_v1','1')")
 
     def remove_store(self, ident):
         """移出监控并使进行中的旧结果失效；历史文件保留，不执行永久文件删除。"""
@@ -246,6 +240,20 @@ class DouyinInventory:
     def fail(self, ident, reason='查询失败或登录失效；保留历史库存，请重新核验登录'):
         with self.db() as db:
             db.execute('UPDATE stores SET status=? WHERE id=?', (reason, ident))
+
+    def record_patrol(self, shop, trigger, started, outcome, detail, delivery):
+        """三店共用一份历史；并发写入与清理在同一事务中完成。"""
+        with self.db() as db:
+            db.execute('INSERT INTO patrol_history (shop,trigger,started,finished,outcome,detail,delivery) VALUES (?,?,?,?,?,?,?)',
+                       (shop, trigger, started, time.time(), outcome, detail, delivery))
+            db.execute('DELETE FROM patrol_history WHERE id IN (SELECT id FROM patrol_history ORDER BY id DESC LIMIT -1 OFFSET ?)',
+                       (PATROL_HISTORY_LIMIT,))
+
+    def patrol_history(self):
+        """返回已经结束的巡检，最新完成的排在最前面。"""
+        with self.db() as db:
+            return [dict(row) for row in db.execute('SELECT * FROM patrol_history ORDER BY id DESC LIMIT ?',
+                                                    (PATROL_HISTORY_LIMIT,))]
 
     def accept(self, ident, revision, products, *, complete, now=None, notify=True, field=None):
         if complete is not True or not isinstance(products, list):

@@ -48,7 +48,7 @@ class MultiShopTests(unittest.TestCase):
         entered, finished = [], []
         release = threading.Event()
         lock = threading.Lock()
-        def collect(ident):
+        def collect(ident, *, manual):
             with lock:
                 entered.append(ident)
             release.wait(4)
@@ -69,7 +69,7 @@ class MultiShopTests(unittest.TestCase):
     def test_one_failure_does_not_stop_other_shops_or_lock_retry(self):
         ids = self.shops()
         done = []
-        def collect(ident):
+        def collect(ident, *, manual):
             done.append(ident)
             if ident == ids[0]:
                 raise ValueError('本店登录失效')
@@ -85,7 +85,7 @@ class MultiShopTests(unittest.TestCase):
     def test_delete_waits_for_own_collection_and_other_store_continues(self):
         ids = self.shops(2)
         entered, release, other = threading.Event(), threading.Event(), threading.Event()
-        def collect(ident):
+        def collect(ident, *, manual):
             if ident == ids[0]:
                 entered.set(); release.wait(4)
             else:
@@ -103,12 +103,14 @@ class MultiShopTests(unittest.TestCase):
 
     def test_defaults_custom_names_and_deleted_shop_not_recreated(self):
         self.store.ensure_default_stores()
-        self.assertEqual(len(self.store.stores()), 3)
+        self.assertEqual(len(self.store.stores()), 0)
+        self.store.add_store('部门甲店')
+        self.store.add_store('部门乙店')
         removed = self.store.stores()[1]['id']
         self.store.remove_store(removed)
         self.store.ensure_default_stores()
         self.store.add_store('自定义四店')
-        self.assertEqual(len(self.store.stores()), 3)
+        self.assertEqual(len(self.store.stores()), 2)
         with self.assertRaises(ValueError):
             self.store.add_store('自定义四店')
         reopened = DouyinInventory(self.root)
