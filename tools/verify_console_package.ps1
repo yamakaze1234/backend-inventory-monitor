@@ -1,6 +1,8 @@
 #requires -Version 7.0
 param([Parameter(Mandatory)][string]$Candidate)
 $ErrorActionPreference='Stop'
+# 浏览器验收依赖随前端开发锁文件安装，不要求作者机器全局安装 Playwright。
+if(-not $env:PLAYWRIGHT_MODULE){$env:PLAYWRIGHT_MODULE=Join-Path (Split-Path $PSScriptRoot -Parent) 'app/web/node_modules/playwright'}
 # 只启动候选的隔离样例模式，不打开桌面窗口或加载生产数据。
 $candidatePath=(Resolve-Path $Candidate).Path
 $sample=Join-Path (Get-Location) ('outputs/订单整合验收/package-'+[guid]::NewGuid().ToString('N'))

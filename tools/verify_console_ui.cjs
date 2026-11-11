@@ -61,7 +61,8 @@ async function main() {
     await page.screenshot({path:path.join(out,'mobile.png'),fullPage:true});
     const dimensions=await page.evaluate(()=>({client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
     assert.ok(dimensions.scroll<=dimensions.client,JSON.stringify(dimensions));
-    const inputBox=await page.getByPlaceholder('保留完整编号，不按数字长度猜测类型').boundingBox();
+    // 按当前网店单号字段的可访问名称验证，避免旧提示文案造成误报。
+    const inputBox=await page.getByRole('textbox',{name:'完整网店单号',exact:true}).boundingBox();
     assert.ok(inputBox.width>250,'窄窗口的订单输入框必须保持可用宽度');
     await page.getByRole('button',{name:'展开或收起导航'}).click();
     await page.getByRole('button',{name:'软件更新',exact:true}).click();
