@@ -12,4 +12,3 @@ function Initialize-UvEnvironment([string]$Root,[string]$PythonExecutable) {
     if($LASTEXITCODE -ne 0){throw 'uv 项目解释器不可用'}
     return [string]$selected
 }
-
