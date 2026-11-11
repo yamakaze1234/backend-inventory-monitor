@@ -4,10 +4,10 @@ param([ValidateSet('Check','Test','Build','Preview','Run','WebBuild','WebPreview
       [string]$PythonExecutable,
       [string]$OutputDirectory='outputs/候选包')
 $ErrorActionPreference='Stop'
-if (-not $PythonExecutable) {
-    # 优先使用一键部署创建的虚拟环境，仍允许调用方显式指定解释器。
-    $localPython=Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
-    $PythonExecutable=if(Test-Path -LiteralPath $localPython){$localPython}else{'python'}
+. (Join-Path $PSScriptRoot 'tools/uv-environment.ps1')
+# 前端操作和运行已构建 EXE 不需要同步 Python；源码启动由启动脚本处理。
+if($Action -in @('Check','Test','Build','Preview','WebPreview')) {
+    $PythonExecutable=Initialize-UvEnvironment $PSScriptRoot $PythonExecutable
 }
 # 统一开发入口，现用数据仍由已安装程序管理。
 $env:PYTHONPATH = (@('app/src','tests') | ForEach-Object {Join-Path $PSScriptRoot $_}) -join ';'

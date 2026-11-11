@@ -1,2 +1,2 @@
-# 更新清单采用 Ed25519 验签，与配置工作台保持签名校验边界。
-cryptography==50.0.2
+# 兼容旧入口；更新依赖的唯一来源为 pyproject.toml / uv.lock 导出。
+-r ../../requirements.txt

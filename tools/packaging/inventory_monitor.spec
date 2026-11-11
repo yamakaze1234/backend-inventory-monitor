@@ -10,7 +10,7 @@ ui = root / 'app' / 'ui'
 # 仅收录兼容后端的公开源码，保持目录结构，排除编译缓存与运行数据。
 order_root = root / 'integrations' / 'order_backend'
 order_sources = [(str(p), str(Path('order_backend') / p.parent.relative_to(order_root))) for p in sorted(order_root.rglob('*')) if p.is_file() and p.suffix in {'.py', '.pyw', '.ps1', '.mjs'}]
-# 运行依赖统一由构建解释器的 requirements 安装，不借用作者电脑的缓存。
+# 运行依赖统一由uv.lock 安装到项目环境，不借用作者电脑的缓存。
 a = Analysis(
     [str(source / 'inventory_app.py')],
     pathex=[str(source)],
