@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 $ErrorActionPreference='Stop'
 # 隔离替换组件探测和安装器，验证控制流程；不安装软件、不改系统或业务配置。
 . (Join-Path $PSScriptRoot 'prepare-environment.ps1')
@@ -23,7 +23,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $result=Invoke-EnvironmentPreparation $root 'Runtime' $false $true
 Assert ($result -eq 2) '缺失依赖时 CheckOnly 应返回 2'
 Assert ($script:installCalls.Count -eq 0) 'CheckOnly 不得安装软件'
-Assert ($script:probeCalls -notcontains 'Python') '运行模式不得要求 Python'
+Assert ($script:probeCalls -notcontains 'Uv') '运行模式不得要求 uv'
 
 $result=Invoke-EnvironmentPreparation $root 'Runtime' $false $false
 Assert ($result -eq 0) '组件安装并回读成功后才返回成功'
@@ -34,12 +34,13 @@ Assert ($script:installCalls.Count -eq $count) '重复运行不得重装已就�
 
 $result=Invoke-EnvironmentPreparation $root 'Runtime' $true $false
 Assert ($script:installed['Chrome'] -and $script:installed['Node']) '抖店选项应补齐浏览器和 Node'
-Assert (!$script:installed['Python']) '浏览器选项不需要 Python'
+Assert (!$script:installed['Uv']) '浏览器选项不需要 uv'
 
 $result=Invoke-EnvironmentPreparation $root 'Development' $false $true
 Assert ($result -eq 2 -and $script:developmentCalls -eq 0) '开发检查不得安装或创建虚拟环境'
 $result=Invoke-EnvironmentPreparation $root 'Development' $false $false
 Assert ($result -eq 0 -and $script:developmentCalls -eq 1) '开发模式应创建并验证依赖'
+Assert ($script:installCalls -contains 'astral-sh.uv') '开发模式必须安装 uv 而不是系统 Python'
 
 $script:installed=@{}
 $script:installationWorks=$false

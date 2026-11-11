@@ -50,3 +50,7 @@ dev.ps1               开发命令入口
 ```
 
 运行数据库、登录资料、机器人配置、维护表和业务导出不进入仓库或通用发行包。首次安装创建独立工作区；已有安装升级保留原数据位置。
+
+## uv 开发环境
+
+Python 开发、测试与构建统一使用 uv。运行 `tools/一键部署环境.cmd -Mode Development`，或安装 uv 后执行 `uv sync --locked` 和 `npm --prefix app/web ci`。依赖声明为 `pyproject.toml`，锁文件为 `uv.lock`；前端继续使用 npm。普通 EXE 使用者无需安装 uv。具体流程见 [开发与构建](docs/开发与构建.md)。

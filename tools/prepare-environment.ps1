@@ -49,13 +49,12 @@ function Get-EnvironmentComponent([string]$Name) {
             $path=Find-EnvironmentExecutable 'node.exe' @("$env:ProgramFiles/nodejs/node.exe")
             if($path){$version=& $path --version; if($LASTEXITCODE -eq 0 -and $version -match '^v(\d+)\.' -and [int]$Matches[1] -ge 22){return $path}}
         }
-        'Python' {
-            # 固定 3.13 开发系列，避免误用 Windows 商店占位程序或不兼容的解释器。
-            foreach($path in @("$env:LOCALAPPDATA/Programs/Python/Python313/python.exe","$env:ProgramFiles/Python313/python.exe",(Find-EnvironmentExecutable 'python.exe'))){
-                if($path -and (Test-Path -LiteralPath $path) -and $path -notlike '*WindowsApps*'){
-                    $version=& $path -c 'import sys; print("%s.%s" % sys.version_info[:2])'
-                    if($LASTEXITCODE -eq 0 -and $version -eq '3.13'){return $path}
-                }
+        'Uv' {
+            # uv 负责按项目版本准备 Python，无需另装系统解释器。
+            $path=Find-EnvironmentExecutable 'uv.exe' @("$env:USERPROFILE/.local/bin/uv.exe","$env:LOCALAPPDATA/Microsoft/WinGet/Links/uv.exe")
+            if($path){
+                $version=& $path --version
+                if($LASTEXITCODE -eq 0 -and $version -match '^uv (\d+\.\d+\.\d+)' -and [version]$Matches[1] -ge [version]'0.12.3'){return $path}
             }
         }
     }
@@ -85,24 +84,28 @@ function Ensure-EnvironmentComponent([string]$Name,[string]$PackageId,[bool]$Rea
 }
 
 function Test-DevelopmentEnvironment([string]$Root) {
-    # 以实际导入和前端锁文件为准，不把目录存在误判成完整安装。
+    # --check 不同步环境；同时检查锁文件、实际安装版本和前端依赖。
+    $uv=Get-EnvironmentComponent 'Uv'
     $python=Join-Path $Root '.venv/Scripts/python.exe'
     $npmLock=Join-Path $Root 'app/web/node_modules/.package-lock.json'
-    if(!(Test-Path -LiteralPath $python) -or !(Test-Path -LiteralPath $npmLock)){return $false}
-    & $python -B -c 'import PIL, pystray, openpyxl, pymssql, websockets, pyxlsb, cryptography, PyInstaller' 2>$null
-    return $LASTEXITCODE -eq 0
+    if(!$uv -or !(Test-Path -LiteralPath $python) -or !(Test-Path -LiteralPath $npmLock)){return $false}
+    # PowerShell 5.1 会把原生 stderr 包装成错误；探测以退出码为准，不把 uv 提示当失败。
+    $probePreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        & $uv sync --check --locked --offline --no-python-downloads --project $Root 2>&1 | Out-Null
+        if($LASTEXITCODE -ne 0){return $false}
+        & $python -B -c 'import PIL, pystray, openpyxl, pymssql, websockets, pyxlsb, cryptography, PyInstaller' 2>&1 | Out-Null
+        return $LASTEXITCODE -eq 0
+    } finally {$ErrorActionPreference=$probePreference}
 }
 
 function Initialize-DevelopmentEnvironment([string]$Root) {
-    $python=Get-EnvironmentComponent 'Python'
-    $venv=Join-Path $Root '.venv'
-    $venvPython=Join-Path $venv 'Scripts/python.exe'
-    if(!(Test-Path -LiteralPath $venvPython)){
-        & $python -m venv $venv | Out-Host
-        if($LASTEXITCODE -ne 0){throw '创建项目独立 Python 环境失败。'}
-    }
-    & $venvPython -m pip install --requirement (Join-Path $Root 'requirements-build.txt') | Out-Host
-    if($LASTEXITCODE -ne 0){throw 'Python 依赖安装失败。'}
+    $uv=Get-EnvironmentComponent 'Uv'
+    # 锁文件不可隐式更新；缺少 Python 时由 uv 按 .python-version 自动准备。
+    & $uv sync --locked --project $Root | Out-Host
+    if($LASTEXITCODE -ne 0){throw 'uv 开发环境同步失败。请检查锁文件、Python 下载与网络连接。'}
+
     $node=Get-EnvironmentComponent 'Node'
     $npm=Join-Path (Split-Path $node -Parent) 'node_modules/npm/bin/npm-cli.js'
     if(!(Test-Path -LiteralPath $npm)){throw 'Node 安装中缺少 npm，请修复 Node.js 安装。'}
@@ -114,7 +117,7 @@ function Initialize-DevelopmentEnvironment([string]$Root) {
 function Invoke-EnvironmentPreparation([string]$Root,[string]$SelectedMode,[bool]$Browser,[bool]$ReadOnly) {
     if(![Environment]::Is64BitOperatingSystem -or [Environment]::OSVersion.Version.Major -lt 10 -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64'){throw '需要 Windows 10/11 x64；当前完整验收平台为 Windows 11。'}
     if($SelectedMode -eq 'Development'){
-        foreach($relative in @('requirements-build.txt','app/web/package-lock.json')){
+        foreach($relative in @('pyproject.toml','uv.lock','.python-version','app/web/package-lock.json')){
             if(!(Test-Path -LiteralPath (Join-Path $Root $relative))){throw '开发模式需要完整源码，请在源码仓库中运行。'}
         }
     }
@@ -122,7 +125,7 @@ function Invoke-EnvironmentPreparation([string]$Root,[string]$SelectedMode,[bool
     if($Browser){$components+=,@('Chrome','Google.Chrome');$components+=,@('Node','OpenJS.NodeJS.LTS')}
     if($SelectedMode -eq 'Development'){
         if(!$Browser){$components+=,@('Node','OpenJS.NodeJS.LTS')}
-        $components+=,@('Python','Python.Python.3.13')
+        $components+=,@('Uv','astral-sh.uv')
     }
     $ready=$true
     foreach($component in $components){
@@ -134,7 +137,7 @@ function Invoke-EnvironmentPreparation([string]$Root,[string]$SelectedMode,[bool
     }
     if(!$ready){Write-Host '检测未通过，请运行部署模式补齐缺失组件。';return 2}
     Write-Host '环境检测通过。未启动库存采集、订单匹配或消息发送。'
-    if($SelectedMode -eq 'Development'){Write-Host '开发入口：pwsh ./dev.ps1 Check -PythonExecutable ./.venv/Scripts/python.exe'}
+    if($SelectedMode -eq 'Development'){Write-Host '开发入口：pwsh ./dev.ps1 Check'}
     else{Write-Host '请使用启动.cmd 打开程序，再填写 ERP、店铺和机器人配置。'}
     return 0
 }
