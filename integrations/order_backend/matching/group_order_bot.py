@@ -81,13 +81,28 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         if enabled and enabled[0] == '0':
             db.rollback()
             raise ValueError('后台程序已停止，请先打开 ERP 订单匹配机器人')
-        # 同类在途任务及短时间内的重复请求复用原任务编号，避免重复排队执行。
+        # 手动巡检可以在上一轮结束后立即重新采集，仍复用在途或结果未知的任务。
+        manual_patrol = kind == 'today' and origin == 'manual'
         duplicate = db.execute("SELECT * FROM jobs WHERE kind=? AND number=? AND shop=? AND "
-                               "(state IN ('queued','running','unknown') OR created>?) ORDER BY created DESC LIMIT 1",
-                               (kind, number, shop, time.time() - (120 if kind == 'today' else 300))).fetchone()
+                               "(state IN ('queued','running','unknown') OR (? AND created>?)) "
+                               "ORDER BY created DESC LIMIT 1",
+                               (kind, number, shop, not manual_patrol,
+                                time.time() - (120 if kind == 'today' else 300))).fetchone()
         if duplicate:
+            result = {'jobId': duplicate['id'], 'status': duplicate['state'], 'duplicate': True}
+            if manual_patrol:
+                messages = {
+                    'queued': '已有巡检任务排队，本次复用该任务。',
+                    'running': '上一轮巡检仍在执行，请查看原任务进度。',
+                    'unknown': '上一轮巡检结果未知，请先核对原任务回执。',
+                }
+                result['message'] = messages[duplicate['state']]
+                if duplicate['state'] == 'queued' and duplicate['origin'] == 'schedule':
+                    # 用户明确要求现在执行时，将原定时任务转为手动，暂停状态下也能领取。
+                    db.execute("UPDATE jobs SET origin='manual',updated=? WHERE id=? AND state='queued'",
+                               (time.time(), duplicate['id']))
             db.commit()
-            return {'jobId': duplicate['id'], 'status': duplicate['state'], 'duplicate': True}
+            return result
         job_id = uuid.uuid4().hex
         db.execute('INSERT INTO jobs(id,kind,number,shop,origin,state,created,updated) VALUES(?,?,?,?,?,?,?,?)',
                    (job_id, kind, number, shop, origin, 'queued', time.time(), time.time()))

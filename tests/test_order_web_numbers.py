@@ -1,8 +1,10 @@
 """用隔离订单验证网店单号匹配和通知，避免访问真实 ERP 和群。"""
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -29,6 +31,50 @@ class OrderWebNumberTests(unittest.TestCase):
         self.bot = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, modules):
             spec.loader.exec_module(self.bot)
+
+    def queue_root(self):
+        base = Path(__file__).resolve().parents[1] / '.codex_tmp/order-repeat-tests'
+        base.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(dir=base))
+
+    def test_manual_patrol_can_repeat_immediately_after_previous_run_finishes(self):
+        root = self.queue_root()
+        with patch.object(self.bot.time, 'time', return_value=1000):
+            first = self.bot.enqueue('today', root=root)
+            for state in ('completed', 'needs_review'):
+                with closing(self.bot.queue_db(root)) as db:
+                    db.execute('UPDATE jobs SET state=? WHERE id=?', (state, first['jobId']))
+                second = self.bot.enqueue('today', root=root)
+                self.assertEqual(second['status'], 'queued')
+                self.assertFalse(second['duplicate'])
+                self.assertNotEqual(second['jobId'], first['jobId'])
+                first = second
+
+    def test_manual_patrol_reuses_active_or_unknown_task(self):
+        root = self.queue_root()
+        original = self.bot.enqueue('today', root=root)
+        for state in ('queued', 'running', 'unknown'):
+            with closing(self.bot.queue_db(root)) as db:
+                # 模拟旧任务，确认超过原来的 120 秒仍保护在途和未知结果。
+                db.execute('UPDATE jobs SET state=?,created=0 WHERE id=?', (state, original['jobId']))
+            result = self.bot.enqueue('today', root=root)
+            self.assertEqual((result['jobId'], result['status']), (original['jobId'], state))
+            self.assertTrue(result['duplicate'])
+            self.assertIn('巡检', result['message'])
+
+    def test_manual_patrol_can_take_over_queued_schedule_while_paused(self):
+        root = self.queue_root()
+        with patch.object(self.bot.time, 'time', return_value=1000):
+            first = self.bot.enqueue('today', origin='schedule', root=root)
+            with closing(self.bot.queue_db(root)) as db:
+                db.execute("INSERT INTO settings VALUES('schedulePaused','1')")
+            manual = self.bot.enqueue('today', root=root)
+            self.assertEqual(manual['jobId'], first['jobId'])
+            with closing(self.bot.queue_db(root)) as db:
+                self.assertEqual(db.execute('SELECT origin FROM jobs').fetchone()[0], 'manual')
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
+                db.execute("UPDATE jobs SET state='completed'")
+            self.assertEqual(self.bot.enqueue('today', origin='schedule', root=root)['jobId'], first['jobId'])
 
     def test_find_orders_prefers_web_number_preserves_suffix_and_internal_identity(self):
         row = dict(shopId='1', billcode=self.internal, platformNo=f'{self.first}， {self.second}')
