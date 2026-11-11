@@ -48,7 +48,7 @@ class MultiShopTests(unittest.TestCase):
         entered, finished = [], []
         release = threading.Event()
         lock = threading.Lock()
-        def collect(ident):
+        def collect(ident, *, manual):
             with lock:
                 entered.append(ident)
             release.wait(4)
@@ -69,7 +69,7 @@ class MultiShopTests(unittest.TestCase):
     def test_one_failure_does_not_stop_other_shops_or_lock_retry(self):
         ids = self.shops()
         done = []
-        def collect(ident):
+        def collect(ident, *, manual):
             done.append(ident)
             if ident == ids[0]:
                 raise ValueError('本店登录失效')
@@ -85,7 +85,7 @@ class MultiShopTests(unittest.TestCase):
     def test_delete_waits_for_own_collection_and_other_store_continues(self):
         ids = self.shops(2)
         entered, release, other = threading.Event(), threading.Event(), threading.Event()
-        def collect(ident):
+        def collect(ident, *, manual):
             if ident == ids[0]:
                 entered.set(); release.wait(4)
             else:

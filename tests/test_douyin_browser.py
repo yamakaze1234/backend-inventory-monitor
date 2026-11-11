@@ -199,7 +199,8 @@ class BrowserTests(unittest.TestCase):
         runtime.sync_online.reset_mock()
         runtime.collect(self.ident)
         runtime.sync_online.assert_called_once_with(self.ident, force=True)
-        runtime.notify_current.assert_called_with(self.ident, online_ready=True, online_signature='synced-preview')
+        runtime.notify_current.assert_called_with(self.ident, online_ready=True, online_signature='synced-preview',
+                                                  manual=False)
         worker.finish_collection.reset_mock()
         worker.call.side_effect = ValueError('采集失败，需要保留现场')
         with self.assertRaises(ValueError):

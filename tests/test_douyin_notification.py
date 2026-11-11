@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -101,7 +102,53 @@ class NotificationTests(unittest.TestCase):
             db.execute('UPDATE stores SET enabled=0 WHERE id=?', (self.ident,))
         self.send(); self.transport.assert_not_called()
         self.store.save_browser(self.ident, 'edge')
-        self.send(); self.transport.assert_not_called()
+        deliver_current(self.store, self.robots, self.ident, manual=True)
+        self.transport.assert_not_called()
+
+    def test_manual_patrol_sends_for_paused_shop_and_records_actual_delivery(self):
+        from douyin_inventory_runtime import DouyinRuntime
+        from douyin_online import preview_signature
+
+        self.store.enable(self.ident, False)
+        runtime = object.__new__(DouyinRuntime)
+        runtime.store, runtime.live, runtime.service = self.store, True, Mock()
+        runtime.stop_event, runtime.collection_lock = threading.Event(), threading.Lock()
+        runtime.due, runtime.pending_collections = {}, set()
+        runtime.validate_connection = Mock()
+        worker = Mock()
+        row = dict(item(), export_sellable=0)
+        product = dict(product_id=row['product_id'], product_name=row['product_name'],
+                       monitor_scope=row['monitor_scope'], skus=[row])
+        worker.call.return_value = dict(products=[product], complete=True, field='export_sellable')
+        runtime.worker = Mock(return_value=worker)
+        runtime.sync_online = lambda ident, **kwargs: dict(
+            ok=True, signature=preview_signature(self.store.restock_preview(ident)))
+
+        # 模拟真实“立即检查”入口，两轮相同清单只发一次，定时开关仍为暂停。
+        with patch('notification_robots.store_for_service', return_value=self.robots), \
+                patch('douyin_inventory_runtime.attach_maintenance'):
+            runtime.execute('inspect', self.ident)
+            runtime.execute('inspect', self.ident)
+
+        self.assertFalse(self.store.store(self.ident)['enabled'])
+        self.assertEqual([row['delivery'] for row in self.store.patrol_history()],
+                         ['未发送：同一清单已发过', '本轮已发送'])
+        self.transport.assert_called_once()
+
+    def test_paused_shop_online_retry_releases_only_pending_manual_patrol(self):
+        self.accept()
+        deliver_current(self.store, self.robots, self.ident, online_ready=False)
+        with self.store.db() as db:
+            db.execute('UPDATE stores SET enabled=0 WHERE id=?', (self.ident,))
+        deliver_current(self.store, self.robots, self.ident, pending_only=True)
+        self.transport.assert_not_called()
+
+        deliver_current(self.store, self.robots, self.ident, manual=True, online_ready=False)
+        self.transport.assert_not_called()
+        self.store = DouyinInventory(self.root)
+        deliver_current(self.store, self.robots, self.ident, pending_only=True)
+        deliver_current(self.store, self.robots, self.ident, pending_only=True)
+        self.transport.assert_called_once()
 
     def test_shop_identity_is_part_of_dedupe(self):
         other = self.store.add_store('第二店铺')

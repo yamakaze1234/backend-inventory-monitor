@@ -17,7 +17,8 @@ def audience(robots):
             if CHANNEL in json.loads(scopes)]
 
 
-def deliver_current(store, robots, ident, *, online_ready=True, pending_only=False, online_signature=None):
+def deliver_current(store, robots, ident, *, online_ready=True, pending_only=False, online_signature=None,
+                    manual=False):
     """仅在成功采集或配件核对后调用；相同清单重启不重发，未知结果不重试。"""
     results = []
     for robot, epoch in audience(robots):
@@ -26,14 +27,19 @@ def deliver_current(store, robots, ident, *, online_ready=True, pending_only=Fal
             db.execute('BEGIN IMMEDIATE')
             config = db.execute('SELECT * FROM stores WHERE id=?', (ident,)).fetchone()
             row = db.execute('SELECT data FROM restock_previews WHERE store=?', (ident,)).fetchone()
-            if not config or config['deleted'] or not config['confirmed'] or not config['enabled'] or not row:
+            if not config or config['deleted'] or not config['confirmed'] or not row:
                 continue
             preview = json.loads(row[0])
             payload = brief(preview, config['online_url'] if online_ready else '')
             saved = db.execute('SELECT value FROM preferences WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else {}
             same = old.get('signature') == preview['signature'] and old.get('epoch') == epoch
-            if pending_only and not (same and old.get('status') == 'waiting_online'):
+            pending = same and old.get('status') == 'waiting_online'
+            if pending_only and not pending:
+                continue
+            # 定时暂停仍允许手动巡检投递，补同步只能释放同一份手动清单。
+            manual_pending = pending and old.get('manual') is True
+            if not config['enabled'] and not (manual or pending_only and manual_pending):
                 continue
             # 空清单也保存，后续再次缺货才能形成新的提醒周期。
             if same and not old.get('retryable'):
@@ -48,7 +54,7 @@ def deliver_current(store, robots, ident, *, online_ready=True, pending_only=Fal
             waiting = bool(payload) and (not online_ready or
                       online_signature is not None and online_signature != preview_signature(preview))
             state.update(status='waiting_online' if waiting else 'sending' if payload else 'empty',
-                         retryable=waiting, payload=payload)
+                         retryable=waiting, payload=payload, manual=waiting and (manual or manual_pending))
             db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', (key, json.dumps(state, ensure_ascii=False)))
         if waiting or not payload:
             results.append(dict(robot=robot, status=state['status']))

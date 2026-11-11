@@ -118,10 +118,10 @@ class PatrolTests(unittest.TestCase):
             self.assertEqual(operation, 'login')
             self.assertFalse(self.store.store(ident)['confirmed'])
         self.runtime.worker.return_value.call.side_effect = login
-        self.runtime.collect.side_effect = lambda key: self.assertTrue(self.store.store(key)['confirmed'])
+        self.runtime.collect.side_effect = lambda key, **kwargs: self.assertTrue(self.store.store(key)['confirmed'])
         self.runtime.reserve_collection(ident)
         self.runtime.execute('inspect', ident)
-        self.runtime.collect.assert_called_once_with(ident)
+        self.runtime.collect.assert_called_once_with(ident, manual=True)
         self.assertNotIn(ident, self.runtime.pending_collections)
 
     def test_wrong_shop_keeps_existing_baseline_and_does_not_collect(self):

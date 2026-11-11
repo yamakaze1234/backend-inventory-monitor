@@ -46,11 +46,11 @@ def _patrol_error(error):
     return f'{name}（错误码 {code}）' if isinstance(code, int) else name
 
 
-def _patrol_delivery(config, ready, count, results):
+def _patrol_delivery(config, ready, count, results, *, manual=False):
     """按本轮结果说明为何没发；去重命中不得显示为本轮发送。"""
     if not count:
         return '未发送：无符合条件的 SKU'
-    if not config['enabled']:
+    if not config['enabled'] and not manual:
         return '未发送：本店定时监控已暂停'
     if not ready:
         return '未发送：未启用补库存机器人'
@@ -244,7 +244,7 @@ class DouyinRuntime:
         self.submit(dict(kind='remove_store', reply=reply), ident)
         return reply
 
-    def collect_reserved(self, ident, *, confirm=False, trigger='手动'):
+    def collect_reserved(self, ident, *, confirm=False, trigger='手动', manual=False):
         """成功和失败都释放占位，并推后下一次定时检查，避免手动后紧接着重导。"""
         started = time.time()
         token = _patrol_stage.set('核对店铺身份' if confirm else '连接抖店')
@@ -263,7 +263,7 @@ class DouyinRuntime:
                         self.worker(ident).call('login')
                         self.store.rebase(ident, confirmed=True)
                         confirm = False
-                    summary = self.collect(ident)
+                    summary = self.collect(ident, manual=manual)
                     if summary is not None:
                         outcome, detail, delivery = summary
                     break
@@ -349,7 +349,7 @@ class DouyinRuntime:
         with self.store.db() as db:
             db.execute('UPDATE stores SET status=? WHERE id=?', (self.notice, ident))
 
-    def collect(self, ident):
+    def collect(self, ident, *, manual=False):
         config = self.store.store(ident)
         if not config['confirmed']:
             raise ValueError('请先核对并确认浏览器中的店铺身份与库存口径。')
@@ -400,13 +400,13 @@ class DouyinRuntime:
             # 在线表失败保留库存检查结果，群消息留待在线回读成功后发送。
             online_ready = isinstance(online, dict) and online.get('ok') is True and isinstance(online.get('signature'), str)
             phase = _patrol_stage.set('核对钉钉投递')
-            results = self.notify_current(ident, online_ready=online_ready,
+            results = self.notify_current(ident, online_ready=online_ready, manual=manual,
                                           online_signature=online.get('signature') if isinstance(online, dict) else None)
             _patrol_stage.reset(phase)
         if getattr(self, 'live', False):
             detail += '；在线明细' + ('已回读' if online_ready else '未完成回读')
         return ('success' if online_ready or not getattr(self, 'live', False) else 'incomplete',
-                detail, _patrol_delivery(config, notify, count, results))
+                detail, _patrol_delivery(config, notify, count, results, manual=manual))
 
     def sync_online(self, ident, *, force=False):
         """在线明细同步与群消息发送分开；失败不覆盖成功采集的库存快照。"""
@@ -425,14 +425,15 @@ class DouyinRuntime:
         return any(r['enabled'] and 'douyin_inventory' in r['channels']
                    for r in store_for_service(self.service).list_robots())
 
-    def notify_current(self, ident, *, online_ready=True, pending_only=False, online_signature=None):
+    def notify_current(self, ident, *, online_ready=True, pending_only=False, online_signature=None, manual=False):
         """只发送本次核对后的补库存清单，不投递旧归零／恢复事件。"""
         if not self.notification_ready():
             return []
         from notification_robots import store_for_service
         from douyin_notification import deliver_current, delivery_label
         robots = store_for_service(self.service)
-        result = deliver_current(self.store, robots, ident, online_ready=online_ready, pending_only=pending_only, online_signature=online_signature)
+        result = deliver_current(self.store, robots, ident, online_ready=online_ready, pending_only=pending_only,
+                                 online_signature=online_signature, manual=manual)
         self.notice = self.store.store(ident)['status'] + '；群提醒：' + delivery_label(self.store, ident, robots)
         return result
 
@@ -554,6 +555,7 @@ class DouyinRuntime:
                     self.pending_collections.discard(ident)
                 return
             self.collect_reserved(ident, trigger=_patrol_triggers.get(operation, '手动'),
+                                  manual=operation in ('check', 'export', 'inspect'),
                                   confirm=operation == 'confirm' or
                                   (operation in ('inspect', 'scheduled-inspect', 'resume-inspect') and not config['confirmed']))
         elif operation in ('enable', 'pause'):
