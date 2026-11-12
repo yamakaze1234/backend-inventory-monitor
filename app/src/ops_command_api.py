@@ -26,6 +26,7 @@ ARGS = {
 }
 ACTOR = ('org_id', 'group_id', 'user_id')
 TERMINAL = frozenset(('completed', 'needs_review', 'failed'))
+ORDER_TASKS = frozenset(('order.match','order.patrol','task.status'))
 ID = re.compile(r'[^\s\x00-\x1f\x7f]{1,200}\Z')
 RECEIPT = re.compile(r'dingtalk:[A-Za-z0-9_.:-]{1,150}\Z')
 
@@ -123,10 +124,15 @@ class CommandAPI:
             raise CommandError(403, 'COMMAND_DISABLED', '本群未启用此功能', {'help_available': 'help' in selected and 'help' in member['commands']})
         if command not in member['commands']:
             raise denied()
-        if command not in self.business.implemented:
+        target = getattr(self.business,'order_target',None)
+        # 订单写入仅在已核实可投递最终结果的群启用。
+        implemented = self.business.implemented
+        if target and group!=target['groupId']:
+            implemented = implemented - ORDER_TASKS
+        if command not in implemented:
             raise CommandError(503, 'SERVICE_UNAVAILABLE', '该指令的数据来源尚未接入')
         return Access(frozenset(member['shops']), frozenset(member['fields']),
-                      tuple(k for k in COMMANDS if k in selected and k in member['commands'] and k in self.business.implemented))
+                      tuple(k for k in COMMANDS if k in selected and k in member['commands'] and k in implemented))
 
     def _key(self, actor, ident):
         return self.robot_id, actor[0], ident
@@ -288,7 +294,7 @@ class CommandAPI:
                     raise denied()
                 result['status'] = task['status']
                 result['task_id'] = task['task_id']
-                result['data'].update({k: v for k, v in task.items() if k not in ('status', 'task_id')})
+                result['data'].update({k: v for k, v in task.items() if k not in ('status', 'task_id', 'created_at')})
         with self.service.db() as db:
             row = db.execute("SELECT state FROM ops_replies WHERE robot=? AND org=? AND id=? AND phase='final'",
                              self._key(actor, ident)).fetchone()

@@ -330,4 +330,18 @@ def section(b):
     cost_forms,cost_tables = cost_panel(b)
     result['forms'].extend(cost_forms)
     result['tables'].extend(cost_tables)
+    # 展示现用查询连接，管理员不用从群回复猜数据来自哪张表。
+    if api:
+        business = api.business
+        detail = getattr(getattr(business,'reports',None),'detail',{})
+        connections = [dict(source=label,scope='在线表格',usage=usage)
+                       for key,label,usage in (
+            ('shipping_orders','待揽收订单汇总','发货监控汇总'),
+            ('shipping_shortages','缺货情况','发货监控汇总'),
+            ('front_stock','补库存明细','前台库存监控')) if key in detail]
+        connections.extend(dict(source=Path(row['path']).name,scope=row['sheet'],usage='查询商品 · '+row['host_price_column'])
+                           for row in getattr(getattr(business,'inventory',None),'maintenance',()) if row.get('host_price_column'))
+        if connections:
+            result['tables'].append(T('已配置的查询来源',[('source','表格'),('scope','工作表'),
+                                    ('usage','用于查询')],connections,compact=True))
     return result

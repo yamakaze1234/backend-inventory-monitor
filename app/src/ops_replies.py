@@ -171,6 +171,8 @@ def shipping(data):
     else:
         title = '在线汇总' if result == 'ready' else '部分数据'
     lines = [f'【发货监控｜{title}】', '范围：' + scope]
+    if data.get('source_note'):
+        lines.append(data['source_note'])
     labels = dict(pending_scanned='待发扫描', overdue='已超时', due_within_48h='48 小时内到期',
                   deadline_unknown='截止待核实', shortage_goods='缺货配件', inventory_unknown_goods='库存待核实')
     for report in data['tables']:
@@ -182,7 +184,7 @@ def shipping(data):
         if report.get('batch_id'):
             if report.get('sync_state') in ('failed', 'unknown'):
                 lines.append('本轮同步失败' if report['sync_state'] == 'failed' else '本轮同步待核实')
-            lines.append('｜'.join(labels[k] + ' ' + qty(v, '单' if orders else '种') for k, v in report['counts'].items()))
+            lines.append('｜'.join(labels[k] + ' ' + qty(v, '单' if orders else '种') for k, v in report['counts'].items() if v is not None or not data.get('source_note')))
         for item in report.get('shortage_items', []):
             lines.append(f"{item['name']}（ERP {item['goods_id']}）缺口 {qty(item['shortage'])}｜待入 {qty(item['incoming'])}")
         if report.get('table_url'):
@@ -198,8 +200,8 @@ def front(data):
     if data['outcome'] == 'no_report':
         return ['【前台库存｜暂无监控记录】该店铺或 SKU 暂无在线监控记录。']
     lines = ['【前台库存｜部分数据】以下为已回读核实的监控记录。' if data['outcome'] == 'partial' else '【前台库存｜在线监控明细】',
-             f"{data.get('shop_name', data['shop_id'])} · 批次 {when(data.get('checked_at'))}",
-             f"待处理 {data['counts']['total']} 个 SKU"]
+             f"{data.get('shop_name', data['shop_id'])} · {'最近快照' if data.get('detail_source') else '批次'} {when(data.get('checked_at'))}",
+             f"{'表内监控记录' if data.get('detail_source') else '待处理'} {data['counts']['total']} 个 SKU"]
     lines[1] += ''.join(f"｜{label} {data[key]}" for key, label in (('spu','SPU'),('sku_id','SKU')) if data.get(key))
     for row in data['items']:
         lines.append(f"{row.get('product_name') or row['spu']} · {row.get('config_name') or row['sku_id']}｜平台库存 {qty(row['platform_stock'])}｜"

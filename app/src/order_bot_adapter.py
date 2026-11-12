@@ -86,13 +86,13 @@ class OrderBotAdapter:
         if not path.is_file():
             return None
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
-            row = db.execute("""SELECT j.id,j.state,j.result,e.shop,e.number,j.origin,
+            row = db.execute("""SELECT j.id,j.state,j.result,e.shop,e.number,j.origin,j.created,
                                 e.rowid=(SELECT MIN(o.rowid) FROM ops_external_jobs o WHERE o.job_id=j.id)
                                 FROM ops_external_jobs e
                                 JOIN jobs j ON j.id=e.job_id WHERE e.request_id=?""", (external_id,)).fetchone()
         if not row:
             return None
-        task_id, state, raw, shop, number, origin, first = row
+        task_id, state, raw, shop, number, origin, created, first = row
         report = json.loads(raw) if raw else {}
         shops = report.get('shops', [])
         manual = report.get('manualItems', [])
@@ -111,7 +111,7 @@ class OrderBotAdapter:
                          skipped=sum(r.get('status') in ('skipped', 'already_linked') for r in manual),
                          review=sum(r.get('status') in ('unknown', 'needs_review') for r in manual), unit='明细行')
         return dict(task_id=task_id, status=state if state in ('queued','running','completed','needs_review','failed','unknown') else 'unknown',
-                    shop_id=shop, order_number=number, final_reply_owned=origin == 'ops-command' and bool(first), **stats)
+                    shop_id=shop, order_number=number, created_at=created, final_reply_owned=origin == 'ops-command' and bool(first), **stats)
 
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
@@ -141,6 +141,8 @@ if action in ('order','spu','number'):
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
 elif action=='ops-order-status':
     # 固定模块由该部门订单后端提供；接口升级前不回退为猜测或模糊匹配。
+    if request['status_sdk']:
+        sys.path.insert(0,request['status_sdk'])
     import order_status_bridge
     payload=request['payload']
     result=order_status_bridge.query_verified_orders(payload['number_type'],payload['number'],payload['shops'])
@@ -164,9 +166,13 @@ else:
     result=control.handle(action,root=root,payload=request['payload'])
 print(json.dumps(result,ensure_ascii=False))
 '''
+            # 履约查询使用独立固定版本 SDK，不替换订单写入进程的依赖。
+            status_sdk = self.workspace_root/'order-status-sdk'
             result = self.runner([str(python), '-B', '-X', 'utf8', '-c', script],
                 env=dict(os.environ,ORDER_BOT_CONFIG=str(config_path(self.workspace_root).resolve())),
-                input=json.dumps(dict(control=str(self.control_root), state=str(self.state_root), action=action, payload=payload or {})),
+                input=json.dumps(dict(control=str(self.control_root),state=str(self.state_root),action=action,
+                                      status_sdk=str(status_sdk) if action=='ops-order-status' and status_sdk.is_dir() else '',
+                                      payload=payload or {})),
                 capture_output=True, text=True, encoding='utf-8', timeout=60,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode:

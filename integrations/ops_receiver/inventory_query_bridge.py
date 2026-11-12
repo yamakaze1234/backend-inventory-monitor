@@ -13,10 +13,6 @@ from ops_commands import parse_command, COMMANDS
 from ops_receiver import LocalCommandClient, VerifiedMention
 from ops_replies import render
 
-# 新版订单任务需要后端和完成回复一起接入；不把任务交给尚未接入的队列。
-PENDING_BACKEND = {'order.match','order.patrol'}
-
-
 def claim_error(ident):
     # API 执行前拒绝通常没有业务回执，单独保留本地回复去重记录。
     with closing(sqlite3.connect(LOCAL/'rejected-reply.sqlite3',timeout=5)) as db, db:
@@ -48,8 +44,6 @@ def run(raw):
         if choices and claim_error(event.receipt):
             return dict(Text='请核对参数，例如「'+choices[0]+'」。', Receipt='')
         return {}
-    if command in PENDING_BACKEND:
-        return dict(Text='新版订单指令尚未接入执行后台。本次未入队。', Receipt='') if claim_error(event.receipt) else {}
     if 'shop_alias' in args:
         args['shop_id'] = args.pop('shop_alias')
     result = client.request('requests', dict(request_id=event.receipt,command=command,actor=event.actor,args=args))

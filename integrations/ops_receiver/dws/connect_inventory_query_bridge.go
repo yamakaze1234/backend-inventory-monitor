@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,8 +21,8 @@ var inventoryPilotAuth = os.Getenv("INVENTORY_QUERY_AUTH")
 func init() { _ = os.Unsetenv("INVENTORY_QUERY_AUTH") }
 
 type inventoryQueryBridge struct {
-	pilot               inventoryQueryPilot
-	python, script, url string
+	pilot                      inventoryQueryPilot
+	python, script, url, group string
 }
 
 type inventoryQueryReply struct {
@@ -33,6 +34,7 @@ func configuredInventoryQueryBridge(robot string) inventoryQueryBridge {
 	return inventoryQueryBridge{
 		pilot:  inventoryQueryPilot{robot, os.Getenv("INVENTORY_QUERY_ORG_ID")},
 		python: os.Getenv("INVENTORY_QUERY_PYTHON"), script: os.Getenv("INVENTORY_QUERY_SCRIPT"), url: os.Getenv("INVENTORY_QUERY_URL"),
+		group: os.Getenv("INVENTORY_QUERY_GROUP_ID"),
 	}
 }
 
@@ -66,6 +68,19 @@ func (b inventoryQueryBridge) member(event inventoryQueryEvent) bool {
 	defer response.Body.Close()
 	var result struct{ Member bool }
 	return response.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&result) == nil && result.Member
+}
+
+// 固定的新版订单指令必须经过 ACL；授权失败也不能回到旧代理执行。
+func (b inventoryQueryBridge) ownsOrderCommand(event inventoryQueryEvent) bool {
+	if b.group == "" || event.Group != b.group {
+		return false
+	}
+	word, _, _ := strings.Cut(event.Text, " ")
+	switch word {
+	case "匹配订单", "巡检订单", "查看任务进度", "查订单状态":
+		return true
+	}
+	return false
 }
 
 func (b inventoryQueryBridge) query(event inventoryQueryEvent, state string) (inventoryQueryReply, error) {

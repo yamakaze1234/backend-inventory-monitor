@@ -6,9 +6,9 @@ import sys
 
 DWS_COMMIT = '50eb73a0906c5911c5c25f9c7106b6ead4f14f62'
 INIT = '\tinventoryQuery := configuredInventoryQueryBridge(clientID)\n'
-BLOCK = '''		// 可信事件还必须通过本机成员权限；其他消息走原有 Codex 转发。
+BLOCK = '''		// 已授权指令或指定群的固定订单语法由本机处理；其他消息走原转发。
 		if inventoryQuery.ready() {
-			if event, accepted := inventoryQuery.pilot.event(data); accepted && inventoryQuery.member(event) {
+			if event, accepted := inventoryQuery.pilot.event(data); accepted && (inventoryQuery.ownsOrderCommand(event) || inventoryQuery.member(event)) {
 				replyEndpoint := data.SessionWebhook
 				go func() {
 					out, err := inventoryQuery.query(event, "prepare")

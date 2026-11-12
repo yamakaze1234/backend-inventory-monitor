@@ -58,26 +58,35 @@ def query_verified_orders(number_type, number, shops, *, connect=None, sdk=None,
     if not scope or number_type not in ('网店单号', 'NO单号', '出库单号', '物流单号'):
         return dict(status='unverified', orders=[])
     web = number_type == '网店单号'
-    resolved = {}
-    if web:
+
+    def lookup(value, by_web):
+        found = {}
         for shop in shops:
             with closing(connect(shop)) as client:
-                query = audit_api(datetime(2000, 1, 1), datetime.now(CN).replace(tzinfo=None),
-                                  b_dispose=0, b_match_goods=0, shopId=[shop])
+                query = audit_api(datetime(2000, 1, 1),datetime.now(CN).replace(tzinfo=None),
+                                  b_dispose=0,b_match_goods=0,shopId=[shop])
                 params = query.params()
-                params.update(search_billcode_key='platformNo', search_billcode_filter=number)
-                for row in client._paged(query.base_url, params):
-                    if identifier(row.get('shop_id')) != shop or 'c_platform_billcode' not in row:
-                        return dict(status='unverified', orders=[])
-                    if number in web_numbers(row['c_platform_billcode']):
-                        code = identifier(row.get('c_billcode'))
+                params.update(search_billcode_key='platformNo' if by_web else 'orderNo',
+                              search_billcode_filter=value)
+                for row in client._paged(query.base_url,params):
+                    if identifier(row.get('shop_id'))!=shop or 'c_platform_billcode' not in row:
+                        return None
+                    code = identifier(row.get('c_billcode'))
+                    numbers = set(web_numbers(row['c_platform_billcode']))
+                    if (value in numbers if by_web else value==code):
                         if not code.startswith('NO-'):
-                            return dict(status='unverified', orders=[])
-                        resolved[(shop, code)] = True
-        if len(resolved) > 1:
-            return dict(status='ambiguous', orders=[])
+                            return None
+                        found.setdefault((shop,code),set()).update(numbers)
+        return found
+
+    resolved = lookup(number,True) if web else {}
+    if web:
+        if resolved is None:
+            return dict(status='unverified',orders=[])
+        if len(resolved)>1:
+            return dict(status='ambiguous',orders=[])
         if not resolved:
-            return dict(status='ok', orders=[])
+            return dict(status='ok',orders=[])
     primary = next(iter(resolved))[0] if resolved else shops[0]
     with closing(connect(primary)) as client:
         session = ReadSession(client)
@@ -108,11 +117,19 @@ def query_verified_orders(number_type, number, shops, *, connect=None, sdk=None,
                 return dict(status='unverified', orders=[])
             head, = heads
             shop, actual = (identifier(head.get(k)) for k in ('shop_id', 'c_billcode'))
-            if actual != code or shop not in scope:
-                return dict(status='unverified', orders=[])
+            if actual!=code or (shop and shop not in scope):
+                return dict(status='unverified',orders=[])
             numbers = web_numbers(head.get('c_platform_billcode'))
-            if web and (number not in numbers or (shop, code) not in resolved):
-                return dict(status='unverified', orders=[])
+            if not shop:
+                # 实际详情可能只含店名。用有 shop_id 的精确审单列表交叉核对，不凭名称放行。
+                listed = resolved if web else lookup(code,False)
+                if not listed or len(listed)!=1:
+                    return dict(status='unverified',orders=[])
+                (shop,verified_code), = listed.keys()
+                if verified_code!=code or (numbers and listed[(shop,code)] and not set(numbers)&listed[(shop,code)]):
+                    return dict(status='unverified',orders=[])
+            if web and (number not in numbers or (shop,code) not in resolved):
+                return dict(status='unverified',orders=[])
             session.verified[code] = raw
             orders.append(dict(erp_no=code, shop_id=shop, web_order_numbers=numbers, events=[]))
         # 全部关联订单均核对后才读取登记；一次查询保留 SDK 的共同关联与重复步骤。

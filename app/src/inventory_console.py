@@ -212,6 +212,12 @@ class InventoryConsole:
         self.url=f'http://127.0.0.1:{self.server.server_port}'
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True,name='inventory-console')
         self.thread.start()
+        self.order_delivery = None
+        target = getattr(self.commands.business,'order_target',None) if self.commands is not None else None
+        if target:
+            from ops_order_delivery import OrderDelivery
+            self.order_delivery = OrderDelivery(self.commands,target).start(
+                lambda:not self.closing and self.updater.state['phase'] not in ('preparing','installing'))
 
     def inventory(self):
         """短缓存合并多页面请求，只返回界面需要的字段，避免输出连接配置。"""
@@ -328,6 +334,8 @@ class InventoryConsole:
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
 
     def close(self):
+        if self.order_delivery:
+            self.order_delivery.close()
         self.server.shutdown()
         self.server.server_close()
 

@@ -9,9 +9,10 @@ from ops_sources import ReportTables, order_status
 
 
 class CommandBusiness:
-    def __init__(self, inventory, *, order=None, order_read=None, reports=None, shops=None):
+    def __init__(self, inventory, *, order=None, order_read=None, reports=None, shops=None, order_target=None):
         self.inventory, self.order, self.order_read = inventory, order, order_read
         self.reports, self.shops = reports or ReportTables(), shops or (lambda: {})
+        self.order_target = order_target
         self.implemented = {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'}
         if order is not None:
             self.implemented.update(('order.match', 'order.patrol', 'task.status'))
@@ -139,13 +140,21 @@ def configured_api(service, order, business=None):
                 set(item['fields']) != required or len(set(item['fields'].values())) != len(required)
                 for item in tables.values()):
             raise ValueError('运营指令批次表绑定无效')
-    order_read = None
-    if binding.get('order_status_bridge') is True and order.ops_supported():
-        order_read = order.ops_order_status
+    detail = binding.get('live_report_tables') or {}
+    reports = ReportTables(tables) if tables else None
+    if detail:
+        from ops_live_tables import LiveReportTables
+        reports = LiveReportTables(tables or {},detail,org)
+    compatible = order.ops_supported()
+    order_read = order.ops_order_status if compatible and binding.get('order_status_bridge') is True else None
+    target = None
+    if compatible and binding.get('order_final_replies') is True:
+        from ops_order_delivery import configured_target
+        target = configured_target(service.root,robot,org)
     inventory = InventoryCommands(service, cost=CoordinatedProfitSource(getattr(service, 'sql_worker', None)).read_profit_costs,
                                   ai=ai, maintenance=maintenance, aliases=binding.get('inventory_aliases'))
-    api = CommandAPI(service, CommandBusiness(inventory, order=order if order.ops_supported() else None,
-                                             order_read=order_read, reports=ReportTables(tables) if tables else None,
-                                             shops=lambda: shop_names(service.root)), robot, token, org_id=org)
+    api = CommandAPI(service, CommandBusiness(inventory, order=order if target else None,
+                                             order_read=order_read, reports=reports,
+                                             shops=lambda: shop_names(service.root),order_target=target), robot, token, org_id=org)
     api.local_port = port
     return api
