@@ -9,7 +9,7 @@ HEADERS = ('钉钉成员ID', '允许的指令ID', '允许的店铺ID', '附加�
 KEYS = ('user_id', 'commands', 'shops', 'fields')
 SHEET = '成员权限'
 LIMIT = 200
-FIELDS = dict(erp_cost='ERP 成本和成本变化', maintenance_price='维护表价格',
+FIELDS = dict(erp_cost='ERP 成本和成本变化', maintenance_price='维护表价格', tax_cost='含税（核算）成本',
               operator='订单操作人', table_links='授权表格入口')
 
 

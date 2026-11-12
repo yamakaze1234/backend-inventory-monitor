@@ -10,7 +10,7 @@ from ops_commands import COMMANDS, GroupCommands
 
 PREFIX = '/api/commands/v1/'
 WRITES = frozenset(('monitor.add', 'monitor.threshold.set', 'order.match', 'order.patrol'))
-PRICE_ACCESS = frozenset(('erp_cost', 'maintenance_price', 'operator', 'table_links'))
+PRICE_ACCESS = frozenset(('erp_cost', 'maintenance_price', 'tax_cost', 'operator', 'table_links'))
 ARGS = {
     'help': ({}, {}),
     'inventory.get': ({}, dict(goods_id='goods', keyword='text', warehouse_id='id', shop_id='id')),
@@ -150,6 +150,10 @@ class CommandAPI:
         for item in data.get('items', ()):
             if 'erp_cost' not in access.fields and 'erp_unit_cost_cents' in item:
                 item.update(erp_unit_cost_cents=None, erp_cost_observed_at=None, erp_cost_status='forbidden')
+            if 'tax_cost' not in access.fields and 'tax_cost_status' in item:
+                item.update(tax_cost_status='forbidden',tax_cost_cents=None)
+                item.pop('tax_cost_source',None)
+                item.pop('tax_cost_observed_at',None)
             if 'maintenance_prices' in item:
                 if 'maintenance_price' not in access.fields:
                     item.update(maintenance_prices=[], maintenance_price_total=0, maintenance_price_status='forbidden')

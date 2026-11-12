@@ -193,6 +193,30 @@ def ops_members_import_confirm(b,v):
     return dict(message=f'导入已保存并回读：当前群 {confirm_import(b, v)} 名成员')
 
 
+@action('settings','ops-cost-inspect')
+def ops_cost_inspect(b,v):
+    from ops_tax_cost_settings import inspect
+    return inspect(b,v)
+
+
+@action('settings','ops-cost-preview')
+def ops_cost_preview(b,v):
+    from ops_tax_cost_settings import preview
+    return preview(b,v)
+
+
+@action('settings','ops-cost-save')
+def ops_cost_save(b,v):
+    from ops_tax_cost_settings import save
+    return save(b,v)
+
+
+@action('settings','ops-cost-disconnect')
+def ops_cost_disconnect(b,v):
+    from ops_tax_cost_settings import disconnect
+    return disconnect(b)
+
+
 @action('settings','robot-save')
 def robot_save(b,v):
     if v.get('mode')=='enterprise':

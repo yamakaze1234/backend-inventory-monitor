@@ -209,9 +209,13 @@ def section(b):
               getattr(b, 'ops_command_config_error', False) else '接口尚未接入运营机器人。')
     result['description'] = status + '按已核实的群身份保存功能；成员还需单独授权。'
     result['text'] = ('指令 ID：' + '、'.join(f'{label} {key}' for key, (label, _) in COMMANDS.items())
-                      + '。附加权限：ERP 成本 erp_cost、维护表价格 maintenance_price、操作人 operator、表格入口 table_links。')
+                      + '。附加权限：ERP 成本 erp_cost、维护表价格 maintenance_price、含税（核算）成本 tax_cost、操作人 operator、表格入口 table_links。')
     result['forms'] = [A('ops-group-discover', '绑定钉钉群', [F('name','群名称')], submitLabel='识别群信息',
                          description='填写完整钉钉群名，识别后会自动填入组织、机器人和群 ID。')]
     result['tables'] = [T('群功能配置', [('name', '群名称'), ('org_id', '组织'), ('robot_id', '机器人'),
                                      ('group_id', '群 ID'), ('features', '已勾选功能'), ('member_count','授权成员')], rows)]
+    from ops_tax_cost_settings import panel as cost_panel
+    cost_forms,cost_tables = cost_panel(b)
+    result['forms'].extend(cost_forms)
+    result['tables'].extend(cost_tables)
     return result

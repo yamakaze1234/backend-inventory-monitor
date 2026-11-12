@@ -47,6 +47,13 @@ def inventory(data):
             amount = row.get('erp_unit_cost_cents')
             lines.append('ERP 库存成本：未知' if amount is None else
                          f"ERP 库存成本 {money(amount)}/件（公司大库，读取于 {when(row.get('erp_cost_observed_at'))}）")
+        tax_state = row.get('tax_cost_status')
+        if tax_state == 'ready':
+            lines.append(f"含税（核算）成本 {money(row['tax_cost_cents'])}/件（{row['tax_cost_source']}，保存于 {when(row['tax_cost_observed_at'])}）")
+        elif tax_state and tax_state != 'forbidden':
+            note = {'not_bound':'未连接成本表','read_failed':'成本表读取失败','no_match':'成本表无此 ERP 商品',
+                    'conflict':'同一 ERP 商品有不同成本，待核实','unknown':'成本单元格为空或未保存公式结果'}.get(tax_state,'未知')
+            lines.append('含税（核算）成本：' + note)
         for price in row.get('maintenance_prices', []):
             unit = price['price_kind'] == 'part_unit_price'
             lines.append(f"主机维护表{'配件单价' if unit else '整机到手价'} {money(price['price_cents'])}{'/件' if unit else ''}"
@@ -213,7 +220,7 @@ HELP_GUIDE = {
         '按名称、型号或 SKU：查询商品 5070 Ti 雪鹰',
         '也可以说：查询 5070 Ti 雪鹰库存和 ERP 价格',
         '可选：在末尾加「仓库 <仓库ID>」指定分库，加「店铺 <店铺名或ID>」限定维护表价格范围。两项都用时先写仓库，再写店铺。',
-        '回复会标注采集时间；库存 0 表示确实为零，「未知」表示没有可用数据。价格按权限展示。',
+        '回复会标注采集时间；库存 0 表示确实为零，「未知」表示没有可用数据。价格按权限展示；已连接主机成本表时，有权限的成员会另外看到含税（核算）成本。',
     ),
     'price.changes': (
         '查看最近一次已完成的检测里，ERP 库存成本有哪些变化；回复包含调整前后金额、差额和检测时间。',

@@ -210,6 +210,11 @@ class InventoryCommands:
                                        0 <= time.time() - at <= self.service.get(db, 'interval_seconds', 7200) + 300 else 'historical')
                 items.append(dict(name=row['name'], sku=row['sku'], goods_id=str(row['goods_id']), **obs))
         ids = {r['goods_id'] for r in items}
+        if 'tax_cost' in access.fields:
+            from ops_tax_cost import quote_costs
+            tax_costs = quote_costs(self.service, ids)
+            for item in items:
+                item.update(tax_costs[item['goods_id']])
         cost, cost_at, cost_state = {}, None, 'forbidden'
         if 'erp_cost' in access.fields:
             try:
