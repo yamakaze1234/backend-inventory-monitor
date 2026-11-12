@@ -144,11 +144,28 @@ def workspace_settings_save(b,v):
     save_workspace_settings(b.service,v)
     return dict(message='部门与工作区名称已保存')
 
+@action('settings','ops-group-discover')
+def ops_group_discover(b,v):
+    from ops_group_discovery import discover
+    return discover(b, v)
+
+
+def register_ops_group_choice(kind):
+    @action('settings','ops-group-' + kind)
+    def handle(b,v):
+        from ops_group_discovery import resolve_choice
+        return resolve_choice(b, v, kind)
+
+
+for _kind in ('account-choice','group-choice','robot-choice'):
+    register_ops_group_choice(_kind)
+
+
 @action('settings','ops-group-save')
 def ops_group_save(b,v):
-    from ops_settings import save
+    from ops_settings import save_binding
     from ops_commands import COMMANDS
-    selected = save(b.service, v)
+    selected = save_binding(b, v)
     return dict(message='群功能已保存并回读：' + ('、'.join(COMMANDS[k][0] for k in selected) or '已清空'))
 
 

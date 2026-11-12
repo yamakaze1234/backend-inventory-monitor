@@ -137,21 +137,50 @@ def confirm_import(b, values):
     return commit_members(b.service, identity, members, expected)
 
 
+def binding_form(b, identity, name, *, robot_name='', token=None, commands=None):
+    from inventory_business_views import F, A
+
+    if commands is None:
+        # 已绑定群重新识别时沿用勾选；尚未绑定才使用当前可用功能的默认值。
+        commands = GroupCommands(b.service).get(*identity_for(identity))
+    if commands is None:
+        api = getattr(b, 'ops_command_api', None)
+        commands = (getattr(api.business, 'available', api.business.implemented) if api else
+                    {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'})
+    values = dict(identity, name=name)
+    if token:
+        values['token'] = token
+    values.update({key: [k for k in choices if k in commands] for key, (_, choices) in SECTIONS.items()})
+    fields = [F('name', '群名称', readonly=True),
+              *([F('robot_name','机器人名称',readonly=True)] if robot_name else []),
+              F('org_id', '钉钉组织 ID', readonly=True),
+              F('robot_id', '机器人 ID', readonly=True), F('group_id', '钉钉群 ID', readonly=True),
+              *[F(key, label, 'multi', options=[(k, COMMANDS[k][0]) for k in choices], bulk=True)
+                for key, (label, choices) in SECTIONS.items()]]
+    if robot_name:
+        values['robot_name'] = robot_name
+    return A('ops-group-save', '确认群绑定' if token else '编辑群功能', fields, values, module='settings',
+             description='群和机器人标识已核实。请核对名称并选择要开放的功能，保存后生效。',
+             submitLabel='保存群设置')
+
+
+def save_binding(b, values):
+    identity = identity_for(values)
+    token = values.get('token')
+    if token:
+        target = b.reviewed(token, 'ops-group-verified')
+        if identity != identity_for(target):
+            raise ValueError('群或机器人与识别结果不一致，请重新识别')
+        name = target['name']
+    else:
+        # 本机已有绑定可以编辑功能；新群必须走真实识别流程。
+        name = current(b.service, identity)['name']
+    return save(b.service, dict(values, name=name))
+
+
 def section(b):
     from inventory_business_views import F, A, T, S
     api = getattr(b, 'ops_command_api', None)
-    default = getattr(api.business, 'available', api.business.implemented) if api else {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'}
-
-    def form(row=None):
-        values = dict(row or {})
-        keys = values.pop('commands', default)
-        values.update({key: [k for k in choices if k in keys] for key, (_, choices) in SECTIONS.items()})
-        fields = [F('name', '群名称'), F('org_id', '钉钉组织 ID', readonly=bool(row)),
-                  F('robot_id', '机器人 ID', readonly=bool(row)), F('group_id', '钉钉群 ID', readonly=bool(row)),
-                  *[F(key, label, 'multi', options=[(k, COMMANDS[k][0]) for k in choices], bulk=True)
-                    for key, (label, choices) in SECTIONS.items()]]
-        return A('ops-group-save', '编辑群功能' if row else '绑定已核实的群', fields, values)
-
     groups = GroupCommands(b.service)
     rows = []
     with b.service.db() as db:
@@ -168,7 +197,7 @@ def section(b):
             expected = stamp(dict(name=row['name'], commands=selected, members=grants))
             rows.append(dict(id=json.dumps([org, robot, group]), name=row['name'], **identity, member_count=len(members),
                              features='、'.join(COMMANDS[k][0] for k in selected),
-                             _forms=[form(row),
+                             _forms=[binding_form(b, identity, row['name'], commands=selected),
                                      A('ops-members-save', '编辑成员权限', member_fields,
                                        dict(identity, members=members, expected=expected),
                                        confirm='按当前清单保存。删除的成员会失去该群的指令权限。'),
@@ -181,7 +210,8 @@ def section(b):
     result['description'] = status + '按已核实的群身份保存功能；成员还需单独授权。'
     result['text'] = ('指令 ID：' + '、'.join(f'{label} {key}' for key, (label, _) in COMMANDS.items())
                       + '。附加权限：ERP 成本 erp_cost、维护表价格 maintenance_price、操作人 operator、表格入口 table_links。')
-    result['forms'] = [form()]
+    result['forms'] = [A('ops-group-discover', '绑定钉钉群', [F('name','群名称')], submitLabel='识别群信息',
+                         description='填写完整钉钉群名，识别后会自动填入组织、机器人和群 ID。')]
     result['tables'] = [T('群功能配置', [('name', '群名称'), ('org_id', '组织'), ('robot_id', '机器人'),
                                      ('group_id', '群 ID'), ('features', '已勾选功能'), ('member_count','授权成员')], rows)]
     return result
