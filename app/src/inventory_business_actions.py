@@ -576,6 +576,25 @@ def order_patrol_window_save(b,v):
     return save_patrol_window(b,v)
 
 
+# 发货动作使用固定入口，表单参数不能指定任意机器人命令。
+@action('order-settings','shipping-on')
+def shipping_enable(b,v):
+    from order_business import shipping_action
+    return shipping_action(b,'shipping-on')
+
+
+@action('order-settings','shipping-off')
+def shipping_disable(b,v):
+    from order_business import shipping_action
+    return shipping_action(b,'shipping-off')
+
+
+@action('order-settings','shipping-run')
+def shipping_run(b,v):
+    from order_business import shipping_action
+    return shipping_action(b,'shipping')
+
+
 @action('order-settings','robot-select')
 def order_robot_select(b,v):
     from order_business import select_robot

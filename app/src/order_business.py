@@ -57,6 +57,28 @@ def save_patrol_window(b,v):
     return dict(message=f"自动巡检设置已保存：{result['start']} 至 {('次日 ' if result['nextDay'] else '')+result['end']}（北京时间），每 {result['intervalMinutes']} 分钟")
 
 
+def shipping_action(b, operation):
+    # 单独控制发货巡检，不改变订单匹配计划或自动启动订单服务。
+    b.external()
+    bot=adapter(b)
+    state=bot.configuration()
+    if not state.get('deployed') or not state.get('shippingReady'):
+        raise ValueError('请先安装支持发货监控的订单兼容后端')
+    if operation!='shipping-off':
+        if not state.get('shipping',{}).get('bound') or state.get('switching'):
+            raise ValueError('请先确认发货提醒目标群，并等待机器人切换完成')
+    if operation=='shipping' and (not state.get('online') or not state.get('serviceEnabled') or state.get('stopRequested')):
+        raise ValueError('订单执行器未运行，发货巡检未提交')
+    result=bot.action(operation)
+    if operation=='shipping':
+        if not result.get('jobId'):
+            raise ValueError('未收到发货巡检入队回执，请先查看任务记录')
+        if result.get('duplicate'):
+            return dict(message='已有发货巡检记录，本次未重复提交，请到订单匹配任务记录查看。')
+        return dict(message='发货巡检已入队，请到订单匹配任务记录查看结果。')
+    return result
+
+
 def backend_form(state,title):
     labels=[('match_root','匹配项目目录'),('control_root','机器人控制目录'),('state_root','本部门运行数据目录'),('python_path','Python 程序路径'),('dws_path','DWS 程序路径'),('pwsh_path','PowerShell 7 程序路径'),('node_path','Node 程序路径'),('agent_model','AI 模型标识')]
     values={k:state.get(k,'') for k,_ in labels};values['shops']=state.get('shops') or [dict(id='',name='')]

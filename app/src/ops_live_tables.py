@@ -203,7 +203,10 @@ class LiveReportTables(ReportTables):
         latest = max((stamp(r['snapshot_at']) or 0 for r in items.values()),default=0)
         rows = sorted(items.values(),key=lambda r:(-(stamp(r['snapshot_at']) or 0),r['spu'],r['sku_id']))
         partial = partial or bool(conflicts)
+        # 查询只返回所选店铺；共享链接覆盖整张表，交给指令层再次核对完整店铺权限。
+        link = safe_link(config.get('url')) if not config.get('hide_link') else None
         return dict(shop_id=shop,outcome='partial' if partial else 'ready' if rows else 'no_report',
                     checked_at=latest or None,coverage='partial' if partial else 'complete',detail_source=True,
                     counts=dict(total=len(rows),shown=min(5,len(rows))),items=rows[:5],
+                    **(dict(table_url=link,_table_link_shops=sorted(config['shops'])) if link else {}),
                     **{k:args[k] for k in ('spu','sku_id') if k in args})

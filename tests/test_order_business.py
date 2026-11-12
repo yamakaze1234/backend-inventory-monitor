@@ -1,7 +1,7 @@
 """订单配置表单边界：合成目标，不部署后端或发送真实消息。"""
 import unittest
 from unittest.mock import Mock
-from order_business import patrol_window_form,save_patrol_window, search_robot,select_robot,view
+from order_business import patrol_window_form,save_patrol_window, search_robot,select_robot,shipping_action,view
 
 
 class OrderBusinessTests(unittest.TestCase):
@@ -54,3 +54,15 @@ class OrderBusinessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             search_robot(self.b,self.values)
         self.assertEqual(self.b.order_bot.action.call_count,1)
+
+    def test_manual_shipping_requires_running_worker_without_enabling_schedule(self):
+        state=dict(deployed=True,shippingReady=True,shipping=dict(bound=True,enabled=False),serviceEnabled=True)
+        self.b.order_bot.configuration.return_value=state
+        with self.assertRaisesRegex(ValueError,'执行器未运行'):
+            shipping_action(self.b,'shipping')
+        self.b.order_bot.action.assert_not_called()
+        state['online']=True
+        self.b.order_bot.action.side_effect=None
+        self.b.order_bot.action.return_value=dict(jobId='shipping-1',status='queued')
+        self.assertIn('已入队',shipping_action(self.b,'shipping')['message'])
+        self.b.order_bot.action.assert_called_once_with('shipping')

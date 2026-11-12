@@ -198,7 +198,11 @@ def front(data):
     if data['outcome'] == 'not_bound':
         return ['【前台库存｜表格未绑定】请联系管理员配置前台库存 AI 表格。']
     if data['outcome'] == 'no_report':
-        return ['【前台库存｜暂无监控记录】该店铺或 SKU 暂无在线监控记录。']
+        lines = ['【前台库存｜暂无监控记录】该店铺或 SKU 暂无在线监控记录。']
+        # 没有命中记录时，也允许有权限的成员打开对应明细表。
+        if data.get('table_url'):
+            lines.append('前台库存监控明细表：' + data['table_url'])
+        return lines
     lines = ['【前台库存｜部分数据】以下为已回读核实的监控记录。' if data['outcome'] == 'partial' else '【前台库存｜在线监控明细】',
              f"{data.get('shop_name', data['shop_id'])} · {'最近快照' if data.get('detail_source') else '批次'} {when(data.get('checked_at'))}",
              f"{'表内监控记录' if data.get('detail_source') else '待处理'} {data['counts']['total']} 个 SKU"]
@@ -210,7 +214,7 @@ def front(data):
     if data['counts']['total'] > data['counts']['shown']:
         lines.append(f"本次显示 {data['counts']['shown']} 条，可按 SPU 或 SKU 查询。")
     if data.get('table_url'):
-        lines.append('钉钉 AI 表格：' + data['table_url'])
+        lines.append('前台库存监控明细表：' + data['table_url'])
     return lines
 
 

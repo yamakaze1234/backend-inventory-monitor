@@ -80,7 +80,8 @@ function OrdersPage({onConfigure,onPlan}:{onConfigure:()=>void;onPlan:()=>void})
   // 店铺范围由本部门独立配置决定。
   const shopNames=useMemo(()=>Object.fromEntries((snapshot.data?.shops||[]).map(s=>[s.id,s.name])),[snapshot.data?.shops]);
   const columns=useMemo<ColumnDef<DataGridFeatures,Job>[]>(()=>[
-    {accessorKey:'number',header:'网店单号 / SPU',size:220,cell:({row})=><Button variant="link" size="sm" onClick={()=>setSelected(row.original)}>{row.original.number||'当天已配置店铺巡检'}</Button>},
+    // 发货任务没有网店单号，仍可点击任务名称查看执行及投递结果。
+    {accessorKey:'number',header:'网店单号 / SPU',size:220,cell:({row})=><Button variant="link" size="sm" onClick={()=>setSelected(row.original)}>{row.original.number||(row.original.kind==='shipping'?'发货巡检':'当天已配置店铺巡检')}</Button>},
     {accessorKey:'kind',header:'任务类型',cell:({row})=>names[row.original.kind]||row.original.kind},
     {accessorKey:'shop',header:'店铺',cell:({row})=>(shopNames[row.original.shop]||(row.original.shop?'未配置店铺名称':'自动识别'))},
     {accessorKey:'state',header:'执行状态',cell:({row})=><StateBadge value={row.original.state}/>},
@@ -98,7 +99,7 @@ function OrdersPage({onConfigure,onPlan}:{onConfigure:()=>void;onPlan:()=>void})
       <label className="flex min-w-0 basis-full flex-col gap-2 sm:flex-1 sm:basis-64"><span className="text-xs">{numberLabel}</span><Input required value={number} onChange={e=>setNumber(e.target.value)} placeholder={kind==='order'?'保留 A 或 A-1 后缀':'输入完整编号'}/></label><Button size="sm" type="submit" disabled={busy||!number.trim()||!snapshot.data?.workerOnline||!snapshot.data?.serviceEnabled}>提交匹配</Button></form>
       {!snapshot.data?.available&&<p className="text-muted-foreground">{snapshot.data?.message||'正在读取机器人状态'}</p>}</div></FramePanel></Frame>
     <Frame spacing="sm"><FrameHeader><div className="flex items-center justify-between gap-3"><FrameTitle>任务记录</FrameTitle><Button variant="outline" size="sm" onClick={snapshot.refresh}><RefreshCw/>刷新</Button></div></FrameHeader><FramePanel><Records rows={snapshot.data?.jobs||emptyJobs} columns={columns} loading={snapshot.loading} total={snapshot.data?.total||0} pagination={pagination} onPaginationChange={setPagination}/>{snapshot.data?.total===0&&<Button size="sm" variant="outline" onClick={snapshot.refresh}>读取任务记录</Button>}</FramePanel></Frame>
-    <Dialog open={!!selected} onOpenChange={open=>{if(!open)setSelected(null);}}><DialogContent><DialogHeader><DialogTitle>任务详情</DialogTitle><DialogDescription>排队和执行完成不等于 ERP 回读成功。</DialogDescription></DialogHeader>{selected&&<div className="flex flex-col gap-3 break-all"><span>任务编号：{selected.id}</span><span>{selected.kind==='order'||selected.kind==='rematch_order'?(/^NO-/i.test(selected.number)?'ERP 单号（备用）':'网店单号'):'业务编号'}：{selected.number||'当天巡检'}</span><div className="flex gap-2"><StateBadge value={selected.state}/><StateBadge value={selected.delivery}/></div><JobResult id={selected.id}/></div>}</DialogContent></Dialog>
+    <Dialog open={!!selected} onOpenChange={open=>{if(!open)setSelected(null);}}><DialogContent><DialogHeader><DialogTitle>任务详情</DialogTitle><DialogDescription>排队和执行完成不等于 ERP 回读成功。</DialogDescription></DialogHeader>{selected&&<div className="flex flex-col gap-3 break-all"><span>任务编号：{selected.id}</span><span>{selected.kind==='order'||selected.kind==='rematch_order'?(/^NO-/i.test(selected.number)?'ERP 单号（备用）':'网店单号'):'业务编号'}：{selected.number||(selected.kind==='shipping'?'发货巡检':'当天巡检')}</span><div className="flex gap-2"><StateBadge value={selected.state}/><StateBadge value={selected.delivery}/></div><JobResult id={selected.id}/></div>}</DialogContent></Dialog>
   </div>;
 }
 

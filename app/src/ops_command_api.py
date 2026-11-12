@@ -170,6 +170,10 @@ class CommandAPI:
         if 'operator' not in access.fields:
             for event in data.get('events', []) + data.get('latest_events', []):
                 event['operator'] = None
+        # 单店查询也可能指向共享表；链接权限必须覆盖整张表，重放时同样复核。
+        link_shops = set(data.pop('_table_link_shops', ()))
+        if not link_shops <= access.shops:
+            data.pop('table_url', None)
         if 'table_links' not in access.fields:
             data.pop('table_url', None)
             for report in data.get('tables', []):
