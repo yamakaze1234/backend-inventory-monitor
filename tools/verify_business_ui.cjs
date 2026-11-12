@@ -13,7 +13,8 @@ async function main(){
   const quickAdd=page.getByRole('dialog',{name:'添加产品',exact:true});
   await quickAdd.getByLabel('商品名称或 ERP ID',{exact:true}).waitFor();
   await quickAdd.getByRole('button',{name:'取消',exact:true}).click();
-  const nav=[['douyin','前台库存监控',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉货源监控',['消息监听','货源周报','定时日报','AI 接入','接收机器人']],['profit','ERP调价监控',['查看价格变动','价格监控配置','检测结果']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['order-settings','订单机器人设置',['匹配服务配置','订单匹配机器人']],['settings','连接与通知设置',['部门与工作区','库存数据来源','通知机器人','本地缓存']]];
+  // 发货工作台单独验收配置与订单明细分区。
+  const nav=[['shipping','发货监控',['发货监控','最近巡检明细']],['douyin','前台库存监控',['整机库存','补库存提醒','库存变化','店铺管理','本店连接与维护表','低库存预警','人工排除链接']],['dingtalk','钉钉货源监控',['消息监听','货源周报','定时日报','AI 接入','接收机器人']],['profit','ERP调价监控',['查看价格变动','价格监控配置','检测结果']],['events','库存提醒记录',['库存提醒记录']],['monitor','管理监控商品',['关注产品','搜索 ERP 商品','本轮检查明细']],['order-settings','订单机器人设置',['匹配服务配置','订单匹配机器人']],['settings','连接与通知设置',['部门与工作区','库存数据来源','通知机器人','本地缓存']]];
   async function section(title){await page.getByRole('combobox',{name:'业务分区'}).click();await page.getByRole('option',{name:title,exact:true}).click();}
   for(const [module,title,sections] of nav){
    await page.getByRole('button',{name:title,exact:true}).click();await page.locator(`[data-business-module="${module}"] [data-slot="frame"]`).first().waitFor();

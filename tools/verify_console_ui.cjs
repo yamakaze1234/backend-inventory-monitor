@@ -16,7 +16,7 @@ async function main() {
     // 界面验收不访问发布站；真实签名与下载失败由后端测试覆盖。
     await page.route('**/api/info',route=>route.fulfill({json:{version:'1.06',autoCheck:false,business:true}}));
     await page.goto(url);
-    assert.deepEqual(await page.locator('[data-slot=sidebar-menu-button] span').allTextContents(),['配件库存监控','订单巡检匹配','前台库存监控','钉钉货源监控','ERP调价监控','库存提醒记录','监控与巡检计划','管理监控商品','连接与通知设置','订单机器人设置','软件更新']);
+    assert.deepEqual(await page.locator('[data-slot=sidebar-menu-button] span').allTextContents(),['配件库存监控','订单巡检匹配','发货监控','前台库存监控','钉钉货源监控','ERP调价监控','库存提醒记录','监控与巡检计划','管理监控商品','连接与通知设置','订单机器人设置','软件更新']);
     const icon=await page.request.get(new URL('/app-icon.ico',url).href);
     assert.equal(icon.status(),200);
     assert.deepEqual(await icon.body(),fs.readFileSync('app/ui/monitor_assets/monitor.ico'));
