@@ -152,6 +152,30 @@ def ops_group_save(b,v):
     return dict(message='群功能已保存并回读：' + ('、'.join(COMMANDS[k][0] for k in selected) or '已清空'))
 
 
+@action('settings','ops-members-save')
+def ops_members_save(b,v):
+    from ops_settings import save_members
+    return dict(message=f'权限已保存并回读：{save_members(b, v)} 名成员')
+
+
+@action('settings','ops-members-template')
+def ops_members_template(b,v):
+    from ops_settings import template
+    return template(b, v)
+
+
+@action('settings','ops-members-import-preview')
+def ops_members_import_preview(b,v):
+    from ops_settings import preview_import
+    return preview_import(b, v)
+
+
+@action('settings','ops-members-import-confirm')
+def ops_members_import_confirm(b,v):
+    from ops_settings import confirm_import
+    return dict(message=f'导入已保存并回读：当前群 {confirm_import(b, v)} 名成员')
+
+
 @action('settings','robot-save')
 def robot_save(b,v):
     if v.get('mode')=='enterprise':
