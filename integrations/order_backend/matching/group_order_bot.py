@@ -58,11 +58,14 @@ def queue_db(root=STATE):
         created REAL NOT NULL, updated REAL NOT NULL, result TEXT NOT NULL DEFAULT '',
         delivery TEXT NOT NULL DEFAULT 'pending', evidence TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ops_external_jobs (
+        request_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, kind TEXT NOT NULL,
+        number TEXT NOT NULL, shop TEXT NOT NULL);
     ''')
     return db
 
 
-def enqueue(kind, number='', shop='', origin='manual', root=STATE):
+def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=None):
     # 这里只校验参数并入队；queued 表示待处理，不能对外宣称匹配成功。
     if kind not in ('today', 'shipping', 'order', 'rematch_order', 'spu', 'rematch_spu', 'number') or shop not in ('', *SHOPS):
         raise ValueError('仅支持今天巡检、订单或SPU匹配，以及本部门已配置店铺')
@@ -77,6 +80,22 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         raise ValueError('今天巡检不接受订单号')
     with contextlib.closing(queue_db(root)) as db:
         db.execute('BEGIN IMMEDIATE')
+        if external_id is not None:
+            # 外部请求和任务在同一事务绑定；已有回执允许在服务停止后回读。
+            if origin != 'ops-command' or not re.fullmatch('[a-f0-9]{64}', external_id) or not shop or kind not in ('order', 'today'):
+                raise ValueError('运营指令任务身份无效')
+            saved = db.execute('SELECT * FROM ops_external_jobs WHERE request_id=?', (external_id,)).fetchone()
+            if saved:
+                if (saved['kind'], saved['number'], saved['shop']) != (kind, number, shop):
+                    raise ValueError('外部请求编号冲突')
+                state = db.execute('SELECT state FROM jobs WHERE id=?', (saved['job_id'],)).fetchone()
+                return dict(jobId=saved['job_id'], status=state[0] if state else 'unknown', duplicate=True)
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','stopRequested','workerStopped')"))
+            age = time.time() - float(settings.get('heartbeat', '0'))
+            if not 0 <= age < 90 or settings.get('serviceEnabled') == '0' or settings.get('stopRequested') == '1' or settings.get('workerStopped') == '1':
+                return dict(status='unavailable')
+        elif origin == 'ops-command':
+            raise ValueError('运营指令缺少外部请求编号')
         enabled = db.execute("SELECT value FROM settings WHERE key='serviceEnabled'").fetchone()
         if enabled and enabled[0] == '0':
             db.rollback()
@@ -86,8 +105,14 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         duplicate = db.execute("SELECT * FROM jobs WHERE kind=? AND number=? AND shop=? AND "
                                "(state IN ('queued','running','unknown') OR (? AND created>?)) "
                                "ORDER BY created DESC LIMIT 1",
-                               (kind, number, shop, not manual_patrol,
+                               (kind, number, shop, not manual_patrol and external_id is None,
                                 time.time() - (120 if kind == 'today' else 300))).fetchone()
+        if duplicate and external_id is not None:
+            # 在途任务可以复用，但回复归属仍以原任务来源为准。
+            db.execute('INSERT INTO ops_external_jobs VALUES (?,?,?,?,?)',
+                       (external_id, duplicate['id'], kind, number, shop))
+            db.commit()
+            return dict(jobId=duplicate['id'], status=duplicate['state'], duplicate=True)
         if duplicate:
             result = {'jobId': duplicate['id'], 'status': duplicate['state'], 'duplicate': True}
             if manual_patrol:
@@ -106,6 +131,8 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         job_id = uuid.uuid4().hex
         db.execute('INSERT INTO jobs(id,kind,number,shop,origin,state,created,updated) VALUES(?,?,?,?,?,?,?,?)',
                    (job_id, kind, number, shop, origin, 'queued', time.time(), time.time()))
+        if external_id is not None:
+            db.execute('INSERT INTO ops_external_jobs VALUES (?,?,?,?,?)', (external_id, job_id, kind, number, shop))
         db.commit()
         return {'jobId': job_id, 'status': 'queued', 'duplicate': False,
                 'message': '已入队，结果将由配置的机器人发到目标群；入队不代表匹配完成。'}
@@ -251,11 +278,30 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
     if job['kind'] == 'shipping':
         from shipping_monitor import scan
         from shipping_online import sync
-        report = scan(dict(job), root, now=clock())
-        # 在线同步在物流核验后独立记录结果，库存查询部分失败仍保留紧急订单。
-        report['onlineSync'] = sync(report, root)
+        from ops_shipping_board import configuration
+        try:
+            binding = configuration(root)
+        except (ValueError, TypeError, KeyError, OSError):
+            # 配置出错时暂停主表写入，避免旧流程对已切换主表删除历史。
+            report = scan(dict(job), root, now=clock())
+            report['onlineSync'] = dict(enabled=True, complete=False, errors=['发货看板绑定待核对'])
+            return report
+        if binding:
+            from ops_shipping_board import scan_for_board, publish_board
+            from shipping_monitor import Source, PENDING
+            report, pending = scan_for_board(dict(job), root, clock(), scan, Source, PENDING)
+            scope = {job['shop']} if job['shop'] else set(SHOPS)
+            # 同一订单主表仅保留一个写入方，避免原同步删除已揽收历史。
+            publish_board(root, binding, pending, report, scope)
+        else:
+            report = scan(dict(job), root, now=clock())
+            # 没有新表绑定时保留原监控流程。
+            report['onlineSync'] = sync(report, root)
         from shipping_shortage import sync_shortages
         report['shortageSync'] = sync_shortages(report, root)
+        if binding:
+            from ops_shipping_board import publish_shortages
+            publish_shortages(root, binding, report, scope)
         return report
     elapsed_start = time.monotonic()
     now = clock()
@@ -321,6 +367,16 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
             item['exceptions'] = [dict(row) for row in rows if row['classification'] not in ('ignored', 'non_host')
                                   and row['readback_state'] != 'verified']
             item['orderSummary'] = order_summary(rows)
+            if dict(job).get('origin') == 'ops-command' and scan['complete'] and all(row['billcode'] for row in rows):
+                # 与原巡检相同按完整网店单号归组；同单有异常时优先归为待核对。
+                grouped = {}
+                for row in rows:
+                    for number in web_order_numbers(row['platform_no']) or (row['billcode'],):
+                        grouped.setdefault(number, []).append(row)
+                item['opsSummary'] = dict(success=item['orderSummary']['success'], review=item['orderSummary']['pending'],
+                                          skipped=sum(any(r['classification'] == 'ignored' for r in group)
+                                                      and all(r['classification'] in ('ignored', 'non_host') for r in group)
+                                                      for group in grouped.values()))
             if item['exceptions']:
                 report['complete'] = False
             report['shops'].append(item)
@@ -478,6 +534,10 @@ def deliver(job_id, report, root=STATE, runner=subprocess.run):
     with contextlib.closing(queue_db(root)) as db:
         job = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not job or job['delivery'] != 'pending':
+            return
+        if job['origin'] == 'ops-command':
+            # 指令接收端独占群回复；原后台通知不会再发一次。
+            db.execute("UPDATE jobs SET delivery='ops-owned' WHERE id=?", (job_id,))
             return
         # 定时巡检无新增成功且异常未变化时保持静默；手动任务仍返回结果。
         signature = hashlib.sha256(json.dumps({

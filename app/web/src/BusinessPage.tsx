@@ -17,7 +17,7 @@ import { Records } from './Records';
 import { api, useSnapshot } from './api';
 
 type Values=Record<string,unknown>;
-type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;when?:Values;columns?:[string,string][]};
+type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;bulk?:boolean;when?:Values;columns?:[string,string][]};
 type Action={action:string;title:string;fields:Field[];values:Values;confirm?:string;module?:string;immediate?:boolean};
 type Row=Values & {id?:string;sku?:string;_forms?:Action[];_details?:{label:string;value:unknown}[]};
 type Table={title:string;compact?:boolean;widths?:Record<string,number>;columns:{key:string;label:string}[];rows:Row[]};
@@ -48,7 +48,7 @@ function FieldInput({field,value,onChange}:{field:Field;value:unknown;onChange:(
   if(field.kind==='bool')return <label className="flex items-center gap-2"><Checkbox checked={!!value} onCheckedChange={onChange}/><span className="text-sm">{field.label}</span></label>;
   if(field.kind==='multi'){
     const values=Array.isArray(value)?value.map(String):[];
-    return <fieldset className="flex min-w-0 flex-col gap-3"><legend className="text-sm font-medium">{field.label}</legend>{choices.length>8&&<Input aria-label={'筛选'+field.label} placeholder="搜索可选项" value={search} onChange={e=>setSearch(e.target.value)}/>}<div className="flex max-h-64 flex-col gap-3 overflow-y-auto p-1">{choices.filter(o=>o.label.includes(search)).map(o=><label key={o.value} className="flex items-center gap-2"><Checkbox checked={values.includes(o.value)} onCheckedChange={checked=>onChange(checked?[...values,o.value]:values.filter(v=>v!==o.value))}/><span className="break-all text-sm">{o.label}</span></label>)}{!choices.length&&<span className="text-sm text-muted-foreground">暂无可选项，请先添加配置。</span>}</div></fieldset>;
+    return <fieldset className="flex min-w-0 flex-col gap-3"><legend className="text-sm font-medium">{field.label}</legend>{/* 群功能的全选和清空按当前分组执行，与搜索筛选无关。 */}{field.bulk&&<div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>onChange(choices.map(o=>o.value))}>全选</Button><Button type="button" size="sm" variant="outline" onClick={()=>onChange([])}>清空</Button></div>}{choices.length>8&&<Input aria-label={'筛选'+field.label} placeholder="搜索可选项" value={search} onChange={e=>setSearch(e.target.value)}/>}<div className="flex max-h-64 flex-col gap-3 overflow-y-auto p-1">{choices.filter(o=>o.label.includes(search)).map(o=><label key={o.value} className="flex items-center gap-2"><Checkbox checked={values.includes(o.value)} onCheckedChange={checked=>onChange(checked?[...values,o.value]:values.filter(v=>v!==o.value))}/><span className="break-all text-sm">{o.label}</span></label>)}{!choices.length&&<span className="text-sm text-muted-foreground">暂无可选项，请先添加配置。</span>}</div></fieldset>;
   }
   if(field.kind==='rows')return <RowEditor field={field} value={value} onChange={onChange}/>;
   const input=field.kind==='select'?<Select value={String(value??choices[0]?.value??'')} onValueChange={v=>onChange(v??'')} items={Object.fromEntries(choices.map(o=>[o.value,o.label]))}><SelectTrigger aria-label={field.label}><SelectValue/></SelectTrigger><SelectContent>{choices.map(o=><SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>:

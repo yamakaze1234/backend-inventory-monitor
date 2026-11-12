@@ -116,7 +116,8 @@ def build_view(b,module,q):
             available,enabled=False,False
             startup['text']='无法读取 Windows 启动项，请检查当前用户权限。'
         startup['autostart']=dict(available=available,enabled=enabled)
-        sections=[startup,department,source,robots,settings_section(b)]
+        from ops_settings import section as ops_section
+        sections=[startup,department,source,robots,ops_section(b),settings_section(b)]
     elif module=='profit':
         from inventory_shop_names import named_shop_rows, shop_label, shop_names
         names=shop_names(b.service.root)

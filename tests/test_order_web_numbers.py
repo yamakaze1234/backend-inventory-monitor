@@ -37,6 +37,28 @@ class OrderWebNumberTests(unittest.TestCase):
         base.mkdir(parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(dir=base))
 
+    def test_ops_enqueue_persists_external_id_and_owns_reply(self):
+        # 隔离队列验证心跳、暂停区分和外部键持久性；发送器不访问群。
+        root = self.queue_root()
+        key = 'a' * 64
+        shop = '1'
+        self.assertEqual(self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)['status'], 'unavailable')
+        with closing(self.bot.queue_db(root)) as db:
+            db.executemany('INSERT INTO settings VALUES (?,?)', [('heartbeat','1000'), ('serviceEnabled','1'), ('schedulePaused','1')])
+        with patch.object(self.bot.time, 'time', return_value=1001):
+            first = self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)
+            self.assertEqual(first['status'], 'queued')
+            replay = self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)
+        self.assertEqual(first['jobId'], replay['jobId'])
+        self.assertTrue(replay['duplicate'])
+        sender = Mock()
+        with patch.object(self.bot, 'message_for', return_value='样例'):
+            self.bot.deliver(first['jobId'], {'kind':'today'}, root, runner=sender)
+        sender.assert_not_called()
+        with closing(self.bot.queue_db(root)) as db:
+            self.assertEqual(db.execute('SELECT delivery FROM jobs').fetchone()[0], 'ops-owned')
+            self.assertEqual(db.execute('SELECT count(*) FROM ops_external_jobs').fetchone()[0], 1)
+
     def test_manual_patrol_can_repeat_immediately_after_previous_run_finishes(self):
         root = self.queue_root()
         with patch.object(self.bot.time, 'time', return_value=1000):

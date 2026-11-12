@@ -33,14 +33,14 @@ def save(service,url,model,key):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args,**kwargs): return None
 
-def call(service,messages):
+def call(service,messages,*,timeout=90):
     cfg=config(service)
     if not cfg.get('url') or not cfg.get('model'): raise ValueError('请先配置日报 AI。')
     try:
         key=unprotect((service.root/'daily_ai_key.dat').read_bytes()).decode()
         payload=dict(model=cfg['model'],messages=messages,stream=False)
         request=urllib.request.Request(endpoint(cfg['url']),data=json.dumps(payload,ensure_ascii=False).encode(),headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
-        with urllib.request.build_opener(NoRedirect).open(request,timeout=90) as response:
+        with urllib.request.build_opener(NoRedirect).open(request,timeout=timeout) as response:
             result=json.loads(response.read(2_000_000))
         choice=result['choices'][0]
         if choice.get('finish_reason') not in ('stop',None): raise ValueError()

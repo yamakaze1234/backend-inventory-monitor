@@ -144,6 +144,14 @@ def workspace_settings_save(b,v):
     save_workspace_settings(b.service,v)
     return dict(message='部门与工作区名称已保存')
 
+@action('settings','ops-group-save')
+def ops_group_save(b,v):
+    from ops_settings import save
+    from ops_commands import COMMANDS
+    selected = save(b.service, v)
+    return dict(message='群功能已保存并回读：' + ('、'.join(COMMANDS[k][0] for k in selected) or '已清空'))
+
+
 @action('settings','robot-save')
 def robot_save(b,v):
     if v.get('mode')=='enterprise':

@@ -67,9 +67,55 @@ class OrderBotAdapter:
                     schedulePaused=settings.get('schedulePaused') == '1', serviceEnabled=settings.get('serviceEnabled','1') != '0',
                     stopRequested=settings.get('stopRequested') == '1', jobs=[dict(r) for r in rows], total=total, active=active)
 
+    def ops_supported(self):
+        # 安装标记可能属于旧后端；只使用已部署并含外部请求支持的兼容文件。
+        from order_bot_config import deployed, bundle_root
+        config = self._refresh_configuration()
+        if not config or not deployed(self.workspace_root, config):
+            return False
+        current = self.match_root / 'app/src/group_order_bot.py'
+        return current.read_bytes() == (bundle_root() / 'matching/group_order_bot.py').read_bytes()
+
+    def ops_order_status(self, number_type, number, shops):
+        return self.action('ops-order-status', dict(number_type=number_type, number=number, shops=shops))
+
+    def ops_task(self, external_id):
+        # 回读仅按外部请求键；只投影状态与数量，订单明细和内部错误不进群。
+        self._refresh_configuration()
+        path = self.state_root / 'jobs.sqlite3'
+        if not path.is_file():
+            return None
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
+            row = db.execute("""SELECT j.id,j.state,j.result,e.shop,e.number,j.origin,
+                                e.rowid=(SELECT MIN(o.rowid) FROM ops_external_jobs o WHERE o.job_id=j.id)
+                                FROM ops_external_jobs e
+                                JOIN jobs j ON j.id=e.job_id WHERE e.request_id=?""", (external_id,)).fetchone()
+        if not row:
+            return None
+        task_id, state, raw, shop, number, origin, first = row
+        report = json.loads(raw) if raw else {}
+        shops = report.get('shops', [])
+        manual = report.get('manualItems', [])
+        # 手动任务记录逐项结果；巡检现有后端只提供可确认的商品明细行数。
+        stats = {}
+        if shops and all(isinstance(s.get('opsSummary'), dict) for s in shops):
+            stats = {k: sum(s['opsSummary'][k] for s in shops) for k in ('success', 'skipped', 'review')}
+            stats['unit'] = '单'
+        elif shops:
+            stats = dict(success=sum(s['verified'] for s in shops), skipped=sum(s['alreadyLinked'] for s in shops),
+                         review=sum(len(s['exceptions']) for s in shops), unit='明细行')
+            if any(not s.get('scan', {}).get('complete') for s in shops):
+                stats['reason'] = '部分订单扫描未完成'
+        elif manual:
+            stats = dict(success=sum(r.get('status') == 'verified' for r in manual),
+                         skipped=sum(r.get('status') in ('skipped', 'already_linked') for r in manual),
+                         review=sum(r.get('status') in ('unknown', 'needs_review') for r in manual), unit='明细行')
+        return dict(task_id=task_id, status=state if state in ('queued','running','completed','needs_review','failed','unknown') else 'unknown',
+                    shop_id=shop, order_number=number, final_reply_owned=origin == 'ops-command' and bool(first), **stats)
+
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot'}:
+        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','ops-enqueue','ops-order-status'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
@@ -93,6 +139,15 @@ root=Path(request['state'])
 if action in ('order','spu','number'):
     payload=request['payload']
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
+elif action=='ops-order-status':
+    # 固定模块由该部门订单后端提供；接口升级前不回退为猜测或模糊匹配。
+    import order_status_bridge
+    payload=request['payload']
+    result=order_status_bridge.query_verified_orders(payload['number_type'],payload['number'],payload['shops'])
+elif action=='ops-enqueue':
+    payload=request['payload']
+    result=control.bot.enqueue(payload['kind'],number=payload.get('number',''),shop=payload['shop'],
+                               origin='ops-command',root=root,external_id=payload['external_id'])
 elif action=='start':
     if not control.finish_switch(root):
         control.settings({'serviceEnabled':'1','stopRequested':'0'},root)

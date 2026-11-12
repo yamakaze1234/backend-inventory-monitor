@@ -16,15 +16,31 @@ from inventory_updater import InventoryUpdater
 from inventory_version import VERSION
 from order_bot_adapter import OrderBotAdapter
 from project_paths import UI_ROOT
+from ops_command_api import PREFIX as COMMAND_PREFIX, envelope
 
 
 class InventoryConsole:
-    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0, business=None):
+    def __init__(self, service, native_action=None, bot=None, updater=None, assets=None, port=0, business=None, commands=None):
         self.service = service
         self.native_action = native_action
         self.business = business
         self.bot = bot or OrderBotAdapter(workspace_root=service.root)
         if business is not None:business.order_bot=self.bot
+        from ops_runtime import configured_api
+        self.commands, config_error = commands, False
+        if commands is None:
+            try:
+                self.commands = configured_api(service, self.bot, business)
+                if self.commands is not None and not port:
+                    port = int(os.environ.get('INVENTORY_OPS_PORT', '0'))
+                    if not 0 <= port <= 65535:
+                        raise ValueError('运营指令端口无效')
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                # 工作区接入配置错误只关闭指令接口，不影响原库存和通知工作台。
+                self.commands, config_error, port = None, True, 0
+        if business is not None:
+            business.ops_command_api = self.commands
+            business.ops_command_config_error = config_error
         self.updater = updater or InventoryUpdater(service.root)
         self.assets = Path(assets or UI_ROOT / 'console').resolve()
         if not (self.assets / 'index.html').is_file():
@@ -66,10 +82,33 @@ class InventoryConsole:
                     and (secrets.compare_digest(self.headers.get('X-Console-Token',''),outer.token) or
                         read_only and secrets.compare_digest(self.headers.get('X-Console-Token',''),outer.query_token)))
 
+            def command_request(self, method, path):
+                # 指令使用独立凭证；浏览器 Origin 一律不接收，控制台令牌也不能替代。
+                if self.headers.get('Host') != urlsplit(outer.url).netloc or self.headers.get('Origin') is not None:
+                    return self.reply(403, envelope('', '', 'failed', 'FORBIDDEN', '来源不允许'))
+                if outer.commands is None:
+                    return self.reply(503, envelope('', '', 'failed', 'SERVICE_UNAVAILABLE', '运营指令接口未启用'))
+                body = None
+                if method == 'POST':
+                    if outer.closing or outer.updater.state['phase'] in ('preparing','installing'):
+                        return self.reply(503, envelope('', '', 'failed', 'SERVICE_UNAVAILABLE', '程序暂不接收指令'))
+                    try:
+                        self.connection.settimeout(10)
+                        size = int(self.headers.get('Content-Length', '0'))
+                        if self.headers.get_content_type() != 'application/json' or not 0 < size <= 32768:
+                            raise ValueError
+                        body = json.loads(self.rfile.read(size))
+                    except (ValueError, UnicodeError, OSError):
+                        return self.reply(400, envelope('', '', 'failed', 'INVALID_ARGUMENT', '请求内容无效'))
+                code, result = outer.commands.route(method, path, self.headers, body)
+                return self.reply(code, result)
+
             def do_GET(self):
                 if self.headers.get('Host') != urlsplit(outer.url).netloc:
                     return self.reply(403,{'error':'来源不允许'})
                 route = urlsplit(self.path)
+                if route.path.startswith(COMMAND_PREFIX):
+                    return self.command_request('GET', route.path)
                 try:
                     if route.path.startswith('/api/'):
                         if not self.trusted(read_only=route.path in ('/api/data/catalog','/api/data/job')):
@@ -129,6 +168,9 @@ class InventoryConsole:
                     self.reply(503,{'error':'数据暂时无法读取，请重试或查看本机运行记录'})
 
             def do_POST(self):
+                route = urlsplit(self.path)
+                if route.path.startswith(COMMAND_PREFIX):
+                    return self.command_request('POST', route.path)
                 if not self.trusted(read_only=urlsplit(self.path).path in ('/api/data/query','/api/data/refresh')) or self.headers.get_content_type() != 'application/json':
                     return self.reply(403,{'error':'来源不允许'})
                 self.connection.settimeout(15)
@@ -155,7 +197,17 @@ class InventoryConsole:
                 except Exception:
                     self.reply(503,{'error':'操作未确认完成，请先刷新记录，不要重复提交'})
 
-        self.server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
+        try:
+            self.server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
+        except OSError:
+            if self.commands is None or commands is not None or not port:
+                raise
+            # 指令固定端口被占用时只关闭指令入口，原工作台仍可使用。
+            self.commands = None
+            if business is not None:
+                business.ops_command_api = None
+                business.ops_command_config_error = True
+            self.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         self.server.daemon_threads=True
         self.url=f'http://127.0.0.1:{self.server.server_port}'
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True,name='inventory-console')
@@ -187,6 +239,8 @@ class InventoryConsole:
             if self.updater.state['phase'] in ('preparing','installing'):
                 raise ValueError('更新安装中，暂不接收新任务')
             action=body.get('action')
+            if isinstance(action, str) and action.startswith('ops-'):
+                raise ValueError('运营指令仅通过独立指令接口执行')
             if self.stop_thread and self.stop_thread.is_alive():
                 raise ValueError('正在等待订单工作进程安全停止，请稍后操作')
             result=self.bot.action(action,body)
