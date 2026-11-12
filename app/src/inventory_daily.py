@@ -28,8 +28,8 @@ def settings(service):
 def save_settings(service, values):
     raw = values.get('times', [])
     times = re.split(r'[,，;；\s]+', raw.strip()) if isinstance(raw, str) else raw
-    if not times or len(times)>12 or any(not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', t) for t in times):
-        raise ValueError('请输入有效时间，用逗号分隔，例如 11:00, 16:00（最多 12 个）。')
+    if not isinstance(times,list) or not 1<=len(times)<=12 or any(not isinstance(t,str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',t) for t in times):
+        raise ValueError('请设置 1 至 12 个有效时间，例如 11:00 或 16:00。')
     with service.db() as db:
         service.put(db, 'daily_settings', dict(enabled=bool(values.get('enabled')), times=sorted(set(times)),format='supply'))
 

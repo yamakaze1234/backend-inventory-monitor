@@ -37,11 +37,12 @@ def queue_state(root):
     path=Path(root)/'jobs.sqlite3'
     if not path.is_file():return dict(active=0,online=False,enabled=False,target={})
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow')"))
+        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused')"))
         active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown')").fetchone()[0]
     target=json.loads(values.get('robotConfig') or '{}')
     return dict(active=active,online=time.time()-float(values.get('heartbeat','0'))<90,
                 enabled=values.get('serviceEnabled','0')=='1',switching=bool(values.get('pendingRobotConfig')),
+                schedulePaused=values.get('schedulePaused','0')=='1',
                 target={key:target.get(key) for key in PUBLIC_TARGET if key in target},
                 patrolWindow=patrol_window_view(values.get('matchPatrolWindow'),target.get('intervalMinutes')))
 
@@ -254,4 +255,5 @@ def describe(workspace):
     if not config:return dict(configured=False,deployed=False,**defaults,target={},message='请先单独配置订单匹配后端、店铺及 Stream 机器人')
     state=queue_state(config['state_root'])
     return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),
-                patrolWindowReady=patrol_window_ready(config),message='订单匹配与库存通知使用独立配置')
+                patrolWindowReady=patrol_window_ready(config),schedulePaused=state.get('schedulePaused',True),
+                serviceEnabled=state['enabled'],message='订单匹配与库存通知使用独立配置')

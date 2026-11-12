@@ -1,7 +1,7 @@
 """订单配置表单边界：合成目标，不部署后端或发送真实消息。"""
 import unittest
 from unittest.mock import Mock
-from order_business import save_patrol_window, search_robot,select_robot,view
+from order_business import patrol_window_form,save_patrol_window, search_robot,select_robot,view
 
 
 class OrderBusinessTests(unittest.TestCase):
@@ -32,9 +32,12 @@ class OrderBusinessTests(unittest.TestCase):
         self.assertEqual(self.b.order_bot.action.call_args.args[1]['groupId'],'group-B')
 
     def test_schedule_form_keeps_existing_interval_and_saves_without_rebinding(self):
-        forms=view(self.b,{})['sections'][1]['forms']
-        self.assertNotIn('intervalMinutes',{field['key'] for field in forms[0]['fields']})
-        self.assertEqual(forms[1]['values']['intervalMinutes'],240)
+        robot=view(self.b,{})['sections'][1]
+        self.assertEqual(robot['planLink'],'orders')
+        self.assertEqual([form['action'] for form in robot['forms']],['robot-search'])
+        form=patrol_window_form(self.b.order_bot.configuration())
+        self.assertEqual(form['values']['intervalMinutes'],240)
+        self.assertEqual(form['module'],'order-settings')
         self.b.order_bot.action.return_value=dict(start='18:30',end='00:00',nextDay=True,intervalMinutes=90)
         self.b.order_bot.action.side_effect=None
         payload=dict(start='18:30',end='00:00',intervalMinutes='90')

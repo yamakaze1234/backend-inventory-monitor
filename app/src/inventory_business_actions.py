@@ -294,7 +294,9 @@ def profit_unbind(b,v):b.profit().unbind();return dict(message='已解除绑定�
 
 @action('profit','schedule')
 def profit_schedule(b,v):
-    b.profit().set_schedule(v['times'],bool(v['enabled']));return dict(message='北京时间固定巡检时间已保存')
+    mode=v.get('mode','daily')
+    b.profit().set_schedule(v.get('times'),bool(v['enabled']),mode=mode,minutes=v.get('minutes'))
+    return dict(message='北京时间固定巡检时间已保存' if mode=='daily' else '调价检测间隔已保存')
 
 @action('profit','notify-preview')
 def profit_notify_preview(b,v):

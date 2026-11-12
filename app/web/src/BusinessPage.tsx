@@ -12,16 +12,18 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { RefreshCw, Download, Copy, Plus, Trash2, FolderOpen } from 'lucide-react';
+import { RefreshCw, Download, Copy, Plus, Trash2, FolderOpen, CalendarClock } from 'lucide-react';
 import { Records } from './Records';
 import { api, useSnapshot } from './api';
 
 type Values=Record<string,unknown>;
-type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;bulk?:boolean;compact?:boolean;pickOnly?:boolean;when?:Values;columns?:[string,string][]};
+type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;bulk?:boolean;compact?:boolean;pickOnly?:boolean;when?:Values;columns?:[string,string][];limit?:number};
 type Action={action:string;title:string;fields:Field[];values:Values;confirm?:string;module?:string;immediate?:boolean;description?:string;submitLabel?:string;wide?:boolean};
 type Row=Values & {id?:string;sku?:string;_forms?:Action[];_details?:{label:string;value:unknown}[]};
 type Table={title:string;compact?:boolean;widths?:Record<string,number>;columns:{key:string;label:string}[];rows:Row[]};
-type Section={id:string;title:string;description?:string;text?:string;autostart?:{available:boolean;enabled:boolean};forms:Action[];tables:Table[];links?:{label:string;url:string}[]};
+type Tone="active"|"neutral"|"warning";
+type ShopPlan={id:string;name:string;summary:string;status:string;tone:Tone;action:Action};
+type Section={planLink?:string;summary?:string;status?:string;tone?:Tone;note?:string;shopRows?:ShopPlan[];id:string;title:string;description?:string;text?:string;autostart?:{available:boolean;enabled:boolean};forms:Action[];tables:Table[];links?:{label:string;url:string}[]};
 type View={module:string;filters:Field[];query:Values;sections:Section[]};
 type Result={message?:string;document?:string;filename?:string;download?:string;forms?:Action[];tables?:Table[];select?:string;nextForm?:Action};
 type Job={id?:string;state:string;message?:string;result?:Result};
@@ -51,6 +53,21 @@ function FieldInput({field,value,onChange}:{field:Field;value:unknown;onChange:(
   const id='field-'+field.key;
   const choices=field.options||[];
   if(field.kind==='bool')return <label className="flex items-center gap-2"><Checkbox checked={!!value} onCheckedChange={onChange}/><span className="text-sm">{field.label}</span></label>;
+  if(field.kind==='times'){
+    // 逐个选择时间，避免手写逗号或时间格式。
+    const slots=Array.isArray(value)&&value.length?value.map(String):[''];
+    return <fieldset className="flex min-w-0 flex-col gap-2">
+      <legend className="mb-2 text-sm font-medium">{field.label}</legend>
+      {slots.map((slot,i)=><div key={i} className="flex min-w-0 items-center gap-2">
+        <Input className="flex-1" type="time" step={60} required aria-label={'时间 '+(i+1)} value={slot}
+          onChange={e=>onChange(slots.map((v,j)=>i===j?e.target.value:v))}/>
+        {slots.length>1&&<Button type="button" size="icon-sm" variant="outline" aria-label={'移除时间 '+(i+1)}
+          onClick={()=>onChange(slots.filter((_,j)=>i!==j))}><Trash2/></Button>}
+      </div>)}
+      {slots.length<(field.limit??12)&&<Button type="button" size="sm" variant="outline" className="self-start"
+        onClick={()=>onChange([...slots,''])}><Plus/>添加时间</Button>}
+    </fieldset>;
+  }
   if(field.kind==='pick'){
     // 候选用直接点选；没有预选，避免同名时误选第一位。
     const visible=choices.filter(o=>o.label.toLowerCase().includes(search.trim().toLowerCase()));
@@ -130,9 +147,50 @@ function ProductPicker({initial,busy,onCancel,onAdd}:{initial:Values;busy:boolea
   </div>;
 }
 
-/** 七个业务页均由 React 控件组成；数据轮询不重置正在编辑的表单。 */
-function initialValues(action:Action){const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'?[]:'';}return initial;}
-export function BusinessPage({module,openAddProduct=false}:{module:string;openAddProduct?:boolean}){
+function PlanBadge({status,tone}:{status:string;tone?:Tone}){
+  return <Badge variant={tone==='active'?'success-light':tone==='warning'?'warning-light':'secondary'}>{status}</Badge>;
+}
+
+/** 计划卡片只组织显示与入口，仍复用各业务原有表单和保存方法。 */
+function ScheduleCards({sections,onAction,busy}:{sections:Section[];onAction:(action:Action)=>void;busy:boolean}){
+  return <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
+    {sections.map(s=><section key={s.id} id={'schedule-'+s.id} aria-labelledby={'schedule-title-'+s.id} tabIndex={-1}
+      className={'min-w-0 scroll-mt-4 rounded-xl focus-visible:outline-2 focus-visible:outline-ring '+(s.shopRows?'lg:col-span-2':'')}>
+      <Frame spacing="sm" className="h-full">
+        <FrameHeader>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <FrameTitle id={'schedule-title-'+s.id}>{s.title}</FrameTitle>
+            {s.status&&<PlanBadge status={s.status} tone={s.tone}/>}
+          </div>
+          <FrameDescription>{s.description}</FrameDescription>
+        </FrameHeader>
+        <FramePanel className="flex flex-1 flex-col justify-between gap-3">
+          <div>
+            <p className="text-lg font-semibold leading-snug tabular-nums">{s.summary}</p>
+            {s.note&&<p className="mt-1 text-xs text-muted-foreground tabular-nums">{s.note}</p>}
+          </div>
+          {s.forms.length>0&&<div className="flex flex-wrap gap-2">{s.forms.map(a=><Button type="button" key={a.action} size="sm" variant="outline"
+            disabled={busy} onClick={()=>onAction(a)}>{a.title}</Button>)}</div>}
+          {!!s.shopRows?.length&&<ul className="divide-y border-t">
+            {s.shopRows.map(shop=><li key={shop.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 last:pb-0">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="break-words text-sm font-medium">{shop.name}</span>
+                <span className="text-sm text-muted-foreground tabular-nums">{shop.summary}</span>
+                <PlanBadge status={shop.status} tone={shop.tone}/>
+              </div>
+              <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置巡检周期'}
+                onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
+            </li>)}
+          </ul>}
+        </FramePanel>
+      </Frame>
+    </section>)}
+  </div>;
+}
+
+/** 数据轮询不重置正在编辑的表单。 */
+function initialValues(action:Action){const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'||f.kind==='times'?[]:'';}return initial;}
+export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:{module:string;openAddProduct?:boolean;planTarget?:string;onPlan?:(id:string)=>void}){
   const [query,setQuery]=useState<Values>({});const [draft,setDraft]=useState<Values>({});const [section,setSection]=useState('');
   const params=new URLSearchParams(Object.entries(query).map(([k,v])=>[k,String(v)]));
   const snapshot=useSnapshot<View>(`/api/business/view/${module}?${params}`);
@@ -164,9 +222,15 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
     if(!add)return;
     addOpened.current=true;setSection('products');setValues(initialValues(add));setForm(add);
   },[module,openAddProduct,snapshot.data,busy]);
+  const isPlans=module==='schedules';
+  const targetReady=isPlans&&!!snapshot.data;
+  useEffect(()=>{
+    // 从业务页进入时直接定位到对应计划，轮询刷新时不抢回焦点。
+    if(targetReady&&planTarget)document.getElementById('schedule-'+planTarget)?.focus();
+  },[targetReady,planTarget]);
   const active=snapshot.data?.sections.find(s=>s.id===section)||snapshot.data?.sections[0];
   return <div data-business-module={module} className="flex min-w-0 flex-col gap-6">
-    <div className="flex flex-wrap items-center justify-between gap-3">{snapshot.data&&<Select value={active?.id||''} onValueChange={v=>setSection(v||'')} items={Object.fromEntries(snapshot.data.sections.map(s=>[s.id,s.title]))}><SelectTrigger aria-label="业务分区"><SelectValue/></SelectTrigger><SelectContent>{snapshot.data.sections.map(s=><SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}</SelectContent></Select>}<Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}><RefreshCw/>刷新页面</Button></div>
+    <div className="flex flex-wrap items-center justify-between gap-3">{isPlans&&<p className="text-sm text-muted-foreground">各功能独立保存，页面时间均为北京时间。</p>}{!isPlans&&snapshot.data&&<Select value={active?.id||''} onValueChange={v=>setSection(v||'')} items={Object.fromEntries(snapshot.data.sections.map(s=>[s.id,s.title]))}><SelectTrigger aria-label="业务分区"><SelectValue/></SelectTrigger><SelectContent>{snapshot.data.sections.map(s=><SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}</SelectContent></Select>}<Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}><RefreshCw/>刷新页面</Button></div>
     {snapshot.error&&<div role="alert" className="flex items-center gap-3"><Badge variant="destructive-light">读取失败</Badge><span>{snapshot.error}</span><Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}>重试</Button></div>}
     {snapshot.loading&&!snapshot.data&&<Skeleton className="h-64 w-full"/>}
     {!!snapshot.data?.filters.length&&<Frame spacing="sm"><FramePanel><form className="flex flex-wrap items-end gap-4" onSubmit={e=>{e.preventDefault();setQuery({...snapshot.data?.query,...draft});}}>{snapshot.data.filters.map(f=><FieldInput key={f.key} field={f} value={draft[f.key]??snapshot.data?.query[f.key]} onChange={v=>setDraft(old=>({...old,[f.key]:v}))}/>)}<Button type="submit" size="sm">应用筛选</Button><Button type="button" size="sm" variant="outline" onClick={()=>{setDraft({});setQuery({});}}>重置筛选</Button></form></FramePanel></Frame>}
@@ -174,8 +238,9 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
     {job.error&&<div role="alert" className="flex flex-wrap items-center gap-3"><span>{job.error}，请先刷新业务状态核对上次结果。</span><Button type="button" variant="outline" size="sm" onClick={()=>{setJobId('');sessionStorage.removeItem('business-job-'+module);snapshot.refresh();}}>刷新并关闭任务提示</Button></div>}
     {job.data?.state==='failed'&&<p role="alert" className="text-sm">{job.data.message}</p>}
     {result&&<ResultPanel result={result} onAction={openAction}/>}
-    {active&&<Frame spacing="sm"><FrameHeader><FrameTitle>{active.title}</FrameTitle><FrameDescription>{active.description||'查看当前状态，按需执行以下操作。'}</FrameDescription></FrameHeader><FramePanel><div className="flex min-w-0 flex-col gap-6">{/* 复选框以 Windows 回读状态为准，提交期间禁止重复点击。 */}
-    {active.autostart&&<label className="flex items-center gap-2 text-sm"><Checkbox checked={active.autostart.enabled} disabled={busy||!active.autostart.available} onCheckedChange={enabled=>void submit({action:'autostart',title:'开机启动',fields:[],values:{}},{enabled:enabled===true})}/>登录 Windows 后自动启动</label>}{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
+    {isPlans&&snapshot.data&&<ScheduleCards sections={snapshot.data.sections} busy={busy} onAction={openAction}/>}
+    {!isPlans&&active&&<Frame spacing="sm"><FrameHeader><FrameTitle>{active.title}</FrameTitle><FrameDescription>{active.description||'查看当前状态，按需执行以下操作。'}</FrameDescription></FrameHeader><FramePanel><div className="flex min-w-0 flex-col gap-6">{/* 复选框以 Windows 回读状态为准，提交期间禁止重复点击。 */}
+    {active.autostart&&<label className="flex items-center gap-2 text-sm"><Checkbox checked={active.autostart.enabled} disabled={busy||!active.autostart.available} onCheckedChange={enabled=>void submit({action:'autostart',title:'开机启动',fields:[],values:{}},{enabled:enabled===true})}/>登录 Windows 后自动启动</label>}{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.planLink&&onPlan&&<Button type="button" size="sm" variant="outline" onClick={()=>onPlan(active.planLink!)}><CalendarClock/>查看计划设置</Button>}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
     <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className={form?.wide?"max-h-[85dvh] overflow-y-auto sm:max-w-xl":"max-h-[85dvh] overflow-y-auto"}><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.description||(form?.action==='catalog-add'?'选择 ERP 商品并设置低库存预警数量。':'修改后提交生效，未提交的内容不会保存。')}</DialogDescription></DialogHeader>{form?.action==='catalog-add'?<ProductPicker initial={form.values} busy={busy} onCancel={()=>setForm(null)} onAdd={v=>void submit(form,v)}/>:<form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy||form?.fields.some(f=>f.kind==='pick'&&!values[f.key])}>{form?.submitLabel||'提交'}</Button></div></form>}</DialogContent></Dialog>
     <AlertDialog open={confirmation} onOpenChange={setConfirmation}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{form?.title}</AlertDialogTitle><AlertDialogDescription>{form?.confirm}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction disabled={busy} onClick={()=>void submit()}>确认执行</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;
