@@ -32,7 +32,7 @@ class InventoryConsole:
             try:
                 self.commands = configured_api(service, self.bot, business)
                 if self.commands is not None and not port:
-                    port = int(os.environ.get('INVENTORY_OPS_PORT', '0'))
+                    port = self.commands.local_port
                     if not 0 <= port <= 65535:
                         raise ValueError('运营指令端口无效')
             except (OSError, ValueError, TypeError, KeyError, AttributeError):

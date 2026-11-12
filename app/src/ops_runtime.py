@@ -86,13 +86,35 @@ class CommandBusiness:
         return self.order.ops_task(external_id) if self.order else None
 
 
+def pilot_connection(root):
+    """读取本机部署的回环连接；凭证仅在当前 Windows 用户的进程内解密。"""
+    from ops_command_api import checked_id
+    environment = tuple(os.environ.get('INVENTORY_OPS_' + key) for key in ('TOKEN', 'ROBOT_ID', 'ORG_ID'))
+    if all(environment):
+        return (*environment, int(os.environ.get('INVENTORY_OPS_PORT', '0')))
+    path = Path(root) / 'ops-command-pilot.json'
+    if not path.is_file():
+        return None
+    values = json.loads(path.read_text(encoding='utf-8-sig'))
+    robot, org, port = (values.get(k) for k in ('robot_id', 'org_id', 'port'))
+    if not checked_id(robot) or not checked_id(org) or type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError('本机运营指令连接配置无效')
+    from monitor_secret_store import unprotect
+    protected = path.with_name('ops-command-key.dat')
+    if not 0 < protected.stat().st_size <= 16384:
+        raise ValueError('本机运营指令凭证文件无效')
+    token = unprotect(protected.read_bytes()).decode('ascii')
+    return token, robot, org, port
+
+
 def configured_api(service, order, business=None):
     # 没有同时配置专用令牌和机器人标识时，正式程序与预览都不会开放指令。
     if getattr(service, 'offline_preview', False) or getattr(business, 'offline', False):
         return None
-    token, robot, org = (os.environ.get('INVENTORY_OPS_' + key) for key in ('TOKEN', 'ROBOT_ID', 'ORG_ID'))
-    if not token or not robot or not org:
+    connection = pilot_connection(service.root)
+    if connection is None:
         return None
+    token, robot, org, port = connection
     from erp_price_monitor import CoordinatedProfitSource
     from inventory_ai import call, config
     from inventory_shop_names import shop_names
@@ -122,6 +144,8 @@ def configured_api(service, order, business=None):
         order_read = order.ops_order_status
     inventory = InventoryCommands(service, cost=CoordinatedProfitSource(getattr(service, 'sql_worker', None)).read_profit_costs,
                                   ai=ai, maintenance=maintenance, aliases=binding.get('inventory_aliases'))
-    return CommandAPI(service, CommandBusiness(inventory, order=order if order.ops_supported() else None,
-                                               order_read=order_read, reports=ReportTables(tables) if tables else None,
-                                               shops=lambda: shop_names(service.root)), robot, token, org_id=org)
+    api = CommandAPI(service, CommandBusiness(inventory, order=order if order.ops_supported() else None,
+                                             order_read=order_read, reports=ReportTables(tables) if tables else None,
+                                             shops=lambda: shop_names(service.root)), robot, token, org_id=org)
+    api.local_port = port
+    return api
