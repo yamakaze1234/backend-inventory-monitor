@@ -251,6 +251,10 @@ def notification_summary(report):
             lines.append('[%s](%s)' % (label,sync['url']))
         elif sync.get('enabled'):
             lines.append(label+'：本轮同步未确认，请查看工作台。')
+    for label,url in report.get('detailLinks',[]):
+        lines.append('[%s](%s)' % (label,url))
+    if report.get('detailLinks'):
+        lines.append('在线表为已有记录，本轮实时结果请查看发货监控工作台。')
     if report.get('errors'):lines.append('查询异常 %s 项，详见工作台。' % len(report['errors']))
     lines.append('检查时间：'+str(report.get('checkedAt','')).replace('T',' ')[:19])
     return '\n\n'.join(lines)
@@ -285,6 +289,21 @@ def deliver(job_id, report, root, runner=subprocess.run):
     """逐段保存发送回执；未知投递不重试，未变化提醒保持静默。"""
     from group_order_bot import queue_db, DWS
     target = config(root)['target']
+    # 未开启写表同步时仍提供已绑定明细入口，并明确它不是本轮同步结果。
+    bindings=Path(root).parent/'ops-command-sources.json'
+    if bindings.is_file() and not report.get('onlineSync',{}).get('enabled'):
+        from urllib.parse import urlsplit
+        from group_order_bot import SHOPS
+        data=json.loads(bindings.read_text(encoding='utf-8-sig')).get('live_report_tables',{})
+        links=[]
+        for key,label in (('shipping_orders','查看现有发货明细'),('shipping_shortages','查看现有缺货明细')):
+            binding=data.get(key,{})
+            url=binding.get('url','')
+            parsed=urlsplit(url)
+            if (set(binding.get('shops',{}))==set(SHOPS) and parsed.scheme=='https'
+                and (parsed.hostname or '').endswith('.dingtalk.com')):
+                links.append((label,url))
+        report=dict(report,detailLinks=links)
     # 不包含动态倒计时，但包含紧急升级、负责人和库存结果，避免每轮重复提醒。
     stable = {k: v for k, v in report.items() if k not in ('jobId', 'checkedAt')}
     stable['missingDeadlineCount'] = sum(x['level'] == '截止时间待核实' for x in report.get('orders', []))
