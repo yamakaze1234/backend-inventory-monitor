@@ -262,11 +262,13 @@ def describe(workspace):
     defaults={key:'' for key in PATH_FIELDS};defaults.update(agent_model='deepseek/deepseek-flash',shops=[])
     if not config:return dict(configured=False,deployed=False,**defaults,target={},message='请先单独配置订单匹配后端、店铺及 Stream 机器人')
     state=queue_state(config['state_root'])
-    shipping_file=Path(config['match_root'])/'app/src/shipping_monitor.py'
-    shipping_ready=shipping_file.is_file()
-    # 桌面更新只换 EXE；单独确认外置发货执行器与本包附带的版本一致。
+    shipping_source=Path(config['match_root'])/'app/src'
+    shipping_ready=(shipping_source/'shipping_monitor.py').is_file()
+    # 桌面更新只换 EXE；即使简报代码相同，也要核对同步和揽收查询的全部文件。
     try:
-        shipping_current=shipping_ready and shipping_file.read_bytes()==(bundle_root()/'matching/shipping_monitor.py').read_bytes()
+        shipped=bundle_root()/'matching'
+        shipping_current=shipping_ready and all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
+            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py'))
     except OSError:
         shipping_current=False
     return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),

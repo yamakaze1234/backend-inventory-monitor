@@ -53,6 +53,15 @@ class DepartmentTests(unittest.TestCase):
         (self.control/'order-department.json').write_text(json.dumps(dict(configPath=str(self.root/'other.json'))))
         with self.assertRaisesRegex(ValueError,'其他部门'):config.deploy(self.workspace)
 
+    def test_shipping_readiness_detects_stale_sync_even_with_current_monitor(self):
+        config.save(self.workspace,self.values)
+        config.deploy(self.workspace)
+        self.assertTrue(config.describe(self.workspace)['shippingBackendCurrent'])
+        (self.match/'app/src/shipping_online.py').write_text('# 旧同步实现',encoding='utf-8')
+        result=config.describe(self.workspace)
+        self.assertTrue(result['shippingReady'])
+        self.assertFalse(result['shippingBackendCurrent'])
+
     def test_unknown_delivery_blocks_install(self):
         config.save(self.workspace,self.values)
         self.state.mkdir()
