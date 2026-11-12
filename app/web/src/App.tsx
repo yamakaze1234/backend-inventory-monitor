@@ -27,9 +27,10 @@ type Orders = {configured?:boolean; shops?:{id:string;name:string}[]; jobs:Job[]
 type Update = {phase:string; currentVersion:string; available:boolean; version?:string; notes?:string; error:string; received:number;total:number;lastResult?:string};
 const emptyProducts:Product[]=[];
 const emptyJobs:Job[]=[];
-const names:Record<string,string>={queued:'排队中',cancelled:'已取消',suppressed:'无需投递',running:'执行中',verified:'回读成功',completed:'执行完成',done:'执行完成',unknown:'结果未知',needs_review:'待核验',failed:'失败',pending:'待投递',sent:'已发送',delivered:'已投递',success:'执行完成',normal:'正常',low:'偏低',out:'缺货',disabled:'已暂停',waiting:'等待连接',online:'在线',stale:'连接过期',error:'连接异常',order:'订单匹配',today:'今日巡检',spu:'SPU 匹配',shipping:'发货监控'};
+const names:Record<string,string>={queued:'排队中',cancelled:'已取消',suppressed:'无需投递',running:'执行中',verified:'回读成功',completed:'执行完成',done:'执行完成',unknown:'结果未知',needs_review:'待核验',failed:'失败',pending:'待投递',sent:'已发送',delivered:'已投递',success:'执行完成',normal:'正常',low:'偏低',out:'缺货',oversold:'超售',disabled:'已暂停',waiting:'等待连接',online:'在线',stale:'连接过期',error:'连接异常',order:'订单匹配',today:'今日巡检',spu:'SPU 匹配',shipping:'发货监控'};
 function StateBadge({value}:{value:string}) {
-  const variant=['verified','normal','online','sent','delivered'].includes(value)?'success-light': ['failed','error','out'].includes(value)?'destructive-light':['unknown','needs_review','low','stale'].includes(value)?'warning-light':'secondary';
+  // 超售用实底红色标记，保留原库存风险状态供后台判断。
+  const variant=value==='oversold'?'destructive':['verified','normal','online','sent','delivered'].includes(value)?'success-light': ['failed','error','out'].includes(value)?'destructive-light':['unknown','needs_review','low','stale'].includes(value)?'warning-light':'secondary';
   return <Badge variant={variant}>{names[value]||value||'未知'}</Badge>;
 }
 function ErrorNotice({message,retry}:{message:string;retry:()=>void}) {
