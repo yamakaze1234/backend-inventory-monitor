@@ -11,10 +11,45 @@ from ops_command_api import CommandAPI
 from ops_commands import COMMANDS
 from ops_live_tables import FIELDS, LiveReportTables
 from ops_order_delivery import OrderDelivery
+from ops_replies import render
 from ops_runtime import CommandBusiness
 
 
 class LiveConnectionTests(unittest.TestCase):
+    def test_front_stock_shared_table_link_requires_full_scope_on_query_and_replay(self):
+        with TemporaryDirectory() as directory:
+            shops={'76':'甲店','32':'乙店'}
+            link='https://alidocs.dingtalk.com/example'
+            binding=dict(table_id='front',base_id='base',profile='org:staff',shops={'76':'a'*32,'32':'b'*32},
+                         fields={field:field for field in FIELDS['front_stock']},url=link)
+            source=LiveReportTables({},dict(front_stock=binding),'org',query=lambda cfg,q:[])
+            business=CommandBusiness(Mock(),reports=source,shops=lambda:shops)
+            api=CommandAPI(InventoryService(Path(directory)),business,'robot','x'*40,org_id='org')
+            command='front_stock.summary'
+            actor=dict(org_id='org',group_id='cid-test',user_id='member')
+            auth={'Authorization':'Bearer '+'x'*40}
+
+            def grant(scope,fields):
+                api.groups.save('org','robot','cid-test',[command],
+                                members={'member':dict(commands=[command],shops=scope,fields=fields)})
+
+            def request(ident):
+                status,reply=api.route('POST','/api/commands/v1/requests',auth,dict(request_id=ident,actor=actor,
+                                        command=command,args=dict(shop_id='76')))
+                self.assertEqual(status,200)
+                self.assertNotIn('_table_link_shops',reply['data'])
+                return reply
+
+            # 查单店时授权覆盖整张表才展示；收回权限后旧请求也不能返回链接。
+            grant(list(shops),['table_links'])
+            reply=request('dingtalk:front')
+            self.assertEqual(reply['data']['table_url'],link)
+            self.assertIn('前台库存监控明细表：'+link,render(reply))
+            grant(['76'],['table_links'])
+            self.assertNotIn('table_url',request('dingtalk:front')['data'])
+            grant(list(shops),[])
+            self.assertNotIn('table_url',request('dingtalk:front-other')['data'])
+
     def test_orders_use_one_durable_final_reply_and_do_not_cross_group(self):
         with TemporaryDirectory() as directory:
             service=InventoryService(Path(directory))

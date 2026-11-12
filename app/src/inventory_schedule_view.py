@@ -19,6 +19,33 @@ def plan(key,title,description,summary,state='',tone='neutral',action=None,**ext
     return card
 
 
+def shipping_plan(state,read_failed):
+    description='扫描待发订单，提醒已超时或 48 小时内到期的订单，并汇总缺货。'
+    if read_failed:
+        return plan('shipping','发货监控',description,'暂时无法读取','读取失败','warning')
+    if not state.get('deployed') or not state.get('shippingReady'):
+        return plan('shipping','发货监控',description,'请先配置订单匹配并安装兼容后端','尚未配置')
+    shipping=state.get('shipping',{})
+    enabled=shipping.get('enabled',False)
+    bound=shipping.get('bound') and not state.get('switching')
+    online=state.get('online') and state.get('serviceEnabled') and not state.get('stopRequested')
+    minutes=shipping.get('intervalMinutes')
+    group=shipping.get('groupName') or '已配置的群'
+    # 发货监控与订单匹配的自动巡检开关互不影响。
+    card=plan('shipping','发货监控',description,f'每 {minutes} 分钟' if minutes else '沿用提醒周期',
+              '提醒目标未就绪' if not bound else '已暂停' if not enabled else '等待执行器启动' if not online else '已启用',
+              'active' if enabled and bound and online else 'neutral',note=f'提醒群：{group}' if bound else '')
+    if enabled:
+        card['forms'].append(A('shipping-off','暂停定时监控',immediate=True,module='order-settings'))
+    elif bound:
+        card['forms'].append(A('shipping-on','启用定时监控',module='order-settings',
+                               confirm=f'启用后将按周期巡检，符合条件的提醒会发往「{group}」。'))
+    if bound and online:
+        card['forms'].append(A('shipping-run','立即巡检',module='order-settings',
+                               confirm=f'将立即提交一轮发货巡检，符合条件的提醒会发往「{group}」。'))
+    return card
+
+
 def view(b,q):
     from inventory_cache_schedule import schedule_form as cache_form, settings as cache_settings
     from inventory_daily import settings as daily_settings
@@ -101,4 +128,5 @@ def view(b,q):
                  f"每 {cache['period_days']} 天 · {cache['time']}",
                  '已启用' if cache['enabled'] else '已停用','active' if cache['enabled'] else 'neutral',
                  cache_form(cache),note=next_line(cache['state'].get('next_run')) if cache['enabled'] else '')
-    return dict(module='schedules',filters=[],query=q,sections=[inventory,order,shops,price_plan,report_plan,cleanup])
+    return dict(module='schedules',filters=[],query=q,
+                sections=[inventory,order,shipping_plan(order_state,order_error),shops,price_plan,report_plan,cleanup])

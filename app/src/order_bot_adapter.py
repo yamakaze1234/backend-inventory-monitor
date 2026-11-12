@@ -125,7 +125,7 @@ class OrderBotAdapter:
 
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status'}:
+        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status','shipping','shipping-on','shipping-off'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
