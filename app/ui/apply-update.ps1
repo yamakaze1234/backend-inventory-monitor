@@ -14,6 +14,8 @@ function Start-Inventory([string[]]$ExtraArgs=@()) {
     $startInfo=[Diagnostics.ProcessStartInfo]::new($target)
     $startInfo.UseShellExecute=$false
     $startInfo.CreateNoWindow=$true
+    # 更新助手继承旧 EXE 的解包环境；同一路径重启（含回退）必须重新解包。
+    $startInfo.Environment['PYINSTALLER_RESET_ENVIRONMENT']='1'
     foreach($arg in @($p.arguments)+$ExtraArgs){if($null -ne $arg){$startInfo.ArgumentList.Add([string]$arg)}}
     return [Diagnostics.Process]::Start($startInfo)
 }

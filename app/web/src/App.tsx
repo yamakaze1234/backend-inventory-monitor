@@ -134,7 +134,7 @@ function ConsoleLayout(){
   useEffect(()=>{if(info.data&&!autoChecked.current){autoChecked.current=true;if(info.data.autoCheck)void api('/api/update/check',{}).catch(()=>{});}},[info.data]);
   // 导航顺序按工作台、业务管理、设置分组；货源汇报保留在钉钉货源监控内。
   const groups=[
-    {title:'工作台',items:[{id:'inventory',title:'配件库存监控',icon:Boxes},{id:'orders',title:'订单巡检匹配',icon:ListChecks},{id:'douyin',title:'前台库存监控',icon:PackageSearch}]},
+    {title:'工作台',items:[{id:'inventory',title:'配件库存监控',icon:Boxes},{id:'orders',title:'订单巡检匹配',icon:ListChecks},{id:'shipping',title:'发货监控',icon:PackageSearch},{id:'douyin',title:'前台库存监控',icon:PackageSearch}]},
     {title:'业务管理',items:[{id:'dingtalk',title:'钉钉货源监控',icon:Bell},{id:'profit',title:'ERP调价监控',icon:ChartNoAxesCombined},{id:'events',title:'库存提醒记录',icon:Bell}]},
     {title:'设置',items:[{id:'schedules',title:'监控与巡检计划',icon:CalendarClock},{id:'monitor',title:'管理监控商品',icon:Boxes},{id:'settings',title:'连接与通知设置',icon:Settings},{id:'order-settings',title:'订单机器人设置',icon:ListChecks}]},
   ];

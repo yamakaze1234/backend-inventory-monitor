@@ -10,13 +10,15 @@ using System.IO;
 class TestApp {
   // 隔离替换测试使用固定版本回执，不调用任何业务逻辑。
   static void Main(string[] args) {
+    if (Environment.GetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT") != "1")
+      Environment.Exit(19);
     for(int i=0;i<args.Length-1;i++) if(args[i]=="--update-health") File.WriteAllText(args[i+1],"99.0");
     File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"started.txt"),string.Join("|",args));
   }
 }
 '@
 $code | Set-Content -LiteralPath (Join-Path $root 'healthy.cs')
-'class FailedApp { static void Main(string[] args) {System.IO.File.WriteAllText(System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory,"started.txt"),string.Join("|",args));} }' | Set-Content -LiteralPath (Join-Path $root 'failed.cs')
+'class FailedApp { static void Main(string[] args) {if(System.Environment.GetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT")!="1")System.Environment.Exit(19);System.IO.File.WriteAllText(System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory,"started.txt"),string.Join("|",args));} }' | Set-Content -LiteralPath (Join-Path $root 'failed.cs')
 & $compiler /nologo /target:winexe "/out:$root/healthy.exe" (Join-Path $root 'healthy.cs')
 if($LASTEXITCODE){throw '验收程序编译失败'}
 & $compiler /nologo /target:winexe "/out:$root/failed.exe" (Join-Path $root 'failed.cs')
@@ -33,8 +35,14 @@ foreach($case in @('success','rollback','bad-hash')){
     $plan=Join-Path $folder 'install.json'
     $ready=Join-Path $folder 'helper-ready.txt'
     @{pid=2147483646;target=$target;source=$source;sha256=$(if($case -eq 'bad-hash'){'0'*64}else{$hash});marker=(Join-Path $folder 'healthy.txt');ready=$ready;expected='99.0';arguments=@('--data-dir',(Join-Path $folder '中文 工作区'))} | ConvertTo-Json | Set-Content -LiteralPath $plan
-    # 与真实更新一致，使用进程级执行策略并核验助手握手。
-    & pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -Plan $plan
+    # 模拟旧冻结进程的环境，验证正常重启和回退都覆盖旧值。
+    $resetBefore=$env:PYINSTALLER_RESET_ENVIRONMENT
+    try {
+        $env:PYINSTALLER_RESET_ENVIRONMENT='0'
+        & pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -Plan $plan
+    } finally {
+        $env:PYINSTALLER_RESET_ENVIRONMENT=$resetBefore
+    }
     if(!(Test-Path -LiteralPath $ready)){throw '更新助手没有产生就绪握手'}
     $actual=(Get-FileHash -LiteralPath $target).Hash
     if($case -eq 'success' -and $actual -ne $hash){throw '成功替换验收失败'}

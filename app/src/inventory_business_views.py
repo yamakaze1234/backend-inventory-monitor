@@ -53,6 +53,9 @@ def matches_product(row,q):
 
 def build_view(b,module,q):
     sections=[];filters=[]
+    if module=='shipping':
+        from shipping_business import view
+        return view(b,q)
     if module=='schedules':
         from inventory_schedule_view import view
         return view(b,q)

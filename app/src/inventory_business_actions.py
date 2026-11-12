@@ -419,7 +419,7 @@ def shop_operation(b,v):
 @action('douyin','interval')
 def shop_interval(b,v):
     minutes=int(v['minutes'])
-    if not 5<=minutes<=1440:raise ValueError('巡检周期须为 5–1440 分钟')
+    if not 15<=minutes<=1440:raise ValueError('巡检周期须为 5–1440 分钟')
     reply=queue.Queue(maxsize=1)
     b.douyin.submit(dict(kind='save_setting',operation='interval:'+str(minutes*60),reply=reply),v['shop']);return b.wait_reply(reply)
 
@@ -599,3 +599,14 @@ def shipping_run(b,v):
 def order_robot_select(b,v):
     from order_business import select_robot
     return select_robot(b,v)
+
+
+@action('shipping','interval')
+def shipping_interval(b,v):
+    # 发货周期独立保存，不影响匹配巡检周期。
+    from order_business import adapter
+    value=v.get('minutes')
+    if isinstance(value,bool) or not str(value).isdigit() or not 15<=int(value)<=1440:
+        raise ValueError('监控周期须为 15 至 1440 分钟')
+    b.external()
+    return adapter(b).action('shipping-interval',dict(minutes=int(value)))
