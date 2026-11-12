@@ -37,13 +37,13 @@ def queue_state(root):
     path=Path(root)/'jobs.sqlite3'
     if not path.is_file():return dict(active=0,online=False,enabled=False,target={})
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused','shippingEnabled','shippingTarget','stopRequested')"))
+        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused','shippingEnabled','shippingTarget','stopRequested','shippingIntervalMinutes')"))
         active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown')").fetchone()[0]
     target=json.loads(values.get('robotConfig') or '{}')
     # 发货监控可以另设目标；没有独立路由时沿用订单机器人和周期。
     shipping_target=json.loads(values['shippingTarget']) if values.get('shippingTarget') else target
     shipping=dict(enabled=values.get('shippingEnabled')=='1',bound=bool(shipping_target.get('groupId')),
-                  groupName=shipping_target.get('groupName'),intervalMinutes=shipping_target.get('intervalMinutes'))
+                  groupName=shipping_target.get('groupName'),intervalMinutes=int(values.get('shippingIntervalMinutes') or shipping_target.get('intervalMinutes') or 120))
     return dict(active=active,online=time.time()-float(values.get('heartbeat','0'))<90,
                 enabled=values.get('serviceEnabled','0')=='1',switching=bool(values.get('pendingRobotConfig')),
                 schedulePaused=values.get('schedulePaused','0')=='1',

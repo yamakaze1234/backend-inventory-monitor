@@ -125,7 +125,7 @@ class OrderBotAdapter:
 
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status','shipping','shipping-on','shipping-off'}:
+        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status','shipping','shipping-on','shipping-off','shipping-interval'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
@@ -149,6 +149,12 @@ root=Path(request['state'])
 if action in ('order','spu','number'):
     payload=request['payload']
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
+elif action=='shipping-interval':
+    # 发货周期独立保存，不改订单匹配周期或提醒路由。
+    minutes=int(request['payload']['minutes'])
+    if not 15<=minutes<=1440: raise ValueError('发货周期须为 15 至 1440 分钟')
+    control.settings({'shippingIntervalMinutes':str(minutes)},root)
+    result={'message':'发货监控周期已保存'}
 elif action=='save-patrol-window':
     payload=request['payload']
     result=control.bot.save_patrol_window(root,payload['start'],payload['end'],payload['intervalMinutes'])
