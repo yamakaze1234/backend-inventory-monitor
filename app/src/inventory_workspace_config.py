@@ -12,6 +12,11 @@ def resolve_data_root(requested, install_folder, *, local_app_data=None):
     legacy = folder / '.local_inventory_ui_test'
     if (legacy / 'inventory.sqlite3').is_file():
         return legacy
+    # 一体包双击 EXE 与迁移助手使用同一个已选工作区。
+    from inventory_portable import selected_workspace
+    portable = selected_workspace(folder)
+    if portable is not None:
+        return portable
     local = local_app_data or os.environ.get('LOCALAPPDATA')
     if not local:
         raise ValueError('找不到当前用户数据目录，请使用 --data-dir 指定工作区')
