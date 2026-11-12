@@ -205,6 +205,72 @@ def front(data):
     return lines
 
 
+# 文案按指令 ID 维护，最终只渲染回执中已通过权限检查的项目。
+HELP_GUIDE = {
+    'inventory.get': (
+        '查询最近一次库存快照。默认看公司大库实际可销；指定分库时看该库实物库存。',
+        '按 ERP 商品 ID：查库存 56281',
+        '按名称、型号或 SKU：查库存 5060 Ti 白色',
+        '可选：在末尾加「仓库 <仓库ID>」指定分库，加「店铺 <店铺名或ID>」限定维护表价格范围。两项都用时先写仓库，再写店铺。',
+        '回复会标注采集时间；库存 0 表示确实为零，「未知」表示没有可用数据。价格按权限展示。',
+    ),
+    'price.changes': (
+        '查看最近一次已完成的检测里，ERP 库存成本有哪些变化；回复包含调整前后金额、差额和检测时间。',
+        '查全部变化：查价格变化',
+        '只查某商品：查价格变化 56281',
+        '每次最多显示 10 条；未发现变化与尚无完成批次会分别提示。',
+    ),
+    'monitor.add': (
+        '将指定 ERP 商品加入库存监控，设置低库存阈值。若已关注，会返回现有阈值。',
+        '示例：添加监控 56281 阈值 5',
+        '分库监控可在末尾加「仓库 <仓库ID>」。',
+    ),
+    'monitor.threshold.set': (
+        '修改已关注商品的低库存阈值，阈值可设为 0。',
+        '示例：修改监控阈值 56281 为 10',
+    ),
+    'order.status.get': (
+        '按完整订单号查看关联订单和最近业务记录；网店单号的 A、A-1 后缀需保留。',
+        '示例：查订单状态 123456789012345A-1',
+        '也可直接填写 NO- 或 CK- 单号；物流单号在前面加「物流」。可在末尾加「店铺 <店铺名或ID>」。',
+    ),
+    'order.match': (
+        '将指定店铺的订单加入匹配队列，随后根据回执查看执行结果。',
+        '示例：匹配订单 店铺A 123456789012345A-1',
+    ),
+    'order.patrol': (
+        '将指定店铺的订单巡检加入队列。',
+        '示例：巡检订单 店铺A',
+    ),
+    'task.status': (
+        '查看自己在本群发起的订单任务进度，填写机器人回复中的完整回执编号。',
+        '格式：查看任务进度 <回执编号>',
+    ),
+    'shipping.summary': (
+        '查看最近一次已回读的发货统计，包括超时、即将到期和缺货。',
+        '查已授权范围：发货监控汇总',
+        '只查一家店：发货监控汇总 店铺A',
+    ),
+    'front_stock.summary': (
+        '查看指定店铺最近的前台库存监控结果和待处理 SKU。',
+        '示例：前台库存监控 店铺A',
+        '可在末尾加「SPU <商品ID>」或「SKU <SKU ID>」进一步筛选。',
+    ),
+}
+
+
+def help_lines(data):
+    choices = [choice for choice in data['commands'] if choice['id'] != 'help']
+    lines = ['【运营机器人｜帮助】']
+    if not choices:
+        return lines + ['本群暂无可用业务指令，请联系管理员检查群功能设置。']
+    lines.append(f'以下是你在本群可用的 {len(choices)} 项业务指令。发送时先 @机器人，再输入指令和参数。')
+    for index, choice in enumerate(choices, 1):
+        lines.extend(('', f"{index}. {choice['label']}"))
+        lines.extend(HELP_GUIDE.get(choice['id'], (f"示例：{choice['example']}",)))
+    return lines
+
+
 def render(reply):
     command, code, data = reply['command'], reply['code'], reply['data']
     label = COMMANDS.get(command, ('指令', ''))[0]
@@ -222,8 +288,7 @@ def render(reply):
             lines = [f"【{label}｜{titles.get(code, '处理失败')}】{reply['message']}"]
         attach |= code in ('SERVICE_UNAVAILABLE','SOURCE_UNAVAILABLE','IDEMPOTENCY_CONFLICT')
     elif command == 'help':
-        choices = [k['example'] for k in data['commands'] if k['id'] != 'help']
-        lines = ['【运营机器人｜帮助】', *(choices or ['本群暂无可用业务指令，请联系管理员检查群功能设置。'])]
+        lines = help_lines(data)
     elif command == 'inventory.get':
         lines = inventory(data)
     elif command == 'price.changes':

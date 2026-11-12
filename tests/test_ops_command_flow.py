@@ -55,6 +55,23 @@ class FlowTests(unittest.TestCase):
         return self.api.route('POST', '/api/commands/v1/requests', {'Authorization':'Bearer ' + 'x' * 40},
                               dict(request_id='dingtalk:'+ident, actor=actor or self.actor, command=cmd, args=args or {}))
 
+    def test_help_explains_both_authorized_queries_without_showing_writes(self):
+        self.authorize(['help', 'inventory.get', 'price.changes'], fields=['erp_cost'])
+        _, reply = self.request('help', ident='detailed-help')
+        message = render(reply)
+        self.assertIn('先 @机器人', message)
+        self.assertIn('查库存 56281', message)
+        self.assertIn('查库存 5060 Ti 白色', message)
+        self.assertIn('公司大库实际可销', message)
+        self.assertIn('仓库 <仓库ID>', message)
+        self.assertIn('查价格变化 56281', message)
+        self.assertIn('最近一次已完成', message)
+        self.assertNotIn('修改监控阈值', message)
+        self.assertNotIn('发货监控汇总', message)
+        self.authorize(['help'])
+        _, reply = self.request('help', ident='empty-help')
+        self.assertIn('暂无可用业务指令', render(reply))
+
     def test_help_permissions_and_price_projection_on_replay(self):
         status, reply = self.request('inventory.get', {'goods_id':'56281'})
         self.assertEqual(status, 200)
