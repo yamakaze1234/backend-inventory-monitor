@@ -43,7 +43,7 @@ def queue_state(root):
     return dict(active=active,online=time.time()-float(values.get('heartbeat','0'))<90,
                 enabled=values.get('serviceEnabled','0')=='1',switching=bool(values.get('pendingRobotConfig')),
                 target={key:target.get(key) for key in PUBLIC_TARGET if key in target},
-                patrolWindow=patrol_window_view(values.get('matchPatrolWindow')))
+                patrolWindow=patrol_window_view(values.get('matchPatrolWindow'),target.get('intervalMinutes')))
 
 
 def assert_stopped(root):
@@ -150,8 +150,9 @@ def patrol_window_tools():
     return runpy.run_path(str(bundle_root()/'matching/order_patrol_window.py'))
 
 
-def patrol_window_view(raw):
-    return patrol_window_tools()['describe'](raw,time.time())
+def patrol_window_view(raw, legacy_interval=None):
+    tools=patrol_window_tools()
+    return tools['describe'](raw,time.time(),legacy_interval or tools['DEFAULT_INTERVAL'])
 
 
 def patrol_window_ready(config):

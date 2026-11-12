@@ -1,7 +1,7 @@
 """订单配置表单边界：合成目标，不部署后端或发送真实消息。"""
 import unittest
 from unittest.mock import Mock
-from order_business import search_robot,select_robot
+from order_business import save_patrol_window, search_robot,select_robot,view
 
 
 class OrderBusinessTests(unittest.TestCase):
@@ -9,7 +9,9 @@ class OrderBusinessTests(unittest.TestCase):
         self.b=Mock()
         self.result=dict(profile='test-profile',robots=[dict(appId='app-A',name='接单助手')],groups=[dict(groupId='group-A',name='部门群')])
         self.b.order_bot.action.side_effect=lambda action,values:self.result if action=='discover-robots' else dict(message='已保存')
-        self.values=dict(groupQuery='部门群',robotQuery='接单助手',intervalMinutes=120)
+        self.b.order_bot.configuration.return_value=dict(configured=True,deployed=True,patrolWindowReady=True,
+                                                          target=dict(intervalMinutes=240))
+        self.values=dict(groupQuery='部门群',robotQuery='接单助手')
 
     def test_exact_target_uses_discovered_ids(self):
         search_robot(self.b,{**self.values,'appId':'injected','groupId':'injected'})
@@ -17,6 +19,7 @@ class OrderBusinessTests(unittest.TestCase):
         self.assertEqual(action,'save-robot')
         self.assertEqual(values['appId'],'app-A')
         self.assertEqual(values['groupId'],'group-A')
+        self.assertEqual(values['intervalMinutes'],240)
 
     def test_ambiguous_target_requires_review_and_rejects_negative_index(self):
         self.result['groups'].append(dict(groupId='group-B',name='部门群'))
@@ -28,10 +31,23 @@ class OrderBusinessTests(unittest.TestCase):
         select_robot(self.b,dict(token='review',robot='0',group='1'))
         self.assertEqual(self.b.order_bot.action.call_args.args[1]['groupId'],'group-B')
 
-    def test_invalid_interval_and_incomplete_results_never_save(self):
-        for minutes in (1,1441,'bad'):
-            with self.assertRaises(ValueError):search_robot(self.b,{**self.values,'intervalMinutes':minutes})
+    def test_schedule_form_keeps_existing_interval_and_saves_without_rebinding(self):
+        forms=view(self.b,{})['sections'][1]['forms']
+        self.assertNotIn('intervalMinutes',{field['key'] for field in forms[0]['fields']})
+        self.assertEqual(forms[1]['values']['intervalMinutes'],240)
+        self.b.order_bot.action.return_value=dict(start='18:30',end='00:00',nextDay=True,intervalMinutes=90)
+        self.b.order_bot.action.side_effect=None
+        payload=dict(start='18:30',end='00:00',intervalMinutes='90')
+        for minutes in (1,1441,'bad','90.5',True):
+            with self.assertRaises(ValueError):
+                save_patrol_window(self.b,{**payload,'intervalMinutes':minutes})
         self.b.order_bot.action.assert_not_called()
+        result=save_patrol_window(self.b,payload)
+        self.b.order_bot.action.assert_called_once_with('save-patrol-window',dict(payload,intervalMinutes=90))
+        self.assertIn('每 90 分钟',result['message'])
+
+    def test_incomplete_results_never_save(self):
         self.result['moreRobots']=True
-        with self.assertRaises(ValueError):search_robot(self.b,self.values)
+        with self.assertRaises(ValueError):
+            search_robot(self.b,self.values)
         self.assertEqual(self.b.order_bot.action.call_count,1)

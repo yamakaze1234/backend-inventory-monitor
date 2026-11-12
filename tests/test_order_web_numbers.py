@@ -109,7 +109,7 @@ class OrderWebNumberTests(unittest.TestCase):
         self.assertTrue(window.due(window.DEFAULT,opening+14400,opening,240))
         self.assertFalse(window.due(window.DEFAULT,closing_at,opening,240))
         self.assertEqual(window.slot_start(('18:30','01:00'),closing_at),opening)
-        self.assertIsNone(window.slot_start(window.read('broken'),opening))
+        self.assertIsNone(window.slot_start(window.times(window.read_settings('broken')),opening))
         root = self.queue_root()
         with patch.object(self.bot.time,'time',return_value=opening):
             auto = self.bot.enqueue('today',origin='schedule',root=root)['jobId']
@@ -130,6 +130,26 @@ class OrderWebNumberTests(unittest.TestCase):
             self.assertIsNone(self.bot.claim_next_job(db,closing_at))
             db.execute("UPDATE settings SET value='0' WHERE key='schedulePaused'")
             self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'today')
+
+    def test_patrol_interval_preserves_legacy_routing_and_persists_with_window(self):
+        import json
+        root = self.queue_root()
+        legacy = json.dumps(dict(intervalMinutes=240,groupId='fixture-group'))
+        with closing(self.bot.queue_db(root)) as db:
+            db.execute("INSERT INTO settings VALUES('robotConfig',?)",(legacy,))
+            db.execute("INSERT INTO settings VALUES('schedulePaused','1')")
+        self.assertEqual(self.bot.save_patrol_window(root,'18:30','00:00')['intervalMinutes'],240)
+        self.assertEqual(self.bot.save_patrol_window(root,'19:00','01:00',90)['intervalMinutes'],90)
+        # 回退的旧界面只改时间，也不会覆盖已设间隔。
+        self.assertEqual(self.bot.save_patrol_window(root,'18:30','00:00')['intervalMinutes'],90)
+        with closing(self.bot.queue_db(root)) as db:
+            settings = dict(db.execute('SELECT key,value FROM settings'))
+        self.assertEqual(settings['robotConfig'],legacy)
+        self.assertEqual(settings['schedulePaused'],'1')
+        window = self.bot.patrol_window
+        configured = window.read_settings(settings[window.SETTING])
+        start = datetime.fromisoformat('2026-11-12T18:30:00+08:00').timestamp()
+        self.assertTrue(window.due(window.times(configured),start+5400,start,configured['intervalMinutes']))
 
     def test_find_orders_prefers_web_number_preserves_suffix_and_internal_identity(self):
         row = dict(shopId='1', billcode=self.internal, platformNo=f'{self.first}， {self.second}')

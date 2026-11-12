@@ -139,13 +139,27 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=N
                 'message': '已入队，结果将由配置的机器人发到目标群；入队不代表匹配完成。'}
 
 
-def save_patrol_window(root, start, end):
+def save_patrol_window(root, start, end, interval_minutes=None):
     start,end = patrol_window.validate(start,end)
-    value = json.dumps(dict(start=start,end=end),ensure_ascii=False)
+    if interval_minutes is not None:
+        interval_minutes = patrol_window.validate_interval(interval_minutes)
     with contextlib.closing(queue_db(root)) as db:
-        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(patrol_window.SETTING,value))
+        db.execute('BEGIN IMMEDIATE')
+        current = dict(db.execute('SELECT key,value FROM settings WHERE key IN (?,?)',
+                                  (patrol_window.SETTING,'robotConfig')))
+        values = dict(start=start,end=end)
+        if interval_minutes is None:
+            # 旧版工作台仅保存时段时，仍保留独立设置的间隔。
+            previous = patrol_window.read_settings(current.get(patrol_window.SETTING)) or {}
+            interval_minutes = previous.get('intervalMinutes')
+        if interval_minutes is not None:
+            values['intervalMinutes'] = interval_minutes
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                   (patrol_window.SETTING,json.dumps(values,ensure_ascii=False)))
         saved, = db.execute('SELECT value FROM settings WHERE key=?',(patrol_window.SETTING,)).fetchone()
-    return patrol_window.describe(saved,time.time())
+        db.commit()
+    legacy = json.loads(current.get('robotConfig') or '{}').get('intervalMinutes',patrol_window.DEFAULT_INTERVAL)
+    return patrol_window.describe(saved,time.time(),legacy)
 
 
 def expire_scheduled_patrols(db, at, start):
@@ -165,7 +179,7 @@ def claim_next_job(db, at=None):
         if settings.get('stopRequested')=='1' or settings.get('serviceEnabled')=='0':
             db.commit()
             return None
-        start = patrol_window.slot_start(patrol_window.read(settings.get(patrol_window.SETTING)),at)
+        start = patrol_window.slot_start(patrol_window.times(patrol_window.read_settings(settings.get(patrol_window.SETTING))),at)
         expire_scheduled_patrols(db,at,start)
         # 暂停或时段关闭只限制订单自动巡检；发货监控和手动任务照常领取。
         can_auto = start is not None and settings.get('schedulePaused')!='1'
@@ -212,11 +226,12 @@ def status(job_id='', root=STATE):
         # 页面显示真实任务与投递状态，查询完成不代表群已收到提醒。
         shipping['replyText'] = ('任务：' + shipping_row['state'] + '｜通知：' + shipping_row['delivery'] + '\n\n' +
                                  message_for(json.loads(shipping_row['result']))) if shipping_row else '尚未执行发货监控'
-        return {'shippingMonitor': shipping, 'workerOnline': time.time()-heartbeat < 90, 'intervalMinutes': config['intervalMinutes'],
+        window = patrol_window.describe(setting.get(patrol_window.SETTING),time.time(),config['intervalMinutes'])
+        return {'shippingMonitor': shipping, 'workerOnline': time.time()-heartbeat < 90, 'intervalMinutes': window['intervalMinutes'],
                 'robotConfig': config, 'robotSwitchPending': bool(setting.get('pendingRobotConfig')),
                 'serviceEnabled': setting.get('serviceEnabled', '1') != '0',
                 'schedulePaused': setting.get('schedulePaused', '0') == '1',
-                'patrolWindow': patrol_window.describe(setting.get(patrol_window.SETTING),time.time()),
+                'patrolWindow': window,
                 'stopRequested': setting.get('stopRequested', '0') == '1',
                 'workerStopped': setting.get('workerStopped', '0') == '1',
                 'lastScheduled': float(setting.get('lastScheduled', '0')),
@@ -642,13 +657,16 @@ def service(root=STATE, once=False):
                     return
                 now = time.time()
                 db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)",(str(now),))
-                window = patrol_window.read(settings.get(patrol_window.SETTING))
-                if (not once and settings.get('schedulePaused')!='1' and patrol_window.slot_start(window,now) is not None
-                        and patrol_window.due(window,now,float(settings.get('lastScheduled','0')),get_config(root)['intervalMinutes'])):
-                    # 上个窗口遗留的任务不能被当成今天已安排的巡检。
-                    expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
-                    enqueue('today',origin='schedule',root=root)
-                    db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)",(str(now),))
+                schedule = patrol_window.read_settings(settings.get(patrol_window.SETTING))
+                window = patrol_window.times(schedule)
+                if not once and settings.get('schedulePaused')!='1' and patrol_window.slot_start(window,now) is not None:
+                    # 订单间隔独立设置；不改变发货监控可能沿用的机器人路由间隔。
+                    minutes = schedule.get('intervalMinutes') or get_config(root)['intervalMinutes']
+                    if patrol_window.due(window,now,float(settings.get('lastScheduled','0')),minutes):
+                        # 上个窗口遗留的任务不能被当成今天已安排的巡检。
+                        expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
+                        enqueue('today',origin='schedule',root=root)
+                        db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)",(str(now),))
                 # 发货扫描使用独立开关，不因匹配巡检暂停而停止监控。
                 from shipping_monitor import config as shipping_config
                 shipping = shipping_config(root)

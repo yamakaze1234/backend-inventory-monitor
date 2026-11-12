@@ -59,13 +59,17 @@ class OrderBotAdapter:
             return dict(available=False, workerOnline=False, jobs=[], total=0, configured=bool(config),shops=shops,message='请先在订单匹配设置中配置独立后端与 Stream 机器人' if not config else '尚未启动本部门订单机器人')
         with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
             db.row_factory = sqlite3.Row
-            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested','matchPatrolWindow')").fetchall())
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested','matchPatrolWindow','robotConfig')").fetchall())
             total = db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
             rows = db.execute('SELECT id,kind,number,shop,state,created,delivery FROM jobs ORDER BY created DESC LIMIT ? OFFSET ?', (size, page * size)).fetchall()
             active = db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running','unknown')").fetchone()[0]
         from order_bot_config import patrol_window_ready, patrol_window_view
-        return dict(available=True,configured=bool(config),shops=shops,
-                    patrolWindow=patrol_window_view(settings.get('matchPatrolWindow')) if patrol_window_ready(config) else None, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
+        window = None
+        if patrol_window_ready(config):
+            # 只读取旧路由中的间隔作为默认值，不返回机器人配置。
+            legacy = json.loads(settings.get('robotConfig') or '{}').get('intervalMinutes')
+            window = patrol_window_view(settings.get('matchPatrolWindow'),legacy)
+        return dict(available=True,configured=bool(config),shops=shops,patrolWindow=window, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
                     schedulePaused=settings.get('schedulePaused') == '1', serviceEnabled=settings.get('serviceEnabled','1') != '0',
                     stopRequested=settings.get('stopRequested') == '1', jobs=[dict(r) for r in rows], total=total, active=active)
 
@@ -143,7 +147,7 @@ if action in ('order','spu','number'):
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
 elif action=='save-patrol-window':
     payload=request['payload']
-    result=control.bot.save_patrol_window(root,payload['start'],payload['end'])
+    result=control.bot.save_patrol_window(root,payload['start'],payload['end'],payload['intervalMinutes'])
 elif action=='ops-order-status':
     # 固定模块由该部门订单后端提供；接口升级前不回退为猜测或模糊匹配。
     if request['status_sdk']:
