@@ -70,7 +70,7 @@ def assert_state_owner(workspace,root):
 
 
 def assert_connector_stopped(config,root=None):
-    """停止请求不是停止完成；只接受 DWS 明确回读的 down 状态。"""
+    """只接受 DWS 明确回读的本机停止状态。"""
     root=Path(root or config['state_root'])
     if not (root/'jobs.sqlite3').is_file():return
     target=queue_state(root)['target']
@@ -79,7 +79,10 @@ def assert_connector_stopped(config,root=None):
     try:
         result=subprocess.run([config['dws_path'],'dev','connect','status','--robot-client-id',target['robotCode'],'--profile',target['profile'],'--json','--format','json'],capture_output=True,text=True,encoding='utf-8',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         value=json.loads(result.stdout)
-        if result.returncode or value.get('error') or value.get('state')!='down':raise ValueError()
+        if result.returncode or not isinstance(value,dict) or value.get('error'):raise ValueError()
+        state=value.get('state')
+        # 从未启动过此连接器的新机没有守护进程记录，DWS 回读 not_running 且不带 PID。
+        if state!='down' and not (state=='not_running' and value.get('pid') is None):raise ValueError()
     except (OSError,ValueError,subprocess.TimeoutExpired):
         raise ValueError('订单 Stream 连接器尚未确认停止，请先在原程序完成停止再部署或修改环境') from None
 
