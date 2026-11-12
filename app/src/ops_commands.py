@@ -6,7 +6,7 @@ import unicodedata
 # 目录同时提供显示名称和示例，帮助与群开关共用稳定指令 ID。
 COMMANDS = {
     'help': ('帮助', '帮助'),
-    'inventory.get': ('查库存', '查库存 56281'),
+    'inventory.get': ('查询商品', '查询商品 56281'),
     'price.changes': ('查价格变化', '查价格变化 56281'),
     'monitor.add': ('添加监控', '添加监控 56281 阈值 5'),
     'monitor.threshold.set': ('修改监控阈值', '修改监控阈值 56281 为 10'),
@@ -43,7 +43,7 @@ def parse_command(text):
     text = ' '.join(text.split())
     if text == '帮助':
         return 'help', {}
-    m = re.fullmatch(r'查库存 (.+?)(?: 仓库 (\S+))?(?: 店铺 (.+))?', text)
+    m = re.fullmatch(r'(?:查询商品|查库存) (.+?)(?: 仓库 (\S+))?(?: 店铺 (.+))?', text)
     if m:
         value = m[1]
         scope = {k: v for k, v in zip(('warehouse_id', 'shop_alias'), m.groups()[1:]) if v}

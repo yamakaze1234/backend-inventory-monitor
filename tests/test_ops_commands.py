@@ -27,6 +27,7 @@ class CommandTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(parse_command(text), ('inventory.get', {'keyword':keyword}))
         self.assertEqual(parse_command('查询５６２８１库存'), ('inventory.get', {'goods_id':'56281'}))
+        self.assertEqual(parse_command('查询商品 5070 Ti 雪鹰'), ('inventory.get', {'keyword':'5070 Ti 雪鹰'}))
         self.assertEqual(parse_command('查价格变化 56281'), ('price.changes', {'goods_id':'56281'}))
         for text in ('查询订单进度', '查询库存', '查询 5070 Ti；修改阈值库存', '查询 5070 Ti 库存然后调整价格'):
             with self.subTest(text=text), self.assertRaises(ValueError):
@@ -34,7 +35,7 @@ class CommandTests(unittest.TestCase):
 
     def test_help_only_lists_available_commands(self):
         text = render_help(['help', 'inventory.get'])
-        self.assertIn('查库存 56281', text)
+        self.assertIn('查询商品 56281', text)
         self.assertNotIn('添加监控', text)
         with self.assertRaises(ValueError):
             render_help(['inventory.get'])

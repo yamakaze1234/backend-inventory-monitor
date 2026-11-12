@@ -209,8 +209,8 @@ def front(data):
 HELP_GUIDE = {
     'inventory.get': (
         '查询最近一次库存快照。默认看公司大库实际可销；指定分库时看该库实物库存。',
-        '按 ERP 商品 ID：查库存 56281',
-        '按名称、型号或 SKU：查库存 5060 Ti 白色',
+        '按 ERP 商品 ID：查询商品 56281',
+        '按名称、型号或 SKU：查询商品 5070 Ti 雪鹰',
         '也可以说：查询 5070 Ti 雪鹰库存和 ERP 价格',
         '可选：在末尾加「仓库 <仓库ID>」指定分库，加「店铺 <店铺名或ID>」限定维护表价格范围。两项都用时先写仓库，再写店铺。',
         '回复会标注采集时间；库存 0 表示确实为零，「未知」表示没有可用数据。价格按权限展示。',
@@ -267,7 +267,9 @@ def help_lines(data):
         return lines + ['本群暂无可用业务指令，请联系管理员检查群功能设置。']
     lines.append(f'以下是你在本群可用的 {len(choices)} 项业务指令。发送时先 @机器人，再输入指令和参数。')
     for index, choice in enumerate(choices, 1):
-        lines.extend(('', f"{index}. {choice['label']}"))
+        # 接收端与工作台可独立更新；本地命令名称优先于旧工作台的显示名。
+        label = COMMANDS.get(choice['id'], (choice['label'], ''))[0]
+        lines.extend(('', f'{index}. {label}'))
         lines.extend(HELP_GUIDE.get(choice['id'], (f"示例：{choice['example']}",)))
     return lines
 
