@@ -52,15 +52,26 @@ class SFRouteTests(unittest.TestCase):
                 self.module['build_request'](self.auth, 'SF1234567890123', phone)
 
     def test_sdk_permission_error_is_sanitized_and_client_closed(self):
-        class SfError(Exception):
-            pass
         client = Mock()
-        client.查询路由.side_effect = SfError('A1004: private upstream context')
-        with patch.dict('sys.modules', {'sf':SimpleNamespace(Sf=Mock(return_value=client)),
-                                      'sf.client':SimpleNamespace(SfError=SfError)}):
+        client.查询路由.side_effect = RuntimeError('A1004: private upstream context')
+        context = Mock()
+        context.__enter__ = Mock(return_value=client)
+        context.__exit__ = Mock(return_value=False)
+        with patch.dict('sys.modules', {'tiny_tools.sf':SimpleNamespace(Sf=Mock(return_value=context))}):
             result = self.module['query_route'](dict(self.auth, provider='sf-sdk'), 'SF1234567890123')
         self.assertEqual(result, dict(ok=False, errorCode='A1004'))
-        client.close.assert_called_once()
+        context.__exit__.assert_called_once()
+        client.查询路由.assert_called_once_with(trackingNumber='SF1234567890123')
+
+    def test_copy_button_suffix_is_rejected_before_client_is_created(self):
+        factory = Mock()
+        with patch.dict('sys.modules', {'tiny_tools.sf':SimpleNamespace(Sf=factory)}):
+            for field in ('partnerId','checkWord'):
+                auth = dict(self.auth, provider='sf-sdk')
+                auth[field] += '复制'
+                with self.assertRaisesRegex(ValueError, '格式异常'):
+                    self.module['query_route'](auth, 'SF1234567890123')
+        factory.assert_not_called()
 
     def test_sdk_route_requires_matching_waybill_and_completed_status(self):
         # 复现仓库示例：一级是“签收”分类，二级才给出完成状态。
@@ -73,8 +84,10 @@ class SFRouteTests(unittest.TestCase):
         row = dict(mailNo=number, routes=[node])
         client = Mock()
         client.查询路由.return_value = dict(success='true', errorCode='A1000', msgData=json.dumps(dict(routeResps=[row])))
-        with patch.dict('sys.modules', {'sf':SimpleNamespace(Sf=Mock(return_value=client)),
-                                      'sf.client':SimpleNamespace(SfError=RuntimeError)}):
+        context = Mock()
+        context.__enter__ = Mock(return_value=client)
+        context.__exit__ = Mock(return_value=False)
+        with patch.dict('sys.modules', {'tiny_tools.sf':SimpleNamespace(Sf=Mock(return_value=context))}):
             response = self.module['query_route'](dict(self.auth, provider='sf-sdk'), number)
         self.assertTrue(collected_route(response, number)[0])
         self.assertFalse(collected_route(response, 'SF1234567890124')[0])

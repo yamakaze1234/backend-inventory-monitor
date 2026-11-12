@@ -95,7 +95,8 @@ class Logistics:
             self.clients[shop] = connect(shop)
         raw = self.clients[shop].order_detail(code)
         heads = raw.get('data_order')
-        if not isinstance(heads, list) or len(heads) != 1 or identifier(heads[0].get('c_billcode')) != code:
+        if (not isinstance(heads, list) or len(heads) != 1 or identifier(heads[0].get('c_billcode')) != code
+                or identifier(heads[0].get('shop_id')) not in ('', shop)):
             raise ValueError('物流订单身份无法核验')
         logs = raw.get('data_order_print_log')
         if not isinstance(logs, list) or not logs:
@@ -114,7 +115,7 @@ class Logistics:
             if value:
                 numbers.update(x for x in re.split(r'[,，;；\s]+', value) if x)
         # 仅使用真实可见的末四位，不能从尾号已脱敏的手机号中拼出错误校验码。
-        phone = re.search(r'(\d{4})\s*$', str(heads[0].get('c_receiver_mobile') or heads[0].get('c_receiver_phone') or ''))
+        phone = re.search(r'([0-9]{4})\s*$', str(heads[0].get('c_receiver_mobile') or heads[0].get('c_receiver_phone') or ''))
         return sorted(numbers), complete and bool(numbers), phone.group(1) if phone else None
 
     def check(self, shop, code):
@@ -236,8 +237,13 @@ class Table:
 
     def delete(self, record_id):
         self.call(['+record-delete', '--record-ids', record_id], True)
-        if self.records([record_id]):
-            raise ValueError('删除记录未确认')
+        # 在线表可能暂时读到旧快照；只重读同一记录，不重发删除。
+        for attempt in range(6):
+            if not self.records([record_id]):
+                return
+            if attempt < 5:
+                time.sleep(min(attempt + 1, 3))
+        raise ValueError('删除记录未确认')
 
 
 def cells_for(order, route, checked_at, fields):
@@ -284,6 +290,21 @@ def sync(report, root, table_factory=Table, logistics_factory=Logistics):
                 if key in by_key and key not in current:
                     old = dict(saved['order'], detailError='本轮不在紧急待发列表；保留上次业务信息并继续核验物流')
                     current[key] = old
+            # 回执未知的删除只做回读核对，仍能看到记录时留待核验，绝不重放或覆盖。
+            for key,action in list(state['pending'].items()):
+                if action != 'delete':
+                    continue
+                current.pop(key,None)
+                saved = state['orders'].get(key)
+                record_id = saved.get('recordId') if saved else None
+                if not record_id or key in by_key or any(row['recordId']==record_id for row in remote) or table.records([record_id]):
+                    result['errors'].append(key+'：上次删除未确认，未重发')
+                    continue
+                with (root/'shipping-collection-audit.jsonl').open('a',encoding='utf-8') as f:
+                    f.write(json.dumps({'at':datetime.now(CN).isoformat(),'key':key,'recordId':record_id,'action':'delete_verified'},ensure_ascii=False)+'\n')
+                state['orders'].pop(key,None)
+                state['pending'].pop(key,None)
+                save_json(state_path,state)
             for key,order in current.items():
                 try:
                     record = by_key.get(key)
@@ -296,12 +317,15 @@ def sync(report, root, table_factory=Table, logistics_factory=Logistics):
                     route = logistics.check(order['shopId'], order['code'])
                     if route['collected']:
                         if record and key in state['orders']:
+                            if record['recordId'] != saved['recordId']:
+                                raise ValueError('在线记录与本机管理登记不一致，保留记录')
                             # 删除前再次确认订单所有包裹与刚才核验的集合一致。
                             numbers, complete, _ = logistics.parcels(order['shopId'], order['code'])
                             if not complete or numbers != route['numbers']:
                                 raise ValueError('删除前运单集合发生变化，保留记录')
                             fresh = table.records([record['recordId']])
-                            if len(fresh) != 1 or fresh[0]['cells'].get(cfg['fields']['订单键']) != key:
+                            if (len(fresh) != 1 or fresh[0]['recordId'] != record['recordId']
+                                    or fresh[0]['cells'].get(cfg['fields']['订单键']) != key):
                                 raise ValueError('删除前在线订单身份变化，保留记录')
                             # 删除前保存订单内容及真实轨迹，线上删行不删除本机审计证据。
                             with (root/'shipping-collection-audit.jsonl').open('a',encoding='utf-8') as f:

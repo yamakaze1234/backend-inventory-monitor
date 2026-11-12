@@ -29,9 +29,9 @@
 
 发货监控支持顺丰开放平台生产路由查询 `EXP_RECE_SEARCH_ROUTES`，使用固定官方 HTTPS 地址与简易 MD5 签名。运行目录 `shipping-sf-auth.json` 设置 `provider: sf-open`、`environment: production`、`partnerId` 与 `checkWord`；实际凭据只保留在本机，不放入源码、安装包或日志。旧内网路由的 `apiKey` 配置仍兼容。
 
-安装独立 `sf` 包的 Python 3.14/3.15 后端可设置 `provider: sf-sdk`，复用 `Sf(partnerID, checkWord).查询路由(number, checkPhoneNo=phone)`；接口权限、运单身份和实际节点的核验规则不变。包属于外部后端依赖，不随桌面 EXE 捆绑。
+安装 `tiny_tools` 与独立 `sf` 包的 Python 3.14/3.15 后端可设置 `provider: sf-sdk`，按 [tiny_tools 顺丰说明](https://gitea.cq360.top/CoreStudio/tiny_tools/src/branch/main/src/tiny_tools/sf/README.md) 使用 `tiny_tools.sf.Sf`。从网页复制凭据时请确认没有夹带末尾的「复制」按钮文字。两个包属于外部后端依赖，不随桌面 EXE 捆绑。
 
-只读查询按运单号核验，ERP 手机号末四位真实可见时自动传入。空轨迹、运单不匹配、未来节点、查询或授权失败均不能证明揽收；全部包裹有真实揽收证据且删除前运单集合及在线订单身份再次核对一致，才沿用既有在线行删除流程。沙箱结果不能用于生产删行。生产权限未开通返回 `A1004`，需在顺丰开放平台开通对应接口，本机无法代替授权。
+只读查询按运单号核验，ERP 手机号末四位真实可见时自动传入。空轨迹、运单不匹配、未来节点、查询或授权失败均不能证明揽收。全部包裹有揽收证据，且删除前运单集合与本机登记的在线记录身份再次核对一致，才删除该在线行。回执未知时只回读同一记录，不重复删除；本地订单与审计记录继续保留。沙箱结果不能用于生产删行。若返回 `A1004`，先核对顾客编码和生产校验码，再确认该应用的路由查询接口已上线。
 
 官方说明：[路由查询](https://open.sf-express.com/Api/ApiDetails?level3=397)、[认证规范](https://open.sf-express.com/developSupport/976720?activeIndex=641728&authId=1)。
 

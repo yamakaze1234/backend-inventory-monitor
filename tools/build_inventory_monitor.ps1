@@ -80,6 +80,8 @@ archive = CArchiveReader(sys.argv[1])
 names = {name.replace(chr(92), '/') for name in archive.toc}
 # 部门兼容安装需要完整的 Python/Node/PowerShell 启动链。
 required_assets = {'order_backend/matching/group_order_bot.py', 'order_backend/matching/robot_config.py', 'order_backend/matching/order_department_runtime.py', 'order_backend/control/order_department_runtime.py', 'order_backend/control/robot_settings.py', 'order_backend/control/robot_desktop_control.py', 'order_backend/control/ops_order_route_lock.py', 'order_backend/control/robot-keepalive.pyw', 'order_backend/control/order-match-server.mjs', 'order_backend/control/启动机器人.ps1', 'dws.exe', 'inventory-setup.md', 'inventory-erp.user.js', 'douyin_dom_bridge.mjs', 'douyin_erp_bridge.py', 'console/index.html', 'console-host/InventoryConsoleHost.exe', 'update-public-key.txt', 'apply-update.ps1'}
+# 发货提醒和物流核验由外置后端执行，必须确保安装包携带全部兼容文件。
+required_assets |= {f'order_backend/matching/{name}.py' for name in ('shipping_monitor', 'shipping_online', 'shipping_shortage', 'shipping_sf_route')}
 assert required_assets <= names, required_assets - names
 pyz = archive.open_embedded_archive('PYZ.pyz')
 modules = set(pyz.toc)
@@ -91,7 +93,7 @@ assert required_modules <= modules, required_modules - modules
 assert 'inventory_impact' not in modules, '已移除的受影响配置不应进入包'
 for name in names:
     assert not name.endswith(('.sqlite3', '.db')), name
-    assert name.rsplit('/', 1)[-1] not in {'monitor_sources.json', 'monitor_settings.json', 'control.json'}, name
+    assert name.rsplit('/', 1)[-1] not in {'monitor_sources.json', 'monitor_settings.json', 'control.json', 'shipping-sf-auth.json', 'shipping-online.json'}, name
 print(json.dumps({'assets': sorted(required_assets), 'modules': sorted(required_modules)}, ensure_ascii=False))
 '@
 $archiveEvidence = & py -3 -c $archiveCheck $executable

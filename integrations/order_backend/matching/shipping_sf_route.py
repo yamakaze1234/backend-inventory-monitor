@@ -11,16 +11,24 @@ import uuid
 PRODUCTION_URL = 'https://bspgw.sf-express.com/std/service'
 
 
-def build_request(auth, number, phone=None, *, timestamp=None, request_id=None):
+def validate_query(auth, number, phone):
     # 凭据只能用于固定的官方生产地址，沙箱配置不能作为真实揽收证据。
     if auth.get('environment') != 'production' or not auth.get('partnerId') or not auth.get('checkWord'):
         raise ValueError('顺丰生产认证配置不完整')
-    if not re.fullmatch(r'SF\d{10,18}', number):
+    # 网页的“复制”等文字不属于凭据，发现尾缀时阻止发送并提示本机核对。
+    for key in ('partnerId', 'checkWord'):
+        if not isinstance(auth[key], str) or not re.fullmatch(r'[!-~]+', auth[key]):
+            raise ValueError('顺丰顾客编码或生产校验码格式异常')
+    if not re.fullmatch(r'SF[0-9]{10,18}', number):
         raise ValueError('顺丰运单格式待核实')
+    if phone is not None and not re.fullmatch(r'[0-9]{4}', phone):
+        raise ValueError('手机号后四位格式不正确')
+
+
+def build_request(auth, number, phone=None, *, timestamp=None, request_id=None):
+    validate_query(auth, number, phone)
     data = dict(language='zh-CN', trackingType=1, trackingNumber=[number], methodType=1)
     if phone:
-        if not re.fullmatch(r'\d{4}', phone):
-            raise ValueError('手机号后四位格式不正确')
         data['checkPhoneNo'] = phone
     message = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
     stamp = str(int(time.time() * 1000)) if timestamp is None else str(timestamp)
@@ -33,21 +41,20 @@ def build_request(auth, number, phone=None, *, timestamp=None, request_id=None):
 
 
 def query_route(auth, number, phone=None, *, opener=urllib.request.urlopen):
-    request = build_request(auth, number, phone)
     if auth.get('provider') == 'sf-sdk':
-        # 已安装的独立 sf 包提供同一只读查询；仍先校验生产配置、单号及手机号格式。
-        from sf import Sf
-        from sf.client import SfError
-        client = Sf(auth['partnerId'], auth['checkWord'])
+        validate_query(auth, number, phone)
+        # 使用 tiny_tools README 的公开入口；签名和网关调用由独立 sf 包负责。
+        from tiny_tools.sf import Sf
         try:
-            data = client.查询路由(number, checkPhoneNo=phone)
+            with Sf(auth['partnerId'], auth['checkWord']) as client:
+                kwargs = {'checkPhoneNo': phone} if phone is not None else {}
+                data = client.查询路由(trackingNumber=number, **kwargs)
             # SDK 文档允许 A1000 成功响应；标记来源，交给揽收判断核对逐单证据。
             return dict(ok=True, data=data, provider='sf-sdk') if isinstance(data, dict) else dict(ok=False, errorCode='INVALID_RESPONSE')
-        except SfError as error:
+        except RuntimeError as error:
             code = re.match(r'^(A\d{4})\b', str(error))
             return dict(ok=False, errorCode=code[1] if code else 'SDK_ERROR')
-        finally:
-            client.close()
+    request = build_request(auth, number, phone)
     with opener(request, timeout=35) as response:
         value = json.load(response)
     # 仅保留错误码，避免把上游异常中可能回显的顾客编码、签名或手机号带进日志。
