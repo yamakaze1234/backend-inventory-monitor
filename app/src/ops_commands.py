@@ -19,6 +19,23 @@ COMMANDS = {
 }
 
 
+# 仅匹配明确要求查库存或 ERP 成本的短句；不会扩展到下单、改价或订单查询。
+ERP_COST_WORD = r'ERP\s*(?:库存成本|成本价|价格|单价|成本)'
+NATURAL_PREFIX = re.compile(r'(?:查询|帮我查(?:询|一下)?|查一下|查)\s*')
+NATURAL_INVENTORY = re.compile(
+    r'(.+?)\s*(?:的\s*)?'
+    rf'(?:库存(?:\s*(?:和|及|与|、|以及|/)\s*{ERP_COST_WORD})?|{ERP_COST_WORD})[?。]?',
+    re.IGNORECASE,
+)
+
+
+def inventory_args(value, **scope):
+    numeric = unicodedata.normalize('NFKC', value)
+    if numeric.isascii() and numeric.isdecimal():
+        return dict(scope, goods_id=numeric)
+    return dict(scope, keyword=value)
+
+
 def parse_command(text):
     """只解析明确的固定指令；调用者必须先验证真实 @ 事件和机器人身份。"""
     if not isinstance(text, str) or len(text) > 500:
@@ -30,10 +47,13 @@ def parse_command(text):
     if m:
         value = m[1]
         scope = {k: v for k, v in zip(('warehouse_id', 'shop_alias'), m.groups()[1:]) if v}
-        numeric = unicodedata.normalize('NFKC', value)
-        if numeric.isascii() and numeric.isdecimal():
-            return 'inventory.get', dict(scope, goods_id=numeric)
-        return 'inventory.get', dict(scope, keyword=value)
+        return 'inventory.get', inventory_args(value, **scope)
+    # 识别用户常用的「查询某型号库存和 ERP 价格」，再走同一个只读指令。
+    natural = unicodedata.normalize('NFKC', text)
+    prefix = NATURAL_PREFIX.match(natural)
+    m = NATURAL_INVENTORY.fullmatch(natural[prefix.end():]) if prefix else None
+    if m and (value := m[1].strip()) and not any(mark in value for mark in (';', '。', '?', '!')):
+        return 'inventory.get', inventory_args(value)
     m = re.fullmatch(r'查价格变化(?: ([0-9]+))?', text)
     if m:
         return 'price.changes', ({'goods_id': m[1]} if m[1] else {})

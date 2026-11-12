@@ -17,6 +17,21 @@ class CommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_command('查订单状态 物流 NO-001')
 
+    def test_natural_inventory_questions_stay_in_read_only_command(self):
+        for text, keyword in (
+            ('查询5070ti 雪鹰 库存和erp价格', '5070ti 雪鹰'),
+            ('查询 5070 Ti 雪鹰的库存和 ERP 价格？', '5070 Ti 雪鹰'),
+            ('帮我查一下 5070 Ti 雪鹰 ERP 成本价', '5070 Ti 雪鹰'),
+            ('查一下 5070 Ti 雪鹰库存', '5070 Ti 雪鹰'),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(parse_command(text), ('inventory.get', {'keyword':keyword}))
+        self.assertEqual(parse_command('查询５６２８１库存'), ('inventory.get', {'goods_id':'56281'}))
+        self.assertEqual(parse_command('查价格变化 56281'), ('price.changes', {'goods_id':'56281'}))
+        for text in ('查询订单进度', '查询库存', '查询 5070 Ti；修改阈值库存', '查询 5070 Ti 库存然后调整价格'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_command(text)
+
     def test_help_only_lists_available_commands(self):
         text = render_help(['help', 'inventory.get'])
         self.assertIn('查库存 56281', text)
