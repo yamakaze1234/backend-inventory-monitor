@@ -9,6 +9,20 @@ from inventory_business_actions import shipping_interval
 
 
 class ShippingWorkbenchTests(unittest.TestCase):
+    def test_stale_backend_can_pause_but_cannot_submit_old_format(self):
+        from order_business import shipping_action
+        b=Mock()
+        b.order_bot.configuration.return_value=dict(deployed=True,shippingReady=True,shippingBackendCurrent=False,
+            online=True,serviceEnabled=True,shipping=dict(enabled=True,bound=True,intervalMinutes=240))
+        card=view(b,{})['sections'][0]
+        self.assertIn('发货后端待更新',card['text'])
+        self.assertEqual([form['action'] for form in card['forms']],['shipping-off'])
+        with self.assertRaisesRegex(ValueError,'安装部门兼容后端'):
+            shipping_action(b,'shipping')
+        b.order_bot.action.assert_not_called()
+        shipping_action(b,'shipping-off')
+        b.order_bot.action.assert_called_once_with('shipping-off')
+
     def test_page_and_period_do_not_change_matching_schedule(self):
         b=Mock()
         b.order_bot.configuration.return_value=dict(deployed=True,shippingReady=True,shipping=dict(bound=True,intervalMinutes=120))

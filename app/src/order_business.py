@@ -65,6 +65,9 @@ def shipping_action(b, operation):
     if not state.get('deployed') or not state.get('shippingReady'):
         raise ValueError('请先安装支持发货监控的订单兼容后端')
     if operation!='shipping-off':
+        # 桌面已更新但外置执行器未更新时，不再提交会发送旧格式的巡检。
+        if state.get('shippingBackendCurrent') is False:
+            raise ValueError('请停止订单服务，并到订单机器人设置安装部门兼容后端')
         if not state.get('shipping',{}).get('bound') or state.get('switching'):
             raise ValueError('请先确认发货提醒目标群，并等待机器人切换完成')
     if operation=='shipping' and (not state.get('online') or not state.get('serviceEnabled') or state.get('stopRequested')):

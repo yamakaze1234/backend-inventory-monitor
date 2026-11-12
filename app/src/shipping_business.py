@@ -12,7 +12,7 @@ def view(b,q):
     state=adapter(b).configuration()
     card=shipping_plan(state,False)
     card['text']='；'.join(str(card.get(k) or '') for k in ('summary','status','note'))
-    if state.get('deployed') and state.get('shippingReady'):
+    if state.get('deployed') and state.get('shippingReady') and state.get('shippingBackendCurrent') is not False:
         card['forms'].append(A('interval','设置监控周期',[F('minutes','监控周期（分钟）','number')],
             dict(minutes=state.get('shipping',{}).get('intervalMinutes') or 120),module='shipping'))
     latest=S('latest','最近巡检明细')

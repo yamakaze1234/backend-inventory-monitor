@@ -31,6 +31,11 @@ def shipping_plan(state,read_failed):
     online=state.get('online') and state.get('serviceEnabled') and not state.get('stopRequested')
     minutes=shipping.get('intervalMinutes')
     group=shipping.get('groupName') or '已配置的群'
+    if state.get('shippingBackendCurrent') is False:
+        # 保留暂停入口，避免旧后端在升级期间继续发送逐单通知。
+        action=A('shipping-off','暂停定时监控',immediate=True,module='order-settings') if enabled else None
+        return plan('shipping','发货监控',description,'请停止订单服务，再到「订单机器人设置」安装部门兼容后端',
+                    '发货后端待更新','warning',action=action)
     # 发货监控与订单匹配的自动巡检开关互不影响。
     card=plan('shipping','发货监控',description,f'每 {minutes} 分钟' if minutes else '沿用提醒周期',
               '提醒目标未就绪' if not bound else '已暂停' if not enabled else '等待执行器启动' if not online else '已启用',
