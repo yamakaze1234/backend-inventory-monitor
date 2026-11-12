@@ -368,6 +368,11 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
             report['onlineSync'] = sync(report, root)
         from shipping_shortage import sync_shortages
         report['shortageSync'] = sync_shortages(report, root)
+        # 缺货同步旧接口未返回链接；从同一工作区的已绑定配置补齐，供通知与工作台展示。
+        if report['shortageSync'].get('enabled'):
+            from shipping_online import read_json
+            online_config = read_json(Path(root) / 'shipping-online.json', {})
+            report['shortageSync']['url'] = online_config.get('shortageTable', {}).get('url', '')
         if binding:
             from ops_shipping_board import publish_shortages
             publish_shortages(root, binding, report, scope)
