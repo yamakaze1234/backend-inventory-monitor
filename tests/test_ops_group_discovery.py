@@ -40,7 +40,8 @@ class GroupDiscoveryTests(unittest.TestCase):
         self.assertEqual(form['values']['group_id'],'cid-test')
         self.assertEqual(form['values']['help'], ['help'])
         self.assertEqual(form['values']['inventory'], [])
-        self.assertTrue(all(f['readonly'] for f in form['fields'] if f['key'] in ('org_id','group_id','robot_id')))
+        self.assertTrue(all(f['kind']=='multi' for f in form['fields']))
+        self.assertIn('测试群',form['description'])
         self.client.bots.assert_called_once_with('org:account','cid-test')
         with self.assertRaisesRegex(ValueError,'与识别结果不一致'):
             save_binding(self.business, dict(form['values'], group_id='cid-other'))

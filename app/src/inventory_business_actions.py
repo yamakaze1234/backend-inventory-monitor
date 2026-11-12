@@ -169,6 +169,19 @@ def ops_group_save(b,v):
     return dict(message='群功能已保存并回读：' + ('、'.join(COMMANDS[k][0] for k in selected) or '已清空'))
 
 
+# 群成员搜索与权限保存各自核实身份，搜索结果只在本次界面会话中使用。
+def register_ops_member(name, callback):
+    @action('settings','ops-members-' + name)
+    def handle(b,v):
+        import ops_settings
+        return getattr(ops_settings,callback)(b,v)
+
+
+for _name, _callback in (('search','search_members'), ('choose','choose_member'),
+                          ('list','list_members'), ('open','open_member')):
+    register_ops_member(_name,_callback)
+
+
 @action('settings','ops-members-save')
 def ops_members_save(b,v):
     from ops_settings import save_members

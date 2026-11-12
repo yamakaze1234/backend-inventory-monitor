@@ -341,6 +341,17 @@ class CommandAPI:
             if method == 'GET' and suffix == 'capabilities':
                 return 200, dict(version='commands/v1', commands={k: dict(required=ARGS[k][0], optional=ARGS[k][1])
                                  for k in COMMANDS if k in self.business.implemented})
+            if method == 'GET' and suffix == 'member':
+                # 接收端只凭可信回调身份探测授权成员；不会产生业务回执或执行指令。
+                org, group, user = checked_actor({key:headers.get('X-Actor-' + key.replace('_','-').title()) for key in ACTOR})
+                if self.org_id is not None and org != self.org_id:
+                    raise denied()
+                with self.service.db() as db:
+                    enabled = self.groups.selected(db,org,self.robot_id,group)
+                    member = self.service.get(db,self.groups.member_key(org,self.robot_id,group),{}).get(user)
+                    if enabled is None or not member:
+                        raise denied()
+                return 200, {'member':True}
             if method == 'POST' and suffix == 'requests':
                 if not isinstance(body, dict):
                     raise bad('请求必须是对象')

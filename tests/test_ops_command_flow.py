@@ -175,6 +175,10 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 403)
         client = LocalCommandClient(console.url, 'x' * 40)
         self.assertEqual(client.request('capabilities')['version'], 'commands/v1')
+        # 分流探测不执行指令；只允许同组织、同机器人下明确授权的群成员。
+        self.assertEqual(client.request('member',actor=self.actor), {'member':True})
+        for who in (dict(self.actor,user_id='stranger'),dict(self.actor,group_id='other'),dict(self.actor,org_id='other')):
+            self.assertEqual(client.request('member',actor=who)['code'],'FORBIDDEN')
         sent = []
         receiver = Receiver(client, 'robot', self.root/'replies.sqlite3', lambda event, text: (sent.append(text), 'sent')[1])
         mention = VerifiedMention('org','group','member','robot','message','匹配订单 样例店 123456789012345A-1')

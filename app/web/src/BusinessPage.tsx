@@ -17,8 +17,8 @@ import { Records } from './Records';
 import { api, useSnapshot } from './api';
 
 type Values=Record<string,unknown>;
-type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;bulk?:boolean;when?:Values;columns?:[string,string][]};
-type Action={action:string;title:string;fields:Field[];values:Values;confirm?:string;module?:string;immediate?:boolean;description?:string;submitLabel?:string};
+type Field={key:string;label:string;kind:string;options:{value:string;label:string}[];readonly?:boolean;bulk?:boolean;compact?:boolean;pickOnly?:boolean;when?:Values;columns?:[string,string][]};
+type Action={action:string;title:string;fields:Field[];values:Values;confirm?:string;module?:string;immediate?:boolean;description?:string;submitLabel?:string;wide?:boolean};
 type Row=Values & {id?:string;sku?:string;_forms?:Action[];_details?:{label:string;value:unknown}[]};
 type Table={title:string;compact?:boolean;widths?:Record<string,number>;columns:{key:string;label:string}[];rows:Row[]};
 type Section={id:string;title:string;description?:string;text?:string;autostart?:{available:boolean;enabled:boolean};forms:Action[];tables:Table[];links?:{label:string;url:string}[]};
@@ -31,29 +31,62 @@ function text(value:unknown):string {if(value===null||value===undefined||value==
 const labels:Record<string,string>={sent:'已发送',pending:'待发送',unknown:'待核实',failed:'失败',partial:'部分送达',incomplete:'部分完成',success:'成功',skipped:'已跳过',running:'处理中',paused:'已暂停',enabled:'启用',preview:'仅记录',cancelled:'已取消',webhook:'Webhook',enterprise:'企业机器人',inventory:'库存提醒',douyin_inventory:'抖店补库存',daily:'日报',messages:'货源转发',profit:'价格提醒'};
 function display(value:unknown):string{if(Array.isArray(value))return value.map(display).join('、');return labels[String(value)]||text(value);}
 function saveBlob(blob:Blob,name:string){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+async function downloadResult(result:Result){const response=await fetch('/api/business/download?key='+encodeURIComponent(result.download||''),{headers:{'X-Console-Token':location.hash.slice(1)}});if(!response.ok)throw Error('文件下载失败');saveBlob(await response.blob(),result.filename||'下载文件');}
 function external(url:string){if(!url.startsWith('https://'))return;const host=bridge();if(host)host.postMessage({type:'open-external',url});else window.open(url,'_blank','noopener,noreferrer');}
 
 /** 文件路径由用户选择，网页不会读取或上传浏览器登录资料。 */
-function FileInput({value,onChange,label}:{value:string;onChange:(v:string)=>void;label:string}){
+function FileInput({value,onChange,label,pickOnly}:{value:string;onChange:(v:string)=>void;label:string;pickOnly?:boolean}){
+  const nativeOnly=pickOnly&&!!bridge();
   const choose=()=>{const host=bridge();if(!host){toast.info('浏览器验收模式请填写本机文件完整路径');return;}
     const id=crypto.randomUUID();
     const listener=(event:MessageEvent)=>{if(event.data?.type==='chosen-file'&&event.data.id===id){host.removeEventListener('message',listener);if(event.data.path)onChange(event.data.path);}};
     host.addEventListener('message',listener);host.postMessage({type:'choose-file',id});};
-  return <div className="flex min-w-0 gap-2"><Input aria-label={label} value={value} onChange={e=>onChange(e.target.value)}/><Button type="button" variant="outline" size="sm" onClick={choose}><FolderOpen/>选择文件</Button></div>;
+  return <div className="flex min-w-0 flex-wrap items-center gap-2">
+    {nativeOnly?<span className="min-w-0 break-all text-sm text-muted-foreground" title={value}>{value.split(/[\\/]/).pop()||'尚未选择文件'}</span>:<Input className="flex-1" aria-label={label} value={value} onChange={e=>onChange(e.target.value)}/>}
+    <Button type="button" variant="outline" size="sm" onClick={choose}><FolderOpen/>{value&&nativeOnly?'更换文件':'选择文件'}</Button>
+  </div>;
 }
 function FieldInput({field,value,onChange}:{field:Field;value:unknown;onChange:(v:unknown)=>void}){
   const [search,setSearch]=useState('');
   const id='field-'+field.key;
   const choices=field.options||[];
   if(field.kind==='bool')return <label className="flex items-center gap-2"><Checkbox checked={!!value} onCheckedChange={onChange}/><span className="text-sm">{field.label}</span></label>;
+  if(field.kind==='pick'){
+    // 候选用直接点选；没有预选，避免同名时误选第一位。
+    const visible=choices.filter(o=>o.label.toLowerCase().includes(search.trim().toLowerCase()));
+    return <fieldset className="flex min-w-0 flex-col gap-2">
+      <legend className="text-sm font-medium">{field.label}</legend>
+      {choices.length>6&&<Input aria-label="筛选成员" placeholder="按姓名筛选" value={search} onChange={e=>setSearch(e.target.value)}/>}
+      <div className="grid max-h-56 gap-2 overflow-y-auto p-1">{visible.map(o=>
+        <Button key={o.value} type="button" variant={value===o.value?'secondary':'outline'} aria-pressed={value===o.value}
+          className="h-auto min-h-9 justify-start whitespace-normal text-left" onClick={()=>onChange(o.value)}>{o.label}</Button>)}
+        {!visible.length&&<p className="text-sm text-muted-foreground">没有匹配的成员。</p>}</div>
+    </fieldset>;
+  }
   if(field.kind==='multi'){
     const values=Array.isArray(value)?value.map(String):[];
-    return <fieldset className="flex min-w-0 flex-col gap-3"><legend className="text-sm font-medium">{field.label}</legend>{/* 群功能的全选和清空按当前分组执行，与搜索筛选无关。 */}{field.bulk&&<div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>onChange(choices.map(o=>o.value))}>全选</Button><Button type="button" size="sm" variant="outline" onClick={()=>onChange([])}>清空</Button></div>}{choices.length>8&&<Input aria-label={'筛选'+field.label} placeholder="搜索可选项" value={search} onChange={e=>setSearch(e.target.value)}/>}<div className="flex max-h-64 flex-col gap-3 overflow-y-auto p-1">{choices.filter(o=>o.label.includes(search)).map(o=><label key={o.value} className="flex items-center gap-2"><Checkbox checked={values.includes(o.value)} onCheckedChange={checked=>onChange(checked?[...values,o.value]:values.filter(v=>v!==o.value))}/><span className="break-all text-sm">{o.label}</span></label>)}{!choices.length&&<span className="text-sm text-muted-foreground">暂无可选项，请先添加配置。</span>}</div></fieldset>;
+    const visible=choices.filter(o=>o.label.includes(search));
+    return <fieldset className={field.compact?'flex min-w-0 flex-col gap-2 rounded-lg border px-3 pb-3':'flex min-w-0 flex-col gap-3'}>
+      <legend className="text-sm font-medium">{field.label}</legend>
+      {/* 全选只针对这一组，和搜索筛选无关。 */}
+      {field.bulk&&choices.length>0&&<div className="flex justify-end gap-1">
+        <Button type="button" size="sm" variant="ghost" onClick={()=>onChange(choices.map(o=>o.value))}>全选</Button>
+        <Button type="button" size="sm" variant="ghost" onClick={()=>onChange([])}>清空</Button>
+      </div>}
+      {!field.compact&&choices.length>8&&<Input aria-label={'筛选'+field.label} placeholder="搜索可选项" value={search} onChange={e=>setSearch(e.target.value)}/>}
+      <div className={field.compact?'grid grid-cols-1 gap-2 p-1 sm:grid-cols-2':'flex max-h-64 flex-col gap-3 overflow-y-auto p-1'}>
+        {visible.map(o=><label key={o.value} className="flex min-h-6 items-center gap-2">
+          <Checkbox checked={values.includes(o.value)} onCheckedChange={checked=>onChange(checked?[...values,o.value]:values.filter(v=>v!==o.value))}/>
+          <span className="break-words text-sm">{o.label}</span>
+        </label>)}
+        {!visible.length&&<span className="text-sm text-muted-foreground">{choices.length?'没有匹配的选项。':'暂无可选项，请先添加配置。'}</span>}
+      </div>
+    </fieldset>;
   }
   if(field.kind==='rows')return <RowEditor field={field} value={value} onChange={onChange}/>;
   const input=field.kind==='select'?<Select value={String(value??choices[0]?.value??'')} onValueChange={v=>onChange(v??'')} items={Object.fromEntries(choices.map(o=>[o.value,o.label]))}><SelectTrigger aria-label={field.label}><SelectValue placeholder="请选择"/></SelectTrigger><SelectContent>{choices.map(o=><SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>:
     field.kind==='textarea'?<Textarea id={id} aria-label={field.label} className="min-h-32 max-h-96" value={String(value??'')} onChange={e=>onChange(e.target.value)}/>:
-    field.kind==='file'?<FileInput label={field.label} value={String(value??'')} onChange={onChange}/>:
+    field.kind==='file'?<FileInput label={field.label} pickOnly={field.pickOnly} value={String(value??'')} onChange={onChange}/>:
     <Input id={id} aria-label={field.label} readOnly={field.readonly} type={['password','number','date'].includes(field.kind)?field.kind:'text'} autoComplete={field.kind==='password'?'new-password':'off'} value={String(value??'')} onChange={e=>onChange(e.target.value)}/>;
   return <div className="flex min-w-0 flex-col gap-2"><label htmlFor={id} className="text-sm font-medium">{field.label}</label>{input}</div>;
 }
@@ -70,8 +103,8 @@ function BusinessTable({table,onAction}:{table:Table;onAction:(a:Action)=>void})
   return <div className="flex min-w-0 flex-col gap-4"><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium">{table.title}</h3>{!table.compact&&<Input aria-label={'筛选'+table.title} placeholder="搜索当前记录" value={query} onChange={e=>setQuery(e.target.value)}/>}</div><Records rows={rows} columns={columns} loading={false} showPagination={!table.compact}/>{!table.compact&&!rows.length&&<Button type="button" variant="outline" size="sm" onClick={()=>setQuery('')}>清空列表筛选</Button>}<Dialog open={!!detail} onOpenChange={open=>{if(!open)setDetail(null);}}><DialogContent className="max-h-[85dvh] overflow-y-auto"><DialogHeader><DialogTitle>记录详情</DialogTitle><DialogDescription>完整编号和业务明细以当前记录为准。</DialogDescription></DialogHeader>{detail?._details?.map((entry,i)=><div key={i} className="flex flex-col gap-1"><span className="text-xs text-muted-foreground">{entry.label}</span><p className="whitespace-pre-wrap break-all text-sm">{text(entry.value)}</p></div>)}{detail?.url?<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={()=>external(String(detail.url))}>打开商品链接</Button><Button type="button" variant="outline" size="sm" onClick={()=>void navigator.clipboard.writeText(String(detail.url)).then(()=>toast.success('已复制'))}>复制链接</Button></div>:null}</DialogContent></Dialog></div>;
 }
 function ResultPanel({result,onAction}:{result:Result;onAction:(a:Action)=>void}){
-  const download=async()=>{const response=await fetch('/api/business/download?key='+encodeURIComponent(result.download||''),{headers:{'X-Console-Token':location.hash.slice(1)}});if(!response.ok)throw Error('文件下载失败');saveBlob(await response.blob(),result.filename||'下载文件');};
-  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void download().catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
+
+  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void downloadResult(result).catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
 }
 
 type CatalogProduct={sku:string;goods_id:string;name:string;watched?:boolean};
@@ -109,13 +142,19 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
   const busy=submitting||!!jobId&&!job.error&&(job.data?.id!==jobId||job.data?.state==='running');
   const [result,setResult]=useState<Result>();
   const openedFollowup=useRef('');
+  const pendingDownload=useRef('');
   useEffect(()=>{if(job.data?.id!==jobId)return;if(job.data?.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}
     // 查群成功后自动接续候选或已填好的确认表单；轮询不能重置用户已选的功能。
     const next=job.data.result?.nextForm;if(next&&openedFollowup.current!==jobId){openedFollowup.current=jobId;setValues(initialValues(next));setForm(next);}
+    // 模板准备好就直接下载一次，结果区仍可手动补下。
+    if(pendingDownload.current===jobId&&job.data.result?.download){
+      pendingDownload.current='';
+      void downloadResult(job.data.result).catch(()=>toast.error('下载失败，请在操作结果里重新下载。'));
+    }
     snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,snapshot.refresh]);
   const openAction=(action:Action)=>{if(action.immediate){void submit(action,action.values);return;}setValues(initialValues(action));setForm(action);};
   const submit=async(selected:Action|null=form,payload:Values=values)=>{if(!selected||busy)return;setSubmitting(true);setConfirmation(false);
-    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
+    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});if(selected.action==='ops-members-template')pendingDownload.current=response.job;setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
     catch(e){toast.error(e instanceof Error?e.message:'操作未提交');}finally{setSubmitting(false);}};
   const addOpened=useRef(false);
   useEffect(()=>{
@@ -137,7 +176,7 @@ export function BusinessPage({module,openAddProduct=false}:{module:string;openAd
     {result&&<ResultPanel result={result} onAction={openAction}/>}
     {active&&<Frame spacing="sm"><FrameHeader><FrameTitle>{active.title}</FrameTitle><FrameDescription>{active.description||'查看当前状态，按需执行以下操作。'}</FrameDescription></FrameHeader><FramePanel><div className="flex min-w-0 flex-col gap-6">{/* 复选框以 Windows 回读状态为准，提交期间禁止重复点击。 */}
     {active.autostart&&<label className="flex items-center gap-2 text-sm"><Checkbox checked={active.autostart.enabled} disabled={busy||!active.autostart.available} onCheckedChange={enabled=>void submit({action:'autostart',title:'开机启动',fields:[],values:{}},{enabled:enabled===true})}/>登录 Windows 后自动启动</label>}{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
-    <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className="max-h-[85dvh] overflow-y-auto"><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.description||(form?.action==='catalog-add'?'选择 ERP 商品并设置低库存预警数量。':'修改后提交生效，未提交的内容不会保存。')}</DialogDescription></DialogHeader>{form?.action==='catalog-add'?<ProductPicker initial={form.values} busy={busy} onCancel={()=>setForm(null)} onAdd={v=>void submit(form,v)}/>:<form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy}>{form?.submitLabel||'提交'}</Button></div></form>}</DialogContent></Dialog>
+    <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className={form?.wide?"max-h-[85dvh] overflow-y-auto sm:max-w-xl":"max-h-[85dvh] overflow-y-auto"}><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.description||(form?.action==='catalog-add'?'选择 ERP 商品并设置低库存预警数量。':'修改后提交生效，未提交的内容不会保存。')}</DialogDescription></DialogHeader>{form?.action==='catalog-add'?<ProductPicker initial={form.values} busy={busy} onCancel={()=>setForm(null)} onAdd={v=>void submit(form,v)}/>:<form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy||form?.fields.some(f=>f.kind==='pick'&&!values[f.key])}>{form?.submitLabel||'提交'}</Button></div></form>}</DialogContent></Dialog>
     <AlertDialog open={confirmation} onOpenChange={setConfirmation}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{form?.title}</AlertDialogTitle><AlertDialogDescription>{form?.confirm}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction disabled={busy} onClick={()=>void submit()}>确认执行</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;
 }

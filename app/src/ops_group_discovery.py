@@ -30,7 +30,7 @@ def preferred(b):
     robot = getattr(api, 'robot_id', None)
     org = getattr(api, 'org_id', None)
     config = load(b.service.root)
-    if not config:
+    if not config.get('state_root'):
         return org, robot, None
     target = queue_state(Path(config['state_root']))['target']
     profile, configured_robot = target.get('profile'), target.get('robotCode')

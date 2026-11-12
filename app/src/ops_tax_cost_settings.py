@@ -16,7 +16,7 @@ def describe(binding):
 def panel(b):
     with b.service.db() as db:
         binding = b.service.get(db,KEY)
-    forms = [A('ops-cost-inspect', '连接主机成本表', [F('path','选择本机工作簿','file')],
+    forms = [A('ops-cost-inspect', '连接主机成本表', [F('path','主机成本表','file',pickOnly=True)],
                module='settings',submitLabel='识别工作表与列',
                description='选择本机或已挂载共享目录中的 .xlsx、.xlsb 或 .xlsm 文件。只读已保存值，识别后还要预览并确认。')]
     tables = []
