@@ -41,7 +41,8 @@ def query_route(auth, number, phone=None, *, opener=urllib.request.urlopen):
         client = Sf(auth['partnerId'], auth['checkWord'])
         try:
             data = client.查询路由(number, checkPhoneNo=phone)
-            return dict(ok=True, data=data) if isinstance(data, dict) else dict(ok=False, errorCode='INVALID_RESPONSE')
+            # SDK 文档允许 A1000 成功响应；标记来源，交给揽收判断核对逐单证据。
+            return dict(ok=True, data=data, provider='sf-sdk') if isinstance(data, dict) else dict(ok=False, errorCode='INVALID_RESPONSE')
         except SfError as error:
             code = re.match(r'^(A\d{4})\b', str(error))
             return dict(ok=False, errorCode=code[1] if code else 'SDK_ERROR')

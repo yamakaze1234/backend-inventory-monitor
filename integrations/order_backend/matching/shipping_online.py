@@ -37,19 +37,36 @@ def collected_route(response, number):
     if response.get('ok') is not True:
         return False, '物流查询失败'
     data = response.get('data', {})
-    if data.get('success') is not True or data.get('errorCode') != 'S0000':
+    codes = ('S0000', 'A1000') if response.get('provider') == 'sf-sdk' else ('S0000',)
+    if (not isinstance(data, dict) or data.get('errorCode') not in codes
+            or (data.get('success') is not True and data.get('success') != 'true')):
         return False, '物流业务结果未确认'
-    rows = data.get('msgData', {}).get('routeResps', [])
+    # SDK 可能返回 JSON 字符串；必须取得可按运单核对的路由列表。
+    body = data.get('msgData')
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return False, '物流路由格式未确认'
+    rows = body.get('routeResps') if isinstance(body, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        return False, '物流路由格式未确认'
     matches = [x for x in rows if x.get('mailNo') == number]
     if len(matches) != 1:
         return False, '运单响应缺失或重复'
     routes = matches[0].get('routes') or []
+    if not isinstance(routes, list) or any(not isinstance(node, dict) for node in routes):
+        return False, '物流节点格式未确认'
     # 不使用“包含揽收”的模糊匹配，避免把“未揽收/取消揽收”认成已收件。
     accepted = {'已收件', '已揽收', '已揽件', '已收取', '运输中', '运送中', '派送中', '派件中', '已签收'}
+    categories = ('', None, '收件', '揽收', '运输', '派送', '签收')
     evidence = []
     for node in routes:
-        state = str(node.get('firstStatusName') or '')
-        if state not in accepted:
+        # 一级可能只写“签收”，二级才给出“已签收”；只接受明确完成的状态值。
+        first = node.get('firstStatusName')
+        second = node.get('secondaryStatusName')
+        state = second if first in categories else first
+        if not isinstance(state, str) or state not in accepted:
             continue
         try:
             occurred = date(node.get('acceptTime'))

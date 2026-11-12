@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import runpy
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs
@@ -60,3 +61,27 @@ class SFRouteTests(unittest.TestCase):
             result = self.module['query_route'](dict(self.auth, provider='sf-sdk'), 'SF1234567890123')
         self.assertEqual(result, dict(ok=False, errorCode='A1004'))
         client.close.assert_called_once()
+
+    def test_sdk_route_requires_matching_waybill_and_completed_status(self):
+        # 复现仓库示例：一级是“签收”分类，二级才给出完成状态。
+        path = Path(__file__).resolve().parents[1] / 'integrations/order_backend/matching/shipping_online.py'
+        monitor = SimpleNamespace(CN=timezone.utc, date=datetime.fromisoformat, identifier=str)
+        with patch.dict('sys.modules', shipping_monitor=monitor):
+            collected_route = runpy.run_path(str(path))['collected_route']
+        number = 'SF1234567890123'
+        node = dict(firstStatusName='签收', secondaryStatusName='已签收', acceptTime='2020-01-01T00:00:00+00:00')
+        row = dict(mailNo=number, routes=[node])
+        client = Mock()
+        client.查询路由.return_value = dict(success='true', errorCode='A1000', msgData=json.dumps(dict(routeResps=[row])))
+        with patch.dict('sys.modules', {'sf':SimpleNamespace(Sf=Mock(return_value=client)),
+                                      'sf.client':SimpleNamespace(SfError=RuntimeError)}):
+            response = self.module['query_route'](dict(self.auth, provider='sf-sdk'), number)
+        self.assertTrue(collected_route(response, number)[0])
+        self.assertFalse(collected_route(response, 'SF1234567890124')[0])
+        self.assertFalse(collected_route(dict(response, provider=None), number)[0])
+        for rows in ([], [row, row], [dict(row, routes=[])],
+                     [dict(row, routes=[dict(node, firstStatusName='待揽收')])],
+                     [dict(row, routes=[dict(node, acceptTime='2099-01-01T00:00:00+00:00')])]):
+            with self.subTest(rows=rows):
+                data = dict(response['data'], msgData=dict(routeResps=rows))
+                self.assertFalse(collected_route(dict(response, data=data), number)[0])
