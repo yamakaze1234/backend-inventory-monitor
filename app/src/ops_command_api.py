@@ -127,7 +127,8 @@ class CommandAPI:
         target = getattr(self.business,'order_target',None)
         # 订单写入仅在已核实可投递最终结果的群启用。
         implemented = self.business.implemented
-        if target and group!=target['groupId']:
+        if target and (group!=target['groupId'] or (command in ORDER_TASKS or command=='help')
+                       and not self.business.order_route_current()):
             implemented = implemented - ORDER_TASKS
         if command not in implemented:
             raise CommandError(503, 'SERVICE_UNAVAILABLE', '该指令的数据来源尚未接入')
@@ -303,10 +304,13 @@ class CommandAPI:
             delivery = 'suppressed'
         return dict(result, delivery_status=delivery)
 
-    def delivery(self, actor, ident, body):
+    def delivery(self, actor, ident, body, *, internal=False):
         phase, state = body.get('phase'), body.get('state')
         if set(body) != {'phase', 'state'} or phase not in ('initial', 'final') or state not in ('claim', 'sent', 'failed', 'unknown'):
             raise bad('回复状态无效')
+        # 已绑定路由的最终回复必须经过桌面端的切换锁，HTTP 接收器只处理首条回复。
+        if phase=='final' and not internal and getattr(self.business,'current_order_target',None):
+            raise denied()
         with self.service.db() as db:
             row = self._row(db, actor, ident)
             if not row:

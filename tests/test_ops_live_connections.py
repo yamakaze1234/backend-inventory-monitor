@@ -1,8 +1,10 @@
 """群订单最终回执和现有在线表的隔离验证，不触发真实写入或通知。"""
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from inventory_monitor import InventoryService
 from ops_command_api import CommandAPI
@@ -21,8 +23,10 @@ class LiveConnectionTests(unittest.TestCase):
             order.action.return_value=dict(jobId='job-1',status='queued')
             order.ops_task.return_value=dict(status='completed',task_id='job-1',shop_id='76',created_at=0,
                                              final_reply_owned=True,success=1,skipped=0,review=0,unit='单')
-            target=dict(profile='org:staff',groupId='cid-test',groupName='样例群',robotCode='robot',robotName='样例机器人')
-            api=CommandAPI(service,CommandBusiness(Mock(),order=order,order_target=target),'robot','x'*40,org_id='org')
+            target=dict(profile='org:staff',groupId='cid-test',groupName='样例群',robotCode='robot',robotName='样例机器人',_stateRoot=directory)
+            current=Mock(return_value=target)
+            api=CommandAPI(service,CommandBusiness(Mock(),order=order,order_target=target,current_order_target=current),
+                           'robot','x'*40,org_id='org')
             grant={'member':dict(commands=list(COMMANDS),shops=['76'],fields=[])}
             for group in ('cid-test','cid-other'):
                 api.groups.save('org','robot',group,list(COMMANDS),members=grant)
@@ -34,16 +38,43 @@ class LiveConnectionTests(unittest.TestCase):
             self.assertEqual(request('dingtalk:other',dict(actor,group_id='cid-other'))[0],503)
             self.assertEqual(request('dingtalk:test',actor)[0],202)
             self.assertTrue(request('dingtalk:test',actor)[1]['replayed'])
-            sender=Mock(return_value={'status':'unknown'})
+            headers=dict(auth,**{'X-Actor-Org-Id':'org','X-Actor-Group-Id':'cid-test','X-Actor-User-Id':'member'})
+            self.assertEqual(api.route('POST','/api/commands/v1/requests/dingtalk:test/delivery',headers,
+                             dict(phase='final',state='claim'))[0],403)
+            lock_seen=[]
+            def send(*args):
+                # 模拟另一进程尝试切换；最终发送仍持有独立的路由锁。
+                with closing(sqlite3.connect(Path(directory)/'ops-route-lock.sqlite3',timeout=0)) as db:
+                    with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                        db.execute('BEGIN IMMEDIATE')
+                lock_seen.append(True)
+                return {'status':'unknown'}
+            sender=Mock(side_effect=send)
             OrderDelivery(api,target,sender=sender).tick()
             OrderDelivery(api,target,sender=sender).tick()
             sender.assert_called_once()
+            self.assertEqual(lock_seen,[True])
             self.assertEqual(sender.call_args.args[0]['group_id'],'cid-test')
             self.assertIn('已匹配并回读确认',sender.call_args.args[1]['text']['content'])
             order.action.assert_called_once()
             status=api.status(('org','cid-test','member'),'dingtalk:test')
             self.assertEqual(status['delivery_status'],'unknown')
             self.assertNotIn('created_at',status['data'])
+            self.assertEqual(request('dingtalk:after-claim',actor)[0],202)
+            # 切换恰好发生在领取后，发送仍须停在旧群之前。
+            claim=api.delivery
+            def switch_on_claim(*args,**kwargs):
+                result=claim(*args,**kwargs)
+                if result.get('claimed'):
+                    current.return_value=dict(target,groupId='cid-other')
+                return result
+            sender.reset_mock()
+            with patch.object(api,'delivery',side_effect=switch_on_claim):
+                OrderDelivery(api,target,sender=sender).tick()
+            sender.assert_not_called()
+            self.assertEqual(request('dingtalk:old',actor)[0],503)
+            self.assertEqual(request('dingtalk:new',dict(actor,group_id='cid-other'))[0],503)
+            self.assertEqual(order.action.call_count,2)
 
     def test_front_and_shipping_keep_exact_scopes_and_snapshot_limits(self):
         store,other='a'*32,'b'*32

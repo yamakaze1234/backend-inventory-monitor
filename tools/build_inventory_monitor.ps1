@@ -79,7 +79,7 @@ from PyInstaller.archive.readers import CArchiveReader
 archive = CArchiveReader(sys.argv[1])
 names = {name.replace(chr(92), '/') for name in archive.toc}
 # 部门兼容安装需要完整的 Python/Node/PowerShell 启动链。
-required_assets = {'order_backend/matching/group_order_bot.py', 'order_backend/matching/robot_config.py', 'order_backend/matching/order_department_runtime.py', 'order_backend/control/order_department_runtime.py', 'order_backend/control/robot_settings.py', 'order_backend/control/robot_desktop_control.py', 'order_backend/control/robot-keepalive.pyw', 'order_backend/control/order-match-server.mjs', 'order_backend/control/启动机器人.ps1', 'dws.exe', 'inventory-setup.md', 'inventory-erp.user.js', 'douyin_dom_bridge.mjs', 'douyin_erp_bridge.py', 'console/index.html', 'console-host/InventoryConsoleHost.exe', 'update-public-key.txt', 'apply-update.ps1'}
+required_assets = {'order_backend/matching/group_order_bot.py', 'order_backend/matching/robot_config.py', 'order_backend/matching/order_department_runtime.py', 'order_backend/control/order_department_runtime.py', 'order_backend/control/robot_settings.py', 'order_backend/control/robot_desktop_control.py', 'order_backend/control/ops_order_route_lock.py', 'order_backend/control/robot-keepalive.pyw', 'order_backend/control/order-match-server.mjs', 'order_backend/control/启动机器人.ps1', 'dws.exe', 'inventory-setup.md', 'inventory-erp.user.js', 'douyin_dom_bridge.mjs', 'douyin_erp_bridge.py', 'console/index.html', 'console-host/InventoryConsoleHost.exe', 'update-public-key.txt', 'apply-update.ps1'}
 assert required_assets <= names, required_assets - names
 pyz = archive.open_embedded_archive('PYZ.pyz')
 modules = set(pyz.toc)

@@ -1,5 +1,6 @@
 """用隔离订单验证网店单号匹配和通知，避免访问真实 ERP 和群。"""
 import importlib.util
+import json
 import sys
 import tempfile
 import types
@@ -42,13 +43,22 @@ class OrderWebNumberTests(unittest.TestCase):
         root = self.queue_root()
         key = 'a' * 64
         shop = '1'
-        self.assertEqual(self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)['status'], 'unavailable')
+        target=dict(profile='org:staff',groupId='cid-original',robotCode='robot',appId='app')
+        args=dict(shop=shop,origin='ops-command',root=root,external_id=key,expected_route=target)
+        self.assertEqual(self.bot.enqueue('today',**args)['status'],'unavailable')
         with closing(self.bot.queue_db(root)) as db:
-            db.executemany('INSERT INTO settings VALUES (?,?)', [('heartbeat','1000'), ('serviceEnabled','1'), ('schedulePaused','1')])
+            db.executemany('INSERT INTO settings VALUES (?,?)',[('heartbeat','1000'),('serviceEnabled','1'),
+                ('schedulePaused','1'),('robotConfig',json.dumps(target)),('pendingRobotConfig','{}')])
         with patch.object(self.bot.time, 'time', return_value=1001):
-            first = self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)
-            self.assertEqual(first['status'], 'queued')
-            replay = self.bot.enqueue('today', shop=shop, origin='ops-command', root=root, external_id=key)
+            self.assertEqual(self.bot.enqueue('today',**args)['status'],'unavailable')
+            with closing(self.bot.queue_db(root)) as db:
+                db.execute("UPDATE settings SET value='' WHERE key='pendingRobotConfig'")
+            first=self.bot.enqueue('today',**args)
+            self.assertEqual(first['status'],'queued')
+            replay=self.bot.enqueue('today',**args)
+            with closing(self.bot.queue_db(root)) as db:
+                db.execute("UPDATE settings SET value=? WHERE key='robotConfig'",(json.dumps(dict(target,groupId='cid-new')),))
+            self.assertEqual(self.bot.enqueue('today',**dict(args,external_id='b'*64))['status'],'unavailable')
         self.assertEqual(first['jobId'], replay['jobId'])
         self.assertTrue(replay['duplicate'])
         sender = Mock()
@@ -132,7 +142,6 @@ class OrderWebNumberTests(unittest.TestCase):
             self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'today')
 
     def test_patrol_interval_preserves_legacy_routing_and_persists_with_window(self):
-        import json
         root = self.queue_root()
         legacy = json.dumps(dict(intervalMinutes=240,groupId='fixture-group'))
         with closing(self.bot.queue_db(root)) as db:

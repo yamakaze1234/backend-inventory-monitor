@@ -17,6 +17,7 @@ import group_order_bot as bot
 from robot_record_cleanup import cleanup_due, cleanup_status
 from robot_config import get_config
 from robot_settings import discover, validated_target
+from ops_order_route_lock import route_guard
 
 PWSH = DEPARTMENT['pwsh_path']
 
@@ -132,7 +133,7 @@ def finish_switch(root):
     config=pending_config(root)
     if not config:return False
     if not handle('finish-stop',root).get('stopped'):return True
-    with contextlib.closing(bot.queue_db(root)) as db:
+    with route_guard(root), contextlib.closing(bot.queue_db(root)) as db:
         db.execute('BEGIN IMMEDIATE')
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
             ('robotConfig',json.dumps(config,ensure_ascii=False)),('pendingRobotConfig',''),
@@ -166,7 +167,7 @@ def handle(action, root=bot.STATE, payload=None):
         return discover(payload or {},run,bot.DWS)
     if action == 'save-robot':
         config=validated_target(payload or {},run,bot.DWS)
-        with contextlib.closing(bot.queue_db(root)) as db:
+        with route_guard(root), contextlib.closing(bot.queue_db(root)) as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM settings WHERE key='pendingRobotConfig' AND value<>''").fetchone():
                 raise ValueError('已有切换正在进行，请稍后再保存')

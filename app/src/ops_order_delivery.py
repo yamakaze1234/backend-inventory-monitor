@@ -1,22 +1,48 @@
 """从持久回执继续投递已结束的订单任务；不保存临时会话 Webhook。"""
+from contextlib import closing, nullcontext
+from functools import lru_cache
 import json
+from pathlib import Path
+import runpy
+import sqlite3
 import threading
 
 from ops_command_api import CommandError
 from ops_replies import render
 
 
+ROUTE_KEYS = ('profile','groupId','robotCode','appId')
+def route_identity(target):
+    return tuple(target.get(key) for key in (*ROUTE_KEYS,'_stateRoot')) if target else ()
+
+
 def configured_target(root, robot, org):
-    from order_bot_config import load, queue_state
+    from order_bot_config import PUBLIC_TARGET, load
     config = load(root)
     if not config.get('state_root'):
         return None
-    target = queue_state(config['state_root'])['target']
+    state_root = Path(config['state_root']).resolve()
+    queue = state_root/'jobs.sqlite3'
+    if not queue.is_file():
+        return None
+    # 只读路由；切换待完成或队列暂时不可读时不使用旧群。
+    with closing(sqlite3.connect(queue.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
+        values = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('robotConfig','pendingRobotConfig')"))
+    if values.get('pendingRobotConfig'):
+        return None
+    target = json.loads(values.get('robotConfig') or '{}')
     profile, group = target.get('profile'), target.get('groupId')
     if (not isinstance(profile,str) or profile.partition(':')[0]!=org
             or target.get('robotCode')!=robot or not isinstance(group,str) or not group.startswith('cid')):
         return None
-    return target
+    return {**{key:target[key] for key in PUBLIC_TARGET if key in target},'_stateRoot':str(state_root)}
+
+
+@lru_cache(maxsize=1)
+def _route_guard():
+    # 桌面程序和兼容后端使用同一份跨进程锁实现。
+    from order_bot_config import bundle_root
+    return runpy.run_path(str(bundle_root()/'control/ops_order_route_lock.py'))['route_guard']
 
 
 class OrderDelivery:
@@ -52,35 +78,46 @@ class OrderDelivery:
                 (self.api.robot_id,self.api.org_id,self.cursor,limit)).fetchall()
         self.cursor = rows[-1][0] if len(rows)==limit else 0
         for _,ident,raw,initial in rows:
-            if self.halt.is_set() or not may_send():
+            if self.halt.is_set() or not may_send() or not self.api.business.order_route_current():
                 return
             actor = tuple(json.loads(raw))
             if actor[:2]!=(self.api.org_id,self.target['groupId']):
                 continue
+            root=self.target.get('_stateRoot')
             try:
-                # 对已删除的权限、跨组请求及仍在执行的任务一律不投递。
-                # 若接收端在首条回复前中断，等任务至少存在一分钟再补最终结果。
-                if initial not in ('sent','failed','unknown'):
-                    from time import time
-                    task = self.api.business.task(self.api.external_id(actor,ident))
-                    if not task or time()-task.get('created_at',time())<60:
-                        continue
-                claim = self.api.delivery(actor,ident,dict(phase='final',state='claim'))
-            except CommandError:
-                continue
-            if claim.get('claimed') is not True:
-                continue
-            state = 'unknown'
-            try:
-                target = dict(profile=self.target['profile'],group_id=actor[1],group_name=self.target['groupName'],
-                              robot_code=self.target['robotCode'],robot_name=self.target['robotName'])
-                value = self.sender(target,dict(msgtype='text',text=dict(content=render(claim['reply']))))
-                if value.get('status') in ('sent','failed','unknown'):
-                    state = value['status']
-            except Exception:
-                pass
-            try:
-                self.api.delivery(actor,ident,dict(phase='final',state=state))
-            except CommandError:
-                # 已领取的回执仍标为状态待核对，避免重复投递。
-                continue
+                with (_route_guard()(root) if root else nullcontext()):
+                    self._send_final(actor,ident,initial,may_send)
+            except sqlite3.OperationalError:
+                # 切换或另一个发送器持锁时，下轮重读；本轮没有领取回执。
+                return
+
+    def _send_final(self,actor,ident,initial,may_send):
+        if not may_send() or not self.api.business.order_route_current():
+            return
+        try:
+            # 对已删除的权限、跨组请求及仍在执行的任务一律不投递。
+            # 若接收端在首条回复前中断，等任务至少存在一分钟再补最终结果。
+            if initial not in ('sent','failed','unknown'):
+                from time import time
+                task=self.api.business.task(self.api.external_id(actor,ident))
+                if not task or time()-task.get('created_at',time())<60:
+                    return
+            claim=self.api.delivery(actor,ident,dict(phase='final',state='claim'),internal=True)
+        except CommandError:
+            return
+        if claim.get('claimed') is not True or not may_send() or not self.api.business.order_route_current():
+            return
+        state='unknown'
+        try:
+            target=dict(profile=self.target['profile'],group_id=actor[1],group_name=self.target['groupName'],
+                        robot_code=self.target['robotCode'],robot_name=self.target['robotName'])
+            value=self.sender(target,dict(msgtype='text',text=dict(content=render(claim['reply']))))
+            if value.get('status') in ('sent','failed','unknown'):
+                state=value['status']
+        except Exception:
+            pass
+        try:
+            self.api.delivery(actor,ident,dict(phase='final',state=state),internal=True)
+        except CommandError:
+            # 已领取的回执仍标为状态待核对，避免重复投递。
+            pass

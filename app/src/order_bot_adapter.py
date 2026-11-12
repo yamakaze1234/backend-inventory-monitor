@@ -74,13 +74,17 @@ class OrderBotAdapter:
                     stopRequested=settings.get('stopRequested') == '1', jobs=[dict(r) for r in rows], total=total, active=active)
 
     def ops_supported(self):
-        # 安装标记可能属于旧后端；只使用已部署并含外部请求支持的兼容文件。
+        # 新版必须同时具备队列路由检查及切换和投递共用的跨进程锁。
         from order_bot_config import deployed, bundle_root
         config = self._refresh_configuration()
         if not config or not deployed(self.workspace_root, config):
             return False
-        current = self.match_root / 'app/src/group_order_bot.py'
-        return current.read_bytes() == (bundle_root() / 'matching/group_order_bot.py').read_bytes()
+        source=bundle_root()
+        required=((self.match_root/'app/src','matching','group_order_bot.py'),
+                  (self.control_root,'control','robot_desktop_control.py'),
+                  (self.control_root,'control','ops_order_route_lock.py'))
+        return all((parent/name).is_file() and (parent/name).read_bytes()==(source/kind/name).read_bytes()
+                   for parent,kind,name in required)
 
     def ops_order_status(self, number_type, number, shops):
         return self.action('ops-order-status', dict(number_type=number_type, number=number, shops=shops))
@@ -157,8 +161,13 @@ elif action=='ops-order-status':
     result=order_status_bridge.query_verified_orders(payload['number_type'],payload['number'],payload['shops'])
 elif action=='ops-enqueue':
     payload=request['payload']
-    result=control.bot.enqueue(payload['kind'],number=payload.get('number',''),shop=payload['shop'],
-                               origin='ops-command',root=root,external_id=payload['external_id'])
+    # 即使工作区在核验后切换，旧请求也不能进入新队列。
+    if root.resolve()!=Path(payload['expected_root']).resolve():
+        result={'status':'unavailable'}
+    else:
+        result=control.bot.enqueue(payload['kind'],number=payload.get('number',''),shop=payload['shop'],
+                                   origin='ops-command',root=root,external_id=payload['external_id'],
+                                   expected_route=payload['expected_route'])
 elif action=='start':
     if not control.finish_switch(root):
         control.settings({'serviceEnabled':'1','stopRequested':'0'},root)

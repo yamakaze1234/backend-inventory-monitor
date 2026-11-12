@@ -66,7 +66,7 @@ def queue_db(root=STATE):
     return db
 
 
-def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=None):
+def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=None, expected_route=None):
     # 这里只校验参数并入队；queued 表示待处理，不能对外宣称匹配成功。
     if kind not in ('today', 'shipping', 'order', 'rematch_order', 'spu', 'rematch_spu', 'number') or shop not in ('', *SHOPS):
         raise ValueError('仅支持今天巡检、订单或SPU匹配，以及本部门已配置店铺')
@@ -85,13 +85,21 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=N
             # 外部请求和任务在同一事务绑定；已有回执允许在服务停止后回读。
             if origin != 'ops-command' or not re.fullmatch('[a-f0-9]{64}', external_id) or not shop or kind not in ('order', 'today'):
                 raise ValueError('运营指令任务身份无效')
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN "
+                "('heartbeat','serviceEnabled','stopRequested','workerStopped','robotConfig','pendingRobotConfig')"))
+            # 和排队共用写事务，避免校验刚通过就被另一个进程切换到新群。
+            keys = ('profile','groupId','robotCode','appId')
+            current = json.loads(settings.get('robotConfig') or '{}')
+            if (not isinstance(expected_route,dict) or set(expected_route)!=set(keys)
+                    or not all(expected_route.get(key) for key in keys if key!='appId')
+                    or settings.get('pendingRobotConfig') or any(current.get(k)!=expected_route[k] for k in keys)):
+                return dict(status='unavailable')
             saved = db.execute('SELECT * FROM ops_external_jobs WHERE request_id=?', (external_id,)).fetchone()
             if saved:
                 if (saved['kind'], saved['number'], saved['shop']) != (kind, number, shop):
                     raise ValueError('外部请求编号冲突')
                 state = db.execute('SELECT state FROM jobs WHERE id=?', (saved['job_id'],)).fetchone()
                 return dict(jobId=saved['job_id'], status=state[0] if state else 'unknown', duplicate=True)
-            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','stopRequested','workerStopped')"))
             age = time.time() - float(settings.get('heartbeat', '0'))
             if not 0 <= age < 90 or settings.get('serviceEnabled') == '0' or settings.get('stopRequested') == '1' or settings.get('workerStopped') == '1':
                 return dict(status='unavailable')

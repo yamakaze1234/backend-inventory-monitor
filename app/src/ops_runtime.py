@@ -1,6 +1,7 @@
 """接到现有库存实例；外部源只有在工作区明确绑定后启用。"""
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from ops_command_api import CommandAPI, CommandError, denied
@@ -9,10 +10,10 @@ from ops_sources import ReportTables, order_status
 
 
 class CommandBusiness:
-    def __init__(self, inventory, *, order=None, order_read=None, reports=None, shops=None, order_target=None):
+    def __init__(self, inventory, *, order=None, order_read=None, reports=None, shops=None, order_target=None, current_order_target=None):
         self.inventory, self.order, self.order_read = inventory, order, order_read
         self.reports, self.shops = reports or ReportTables(), shops or (lambda: {})
-        self.order_target = order_target
+        self.order_target, self.current_order_target = order_target, current_order_target
         self.implemented = {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'}
         if order is not None:
             self.implemented.update(('order.match', 'order.patrol', 'task.status'))
@@ -25,6 +26,15 @@ class CommandBusiness:
             self.available.add('shipping.summary')
         if 'front_stock' in self.reports.bindings:
             self.available.add('front_stock.summary')
+
+    def order_route_current(self):
+        if self.current_order_target is None:
+            return self.order is not None
+        from ops_order_delivery import route_identity
+        try:
+            return bool(self.order_target and route_identity(self.order_target)==route_identity(self.current_order_target()))
+        except (OSError,ValueError,TypeError,sqlite3.Error):
+            return False
 
     def _shop(self, value, access):
         if value in access.shops:
@@ -63,6 +73,8 @@ class CommandBusiness:
             return result
         if command in ('order.match', 'order.patrol'):
             shop = args['shop_id']
+            if not self.order_route_current():
+                raise CommandError(503,'SERVICE_UNAVAILABLE','订单机器人正在切换或路由已变化')
             state = self.order.snapshot()
             if (not state.get('workerOnline') or not state.get('serviceEnabled') or state.get('stopRequested')
                     or shop not in {s['id'] for s in state.get('shops', [])}):
@@ -72,8 +84,11 @@ class CommandBusiness:
                 import re
                 if not re.fullmatch(r'[1-9][0-9]{14,24}(?:A(?:-[0-9]+)?)?|NO-[A-Za-z0-9-]{4,70}', number, re.I):
                     raise CommandError(400, 'INVALID_ARGUMENT', '请提供完整网店单号或 ERP NO 单号')
+            from ops_order_delivery import ROUTE_KEYS
+            expected = {key:self.order_target.get(key) for key in ROUTE_KEYS} if self.order_target else {}
             value = self.order.action('ops-enqueue', dict(kind='order' if command == 'order.match' else 'today',
-                                                          number=number, shop=shop, external_id=external_id))
+                number=number, shop=shop, external_id=external_id, expected_route=expected,
+                expected_root=(self.order_target or {}).get('_stateRoot')))
             if value.get('status') == 'unavailable':
                 raise CommandError(503, 'SERVICE_UNAVAILABLE', '订单服务当前不可用')
             status = value.get('status')
@@ -147,14 +162,20 @@ def configured_api(service, order, business=None):
         reports = LiveReportTables(tables or {},detail,org)
     compatible = order.ops_supported()
     order_read = order.ops_order_status if compatible and binding.get('order_status_bridge') is True else None
-    target = None
+    target = current_target = None
     if compatible and binding.get('order_final_replies') is True:
         from ops_order_delivery import configured_target
-        target = configured_target(service.root,robot,org)
+        def current_target():
+            return configured_target(service.root,robot,org)
+        try:
+            target = current_target()
+        except (OSError,ValueError,TypeError,sqlite3.Error):
+            pass  # 订单路由暂不可用不应影响库存和价格查询。
     inventory = InventoryCommands(service, cost=CoordinatedProfitSource(getattr(service, 'sql_worker', None)).read_profit_costs,
                                   ai=ai, maintenance=maintenance, aliases=binding.get('inventory_aliases'))
     api = CommandAPI(service, CommandBusiness(inventory, order=order if target else None,
                                              order_read=order_read, reports=reports,
-                                             shops=lambda: shop_names(service.root),order_target=target), robot, token, org_id=org)
+                                             shops=lambda: shop_names(service.root),order_target=target,
+                                             current_order_target=current_target), robot, token, org_id=org)
     api.local_port = port
     return api
