@@ -110,7 +110,8 @@ async function main(){
   await dialog.getByRole('button',{name:'保存计划',exact:true}).click();
   await plan('daily').getByText('每天 10:15、16:00',{exact:true}).waitFor();
   // 发货监控独立显示；隔离工作区未绑定订单后端，不能触发真实巡检。
-  await plan('shipping').getByRole('heading',{name:'发货监控',exact:true}).waitFor();
+  await plan('shipping').locator('#schedule-title-shipping').waitFor();
+  assert.equal(await plan('shipping').locator('#schedule-title-shipping').textContent(),'发货监控');
   assert.equal(await plan('shipping').getByText('尚未配置',{exact:true}).count(),1);
   assert.equal(await plan('shipping').getByRole('button',{name:'立即巡检',exact:true}).count(),0);
   assert.equal(await plan('orders').getByText('尚未配置',{exact:true}).count(),1);
