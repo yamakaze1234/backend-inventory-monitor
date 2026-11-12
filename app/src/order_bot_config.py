@@ -1,5 +1,7 @@
 """部门订单机器人独立配置与兼容部署，不读取凭据，不隐式接管其他队列。"""
 from contextlib import closing
+from functools import lru_cache
+import runpy
 import ast
 import hashlib
 import json
@@ -35,12 +37,14 @@ def queue_state(root):
     path=Path(root)/'jobs.sqlite3'
     if not path.is_file():return dict(active=0,online=False,enabled=False,target={})
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig')"))
+        values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused')"))
         active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown')").fetchone()[0]
     target=json.loads(values.get('robotConfig') or '{}')
     return dict(active=active,online=time.time()-float(values.get('heartbeat','0'))<90,
                 enabled=values.get('serviceEnabled','0')=='1',switching=bool(values.get('pendingRobotConfig')),
-                target={key:target.get(key) for key in PUBLIC_TARGET if key in target})
+                schedulePaused=values.get('schedulePaused','0')=='1',
+                target={key:target.get(key) for key in PUBLIC_TARGET if key in target},
+                patrolWindow=patrol_window_view(values.get('matchPatrolWindow'),target.get('intervalMinutes')))
 
 
 def assert_stopped(root):
@@ -141,6 +145,21 @@ def bundle_root():
     return (Path(sys._MEIPASS)/'order_backend') if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[2]/'integrations/order_backend'
 
 
+@lru_cache(maxsize=1)
+def patrol_window_tools():
+    # 桌面和订单进程共用兼容包中的窗口规则，避免默认时段或边界不一致。
+    return runpy.run_path(str(bundle_root()/'matching/order_patrol_window.py'))
+
+
+def patrol_window_view(raw, legacy_interval=None):
+    tools=patrol_window_tools()
+    return tools['describe'](raw,time.time(),legacy_interval or tools['DEFAULT_INTERVAL'])
+
+
+def patrol_window_ready(config):
+    return bool(config.get('match_root') and (Path(config['match_root'])/'app/src/order_patrol_window.py').is_file())
+
+
 def deployed(workspace,config=None):
     value=config or load(workspace)
     if not value:return False
@@ -235,4 +254,6 @@ def describe(workspace):
     defaults={key:'' for key in PATH_FIELDS};defaults.update(agent_model='deepseek/deepseek-flash',shops=[])
     if not config:return dict(configured=False,deployed=False,**defaults,target={},message='请先单独配置订单匹配后端、店铺及 Stream 机器人')
     state=queue_state(config['state_root'])
-    return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],message='订单匹配与库存通知使用独立配置')
+    return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),
+                patrolWindowReady=patrol_window_ready(config),schedulePaused=state.get('schedulePaused',True),
+                serviceEnabled=state['enabled'],message='订单匹配与库存通知使用独立配置')

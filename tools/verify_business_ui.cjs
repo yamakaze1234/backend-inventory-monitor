@@ -32,13 +32,26 @@ async function main(){
   await page.getByText('检测完成：1 个配件价格变化，0 个待核对。',{exact:true}).waitFor();
   await page.getByText('+1.00',{exact:true}).waitFor();await page.getByText('+2.00',{exact:true}).waitFor();
   await page.screenshot({path:path.join(output,'price-changes.png'),fullPage:true,animations:'disabled'});
-  // 固定时间保存到隔离服务，重新打开核对；维护表入口使用现有 React 文件字段。
-  await section('价格监控配置');assert.equal(await page.getByRole('button',{name:'选择并预览配置快照',exact:true}).count(),0);await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
-  const schedule=page.getByRole('dialog');await schedule.getByLabel('每天巡检时间（北京时间，多个用逗号分隔）',{exact:true}).fill('09:30');
-  await schedule.getByRole('button',{name:'提交',exact:true}).click();await page.getByText('北京时间固定巡检时间已保存',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'保存定时检测',exact:true}).click();
-  assert.equal(await page.getByRole('dialog').getByLabel('每天巡检时间（北京时间，多个用逗号分隔）',{exact:true}).inputValue(),'09:30');
-  await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
+  // 从旧入口定位到计划卡片，增加时间点并验证回读。
+  const plan=id=>page.locator('#schedule-'+id);
+  const shortcut=()=>page.getByRole('button',{name:'查看计划设置',exact:true}).click();
+  await section('价格监控配置');
+  assert.equal(await page.getByRole('button',{name:'选择并预览配置快照',exact:true}).count(),0);
+  await shortcut();
+  await plan('price').getByRole('button',{name:'设置调价检测计划',exact:true}).click();
+  const schedule=page.getByRole('dialog');
+  await schedule.getByRole('combobox',{name:'运行方式',exact:true}).click();
+  await page.getByRole('option',{name:'每天固定时间',exact:true}).click();
+  await schedule.getByLabel('时间 1',{exact:true}).fill('09:30');
+  await schedule.getByRole('button',{name:'添加时间',exact:true}).click();
+  await schedule.getByLabel('时间 2',{exact:true}).fill('15:45');
+  await schedule.getByRole('button',{name:'保存计划',exact:true}).click();
+  await plan('price').getByText('每天 09:30、15:45',{exact:true}).waitFor();
+  await plan('price').getByRole('button',{name:'设置调价检测计划',exact:true}).click();
+  assert.equal(await schedule.getByLabel('时间 2',{exact:true}).inputValue(),'15:45');
+  await schedule.getByRole('button',{name:'取消',exact:true}).click();
+  await page.getByRole('button',{name:'ERP调价监控',exact:true}).click();
+  await section('价格监控配置');
   await page.getByRole('button',{name:'选择主机维护表',exact:true}).click();
   await page.getByRole('dialog').getByRole('button',{name:'选择文件',exact:true}).first().waitFor();
   await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
@@ -67,21 +80,52 @@ async function main(){
   assert.equal(await dialog.getByLabel('预警阈值',{exact:true}).inputValue(),'7');assert.equal(await dialog.getByLabel('SKU 编码',{exact:true}).getAttribute('readonly'),'');await dialog.getByRole('button',{name:'取消',exact:true}).click();
   await page.getByRole('button',{name:'批量移除关注',exact:true}).click();dialog=page.getByRole('dialog');await dialog.getByRole('checkbox',{name:'ReUI 隔离测试商品 · REUI-TEST',exact:true}).check();await dialog.getByRole('button',{name:'提交',exact:true}).click();
   await page.getByRole('button',{name:'确认移除关注',exact:true}).waitFor();await page.getByRole('button',{name:'确认移除关注',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'提交',exact:true}).click();await page.getByRole('alertdialog').getByRole('button',{name:'确认执行',exact:true}).click();await page.getByText('已移除 1 个关注产品',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'连接与通知设置',exact:true}).click();await section('库存数据来源');await page.getByRole('button',{name:'保存监控周期',exact:true}).click();await page.getByRole('dialog').getByLabel('分钟',{exact:true}).fill('37');await page.getByRole('dialog').getByRole('button',{name:'提交',exact:true}).click();await page.getByText('监控周期已保存',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'连接与通知设置',exact:true}).click();await section('库存数据来源');
+  await shortcut();
+  await plan('inventory').getByRole('button',{name:'设置库存监控周期',exact:true}).click();
+  await page.getByRole('dialog').getByLabel('监控周期（分钟）',{exact:true}).fill('37');
+  await page.getByRole('dialog').getByRole('button',{name:'保存周期',exact:true}).click();
+  await plan('inventory').getByText('每 37 分钟',{exact:true}).waitFor();
+  const shop=plan('shops').locator('li').filter({hasText:'英特尔旗舰店（样例）'});
+  const other=plan('shops').locator('li').filter({hasText:'技嘉旗舰店（样例）'});
+  const otherBefore=await other.innerText();
+  await shop.getByRole('button',{name:'英特尔旗舰店（样例）：设置巡检周期',exact:true}).click();
+  await page.getByRole('dialog').getByLabel('巡检周期（分钟）',{exact:true}).fill('47');
+  await page.getByRole('dialog').getByRole('button',{name:'保存周期',exact:true}).click();
+  await shop.getByText('每 47 分钟',{exact:true}).waitFor();
+  assert.equal(await other.innerText(),otherBefore,'一家店铺的周期不应写到另一家店铺');
+  await page.getByRole('button',{name:'连接与通知设置',exact:true}).click();
   await section('通知机器人');await page.getByRole('button',{name:'添加机器人',exact:true}).click();dialog=page.getByRole('dialog');await dialog.getByLabel('目标群名称',{exact:true}).waitFor();assert.equal(await dialog.getByLabel('目标群标识',{exact:true}).count(),0);assert.equal(await dialog.getByLabel('企业机器人编码',{exact:true}).count(),0);await dialog.getByRole('combobox',{name:'机器人类型',exact:true}).click();await page.getByRole('option',{name:'Webhook 机器人',exact:true}).click();assert.equal(await dialog.getByLabel('Webhook（留空保留原地址）',{exact:true}).getAttribute('type'),'password');assert.equal(await dialog.getByLabel('钉钉账号标识',{exact:true}).count(),0);await dialog.getByRole('button',{name:'取消',exact:true}).click();
-  await section('本地缓存');await page.getByRole('button',{name:'保存定期清理设置',exact:true}).click();dialog=page.getByRole('dialog');
-  await dialog.getByLabel('清理时间（北京时间 HH:MM）',{exact:true}).fill('04:15');await dialog.getByLabel('每隔多少天清理',{exact:true}).fill('2');await dialog.getByLabel('保留天数（0 为全部可清理缓存）',{exact:true}).fill('17');
-  await dialog.getByRole('button',{name:'提交',exact:true}).click();await page.getByText('定期缓存清理设置已保存；程序运行并空闲时按计划执行',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'保存定期清理设置',exact:true}).click();dialog=page.getByRole('dialog');assert.equal(await dialog.getByLabel('清理时间（北京时间 HH:MM）',{exact:true}).inputValue(),'04:15');assert.equal(await dialog.getByLabel('保留天数（0 为全部可清理缓存）',{exact:true}).inputValue(),'17');await dialog.getByRole('button',{name:'取消',exact:true}).click();
-  await page.getByRole('button',{name:'切换深色',exact:true}).click();await page.screenshot({path:path.join(output,'settings-dark.png'),fullPage:true,animations:'disabled'});
+  await section('本地缓存');await shortcut();
+  await plan('cache').getByRole('button',{name:'设置定期清理',exact:true}).click();dialog=page.getByRole('dialog');
+  await dialog.getByLabel('清理时间（北京时间）',{exact:true}).fill('04:15');await dialog.getByLabel('每隔多少天清理',{exact:true}).fill('2');await dialog.getByLabel('保留天数（0 为全部可清理缓存）',{exact:true}).fill('17');
+  await dialog.getByRole('button',{name:'保存计划',exact:true}).click();
+  await plan('cache').getByText('每 2 天 · 04:15',{exact:true}).waitFor();
+  await plan('cache').getByRole('button',{name:'设置定期清理',exact:true}).click();dialog=page.getByRole('dialog');
+  assert.equal(await dialog.getByLabel('清理时间（北京时间）',{exact:true}).inputValue(),'04:15');
+  assert.equal(await dialog.getByLabel('保留天数（0 为全部可清理缓存）',{exact:true}).inputValue(),'17');
+  await dialog.getByRole('button',{name:'取消',exact:true}).click();
+  await plan('daily').getByRole('button',{name:'设置日报时间',exact:true}).click();dialog=page.getByRole('dialog');
+  await dialog.getByLabel('时间 1',{exact:true}).fill('10:15');
+  await dialog.getByRole('button',{name:'保存计划',exact:true}).click();
+  await plan('daily').getByText('每天 10:15、16:00',{exact:true}).waitFor();
+  assert.equal(await page.locator('[data-business-module="schedules"] section[id^="schedule-"]').count(),6);
+  assert.equal(await plan('orders').getByText('尚未配置',{exact:true}).count(),1);
+  await page.getByRole('button',{name:'监控与巡检计划',exact:true}).click();
+  await page.screenshot({path:path.join(output,'schedules.png'),fullPage:true,animations:'disabled'});
+  await page.getByRole('button',{name:'切换深色',exact:true}).click();
+  await page.screenshot({path:path.join(output,'schedules-dark.png'),fullPage:true,animations:'disabled'});
   await page.setViewportSize({width:390,height:844});
+  const scheduleWidth=await page.evaluate(()=>[document.documentElement.clientWidth,document.documentElement.scrollWidth]);
+  assert.ok(scheduleWidth[1]<=scheduleWidth[0], '计划页面横向溢出 '+scheduleWidth);
+  await page.screenshot({path:path.join(output,'schedules-mobile.png'),fullPage:true,animations:'disabled'});
   for(const [module,title,sections] of nav){
    await page.getByRole('button',{name:'展开或收起导航'}).click();await page.getByRole('button',{name:title,exact:true}).click();await page.locator(`[data-business-module="${module}"]`).waitFor();
    for(const title of sections){await section(title);const width=await page.evaluate(()=>[document.documentElement.clientWidth,document.documentElement.scrollWidth]);assert.ok(width[1]<=width[0],`${module}/${title} 页面横向溢出 ${width}`);}
    await page.screenshot({path:path.join(output,module+'-mobile.png'),fullPage:true,animations:'disabled'});
   }
   assert.deepEqual(errors,[]);assert.equal(page.context().pages().length,1);
-  fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({passed:true,modules:nav.map(x=>x[0]),sections:nav.reduce((n,x)=>n+x[2].length,0),productCreateEditRemove:true,settingsSave:true,passwordMasked:true,mobileWidth:390,errors},null,2));
+  fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({passed:true,modules:nav.map(x=>x[0]),sections:nav.reduce((n,x)=>n+x[2].length,0),productCreateEditRemove:true,settingsSave:true,independentSchedules:true,passwordMasked:true,mobileWidth:390,errors},null,2));
   console.log(`ReUI 业务验收通过：${nav.length} 个导航入口、${nav.reduce((n,x)=>n+x[2].length,0)} 个分区、筛选重置、表单写入、深色与窄屏。`);
  }finally{await browser.close();}
 }

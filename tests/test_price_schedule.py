@@ -28,6 +28,23 @@ class DailyPriceTests(unittest.TestCase):
         self.assertEqual(expected, restarted.status()['nextCheck'])
         self.assertEqual('daily', restarted.status()['scheduleMode'])
 
+    def test_switch_modes_preserves_alternative_and_reschedules_only_on_save(self):
+        self.bind(manifest())
+        now = datetime(2026, 11, 8, 8, 30, tzinfo=TZ).timestamp()
+        with patch('erp_price_monitor.time.time',return_value=now):
+            self.monitor.set_schedule(['09:00','16:00'],True)
+            self.monitor.set_schedule([],True,mode='interval',minutes='150')
+            current=self.monitor.schedule_settings()
+            self.assertEqual((current['scheduleMode'],current['nextCheck']),('interval',now+150*60))
+            self.assertEqual(current['scheduleTimes'],['09:00','16:00'])
+            with self.assertRaises(ValueError):
+                self.monitor.set_schedule([],False,mode='interval',minutes='15.5')
+            self.assertEqual(self.monitor.schedule_settings(),current)
+            self.monitor.set_schedule(current['scheduleTimes'],True)
+        current=self.monitor.schedule_settings()
+        self.assertEqual((current['scheduleMode'],current['intervalSeconds']),('daily',150*60))
+        self.assertEqual(current['nextCheck'],now+30*60)
+
     def test_busy_source_retries_three_times_without_consuming_day(self):
         self.bind(manifest());self.monitor.set_schedule('09:00',True)
         self.source.raise_error=True

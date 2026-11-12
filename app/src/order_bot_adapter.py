@@ -59,17 +59,73 @@ class OrderBotAdapter:
             return dict(available=False, workerOnline=False, jobs=[], total=0, configured=bool(config),shops=shops,message='请先在订单匹配设置中配置独立后端与 Stream 机器人' if not config else '尚未启动本部门订单机器人')
         with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
             db.row_factory = sqlite3.Row
-            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested')").fetchall())
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested','matchPatrolWindow','robotConfig')").fetchall())
             total = db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
             rows = db.execute('SELECT id,kind,number,shop,state,created,delivery FROM jobs ORDER BY created DESC LIMIT ? OFFSET ?', (size, page * size)).fetchall()
             active = db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running','unknown')").fetchone()[0]
-        return dict(available=True,configured=bool(config),shops=shops, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
+        from order_bot_config import patrol_window_ready, patrol_window_view
+        window = None
+        if patrol_window_ready(config):
+            # 只读取旧路由中的间隔作为默认值，不返回机器人配置。
+            legacy = json.loads(settings.get('robotConfig') or '{}').get('intervalMinutes')
+            window = patrol_window_view(settings.get('matchPatrolWindow'),legacy)
+        return dict(available=True,configured=bool(config),shops=shops,patrolWindow=window, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
                     schedulePaused=settings.get('schedulePaused') == '1', serviceEnabled=settings.get('serviceEnabled','1') != '0',
                     stopRequested=settings.get('stopRequested') == '1', jobs=[dict(r) for r in rows], total=total, active=active)
 
+    def ops_supported(self):
+        # 新版必须同时具备队列路由检查及切换和投递共用的跨进程锁。
+        from order_bot_config import deployed, bundle_root
+        config = self._refresh_configuration()
+        if not config or not deployed(self.workspace_root, config):
+            return False
+        source=bundle_root()
+        required=((self.match_root/'app/src','matching','group_order_bot.py'),
+                  (self.control_root,'control','robot_desktop_control.py'),
+                  (self.control_root,'control','ops_order_route_lock.py'))
+        return all((parent/name).is_file() and (parent/name).read_bytes()==(source/kind/name).read_bytes()
+                   for parent,kind,name in required)
+
+    def ops_order_status(self, number_type, number, shops):
+        return self.action('ops-order-status', dict(number_type=number_type, number=number, shops=shops))
+
+    def ops_task(self, external_id):
+        # 回读仅按外部请求键；只投影状态与数量，订单明细和内部错误不进群。
+        self._refresh_configuration()
+        path = self.state_root / 'jobs.sqlite3'
+        if not path.is_file():
+            return None
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
+            row = db.execute("""SELECT j.id,j.state,j.result,e.shop,e.number,j.origin,j.created,
+                                e.rowid=(SELECT MIN(o.rowid) FROM ops_external_jobs o WHERE o.job_id=j.id)
+                                FROM ops_external_jobs e
+                                JOIN jobs j ON j.id=e.job_id WHERE e.request_id=?""", (external_id,)).fetchone()
+        if not row:
+            return None
+        task_id, state, raw, shop, number, origin, created, first = row
+        report = json.loads(raw) if raw else {}
+        shops = report.get('shops', [])
+        manual = report.get('manualItems', [])
+        # 手动任务记录逐项结果；巡检现有后端只提供可确认的商品明细行数。
+        stats = {}
+        if shops and all(isinstance(s.get('opsSummary'), dict) for s in shops):
+            stats = {k: sum(s['opsSummary'][k] for s in shops) for k in ('success', 'skipped', 'review')}
+            stats['unit'] = '单'
+        elif shops:
+            stats = dict(success=sum(s['verified'] for s in shops), skipped=sum(s['alreadyLinked'] for s in shops),
+                         review=sum(len(s['exceptions']) for s in shops), unit='明细行')
+            if any(not s.get('scan', {}).get('complete') for s in shops):
+                stats['reason'] = '部分订单扫描未完成'
+        elif manual:
+            stats = dict(success=sum(r.get('status') == 'verified' for r in manual),
+                         skipped=sum(r.get('status') in ('skipped', 'already_linked') for r in manual),
+                         review=sum(r.get('status') in ('unknown', 'needs_review') for r in manual), unit='明细行')
+        return dict(task_id=task_id, status=state if state in ('queued','running','completed','needs_review','failed','unknown') else 'unknown',
+                    shop_id=shop, order_number=number, created_at=created, final_reply_owned=origin == 'ops-command' and bool(first), **stats)
+
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot'}:
+        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
@@ -93,6 +149,25 @@ root=Path(request['state'])
 if action in ('order','spu','number'):
     payload=request['payload']
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
+elif action=='save-patrol-window':
+    payload=request['payload']
+    result=control.bot.save_patrol_window(root,payload['start'],payload['end'],payload['intervalMinutes'])
+elif action=='ops-order-status':
+    # 固定模块由该部门订单后端提供；接口升级前不回退为猜测或模糊匹配。
+    if request['status_sdk']:
+        sys.path.insert(0,request['status_sdk'])
+    import order_status_bridge
+    payload=request['payload']
+    result=order_status_bridge.query_verified_orders(payload['number_type'],payload['number'],payload['shops'])
+elif action=='ops-enqueue':
+    payload=request['payload']
+    # 即使工作区在核验后切换，旧请求也不能进入新队列。
+    if root.resolve()!=Path(payload['expected_root']).resolve():
+        result={'status':'unavailable'}
+    else:
+        result=control.bot.enqueue(payload['kind'],number=payload.get('number',''),shop=payload['shop'],
+                                   origin='ops-command',root=root,external_id=payload['external_id'],
+                                   expected_route=payload['expected_route'])
 elif action=='start':
     if not control.finish_switch(root):
         control.settings({'serviceEnabled':'1','stopRequested':'0'},root)
@@ -101,17 +176,22 @@ elif action=='start':
 elif action=='detail':
     import sqlite3,contextlib
     with contextlib.closing(sqlite3.connect((root/'jobs.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
-        row=db.execute('SELECT result FROM jobs WHERE id=?',(request['payload'].get('id',''),)).fetchone()
+        row=db.execute('SELECT result,state,evidence FROM jobs WHERE id=?',(request['payload'].get('id',''),)).fetchone()
     if not row:
         raise ValueError('任务记录不存在')
-    result={'replyText':control.bot.message_for(json.loads(row[0])) if row[0] else '任务尚未生成结果，请稍后刷新'}
+    result={'replyText':control.bot.message_for(json.loads(row[0])) if row[0] else
+            row[2] if row[1]=='cancelled' and row[2] else '任务尚未生成结果，请稍后刷新'}
 else:
     result=control.handle(action,root=root,payload=request['payload'])
 print(json.dumps(result,ensure_ascii=False))
 '''
+            # 履约查询使用独立固定版本 SDK，不替换订单写入进程的依赖。
+            status_sdk = self.workspace_root/'order-status-sdk'
             result = self.runner([str(python), '-B', '-X', 'utf8', '-c', script],
                 env=dict(os.environ,ORDER_BOT_CONFIG=str(config_path(self.workspace_root).resolve())),
-                input=json.dumps(dict(control=str(self.control_root), state=str(self.state_root), action=action, payload=payload or {})),
+                input=json.dumps(dict(control=str(self.control_root),state=str(self.state_root),action=action,
+                                      status_sdk=str(status_sdk) if action=='ops-order-status' and status_sdk.is_dir() else '',
+                                      payload=payload or {})),
                 capture_output=True, text=True, encoding='utf-8', timeout=60,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode:

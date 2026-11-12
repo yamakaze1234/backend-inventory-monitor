@@ -144,6 +144,92 @@ def workspace_settings_save(b,v):
     save_workspace_settings(b.service,v)
     return dict(message='部门与工作区名称已保存')
 
+@action('settings','ops-group-discover')
+def ops_group_discover(b,v):
+    from ops_group_discovery import discover
+    return discover(b, v)
+
+
+def register_ops_group_choice(kind):
+    @action('settings','ops-group-' + kind)
+    def handle(b,v):
+        from ops_group_discovery import resolve_choice
+        return resolve_choice(b, v, kind)
+
+
+for _kind in ('account-choice','group-choice','robot-choice'):
+    register_ops_group_choice(_kind)
+
+
+@action('settings','ops-group-save')
+def ops_group_save(b,v):
+    from ops_settings import save_binding
+    from ops_commands import COMMANDS
+    selected = save_binding(b, v)
+    return dict(message='群功能已保存并回读：' + ('、'.join(COMMANDS[k][0] for k in selected) or '已清空'))
+
+
+# 群成员搜索与权限保存各自核实身份，搜索结果只在本次界面会话中使用。
+def register_ops_member(name, callback):
+    @action('settings','ops-members-' + name)
+    def handle(b,v):
+        import ops_settings
+        return getattr(ops_settings,callback)(b,v)
+
+
+for _name, _callback in (('search','search_members'), ('choose','choose_member'),
+                          ('list','list_members'), ('open','open_member')):
+    register_ops_member(_name,_callback)
+
+
+@action('settings','ops-members-save')
+def ops_members_save(b,v):
+    from ops_settings import save_members
+    return dict(message=f'权限已保存并回读：{save_members(b, v)} 名成员')
+
+
+@action('settings','ops-members-template')
+def ops_members_template(b,v):
+    from ops_settings import template
+    return template(b, v)
+
+
+@action('settings','ops-members-import-preview')
+def ops_members_import_preview(b,v):
+    from ops_settings import preview_import
+    return preview_import(b, v)
+
+
+@action('settings','ops-members-import-confirm')
+def ops_members_import_confirm(b,v):
+    from ops_settings import confirm_import
+    return dict(message=f'导入已保存并回读：当前群 {confirm_import(b, v)} 名成员')
+
+
+@action('settings','ops-cost-inspect')
+def ops_cost_inspect(b,v):
+    from ops_tax_cost_settings import inspect
+    return inspect(b,v)
+
+
+@action('settings','ops-cost-preview')
+def ops_cost_preview(b,v):
+    from ops_tax_cost_settings import preview
+    return preview(b,v)
+
+
+@action('settings','ops-cost-save')
+def ops_cost_save(b,v):
+    from ops_tax_cost_settings import save
+    return save(b,v)
+
+
+@action('settings','ops-cost-disconnect')
+def ops_cost_disconnect(b,v):
+    from ops_tax_cost_settings import disconnect
+    return disconnect(b)
+
+
 @action('settings','robot-save')
 def robot_save(b,v):
     if v.get('mode')=='enterprise':
@@ -208,7 +294,9 @@ def profit_unbind(b,v):b.profit().unbind();return dict(message='已解除绑定�
 
 @action('profit','schedule')
 def profit_schedule(b,v):
-    b.profit().set_schedule(v['times'],bool(v['enabled']));return dict(message='北京时间固定巡检时间已保存')
+    mode=v.get('mode','daily')
+    b.profit().set_schedule(v.get('times'),bool(v['enabled']),mode=mode,minutes=v.get('minutes'))
+    return dict(message='北京时间固定巡检时间已保存' if mode=='daily' else '调价检测间隔已保存')
 
 @action('profit','notify-preview')
 def profit_notify_preview(b,v):
@@ -481,6 +569,12 @@ def order_backend_deploy(b,v):
 def order_robot_search(b,v):
     from order_business import search_robot
     return search_robot(b,v)
+
+@action('order-settings','patrol-window')
+def order_patrol_window_save(b,v):
+    from order_business import save_patrol_window
+    return save_patrol_window(b,v)
+
 
 @action('order-settings','robot-select')
 def order_robot_select(b,v):

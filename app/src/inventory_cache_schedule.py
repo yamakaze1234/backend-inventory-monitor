@@ -197,13 +197,22 @@ def stop_worker(service):
     if worker is not None:worker.stop()
 
 
+def schedule_form(config):
+    from inventory_business_views import A,F
+    return A('cache-settings','设置定期清理',[F('enabled','启用定期清理','bool'),
+             F('time','清理时间（北京时间）','time'),F('period_days','每隔多少天清理','number'),
+             F('retention_days','保留天数（0 为全部可清理缓存）','number'),
+             F('scopes','自动清理范围','multi',options=list(SCOPES.items()))],
+             {k:config[k] for k in DEFAULTS},module='settings',submitLabel='保存计划')
+
+
 def settings_section(b):
     from inventory_business_views import A,F,S
     config=settings(b.service)
-    section=S('cache','本地缓存')
+    section=S('cache','本地缓存',planLink='cache')
     section['description']='自定义缓存类型和保留天数；先预览再清理，全部通过回收站。不会删除配置、凭据、数据库文件或未完成提醒。'
-    section['forms']=[A('cache-preview','预览清理范围',[F('days','保留天数（0 为全部可清理缓存）','number'),F('scopes','清理范围','multi',options=list(SCOPES.items()))],dict(days=config['retention_days'],scopes=config['scopes'])),
-        A('cache-settings','保存定期清理设置',[F('enabled','启用定期清理','bool'),F('time','清理时间（北京时间 HH:MM）'),F('period_days','每隔多少天清理','number'),F('retention_days','保留天数（0 为全部可清理缓存）','number'),F('scopes','自动清理范围','multi',options=list(SCOPES.items()))],{k:config[k] for k in DEFAULTS})]
+    section['forms']=[A('cache-preview','预览清理范围',[F('days','保留天数（0 为全部可清理缓存）','number'),
+        F('scopes','清理范围','multi',options=list(SCOPES.items()))],dict(days=config['retention_days'],scopes=config['scopes']))]
     state=config['state'];next_run=state.get('next_run',0)
     next_label=datetime.fromtimestamp(next_run,TZ).strftime('%Y-%m-%d %H:%M') if config['enabled'] and next_run else '未启用'
     status={'running':'处理中','completed':'完成','partial':'部分完成','failed':'失败'}.get(state.get('status'),'尚未执行')

@@ -229,17 +229,37 @@ class ProfitMonitor:
             if enabled:
                 self._set(db, 'next_check', self._next_check(db) if self._get(db, 'schedule_mode') == 'daily' else 0)
 
-    def set_schedule(self, times, enabled):
-        # 全部校验通过后一次保存，避免无效时间误开启巡检。
-        times = normalize_times(times)
-        with self.lock, self.db() as db:
+    def schedule_settings(self):
+        """只读计划，不加载历史检测明细和维护表。"""
+        with self.db() as db:
+            return dict(bound=bool(db.execute('SELECT 1 FROM snapshot WHERE id=1').fetchone()),
+                        enabled=self._get(db,'enabled',False),
+                        scheduleMode=self._get(db,'schedule_mode','interval'),
+                        scheduleTimes=self._get(db,'schedule_times',['09:00']),
+                        intervalSeconds=self._get(db,'interval',INTERVAL_SECONDS),
+                        nextCheck=self._get(db,'next_check',0))
+
+    def set_schedule(self, times, enabled, *, mode='daily', minutes=None):
+        # 时间与周期一次保存；只切换用户明确选择的模式，保留另一种模式的值。
+        if mode=='daily':
+            times=normalize_times(times)
+        elif mode=='interval':
+            if type(minutes) is bool or not re.fullmatch(r'[0-9]{1,5}',str(minutes)) or not 10<=int(minutes)<=10080:
+                raise ValueError('检测周期需为 10 至 10080 分钟的整数')
+            minutes=int(minutes)
+        else:
+            raise ValueError('请选择定时检测方式')
+        with self.lock,self.db() as db:
             if enabled and not db.execute('SELECT 1 FROM snapshot WHERE id=1').fetchone():
                 raise ValueError('请先绑定主机维护表或完整配置快照')
-            self._set(db, 'schedule_mode', 'daily')
-            self._set(db, 'schedule_times', times)
-            self._set(db, 'schedule_failures', 0)
-            self._set(db, 'enabled', bool(enabled))
-            self._set(db, 'next_check', next_daily(time.time(), times) if enabled else 0)
+            self._set(db,'schedule_mode',mode)
+            if mode=='daily':
+                self._set(db,'schedule_times',times)
+            else:
+                self._set(db,'interval',minutes*60)
+            self._set(db,'schedule_failures',0)
+            self._set(db,'enabled',bool(enabled))
+            self._set(db,'next_check',self._next_check(db) if enabled else 0)
 
     def _schedule_failure(self, db, error):
         # SQL 忙或连接暂不可用不应占掉当天唯一巡检；最多补试三次。
@@ -250,7 +270,7 @@ class ProfitMonitor:
         if attempt > 3:self._set(db, 'schedule_failures', 0)
 
     def _next_check(self, db):
-        # 旧版间隔配置保持兼容；保存新表单后才切换固定时刻。
+        # 两种计划按各自的规则计算下一次运行。
         if self._get(db, 'schedule_mode', 'interval') == 'daily':
             return next_daily(time.time(), self._get(db, 'schedule_times', ['09:00']))
         return time.time() + self._get(db, 'interval', INTERVAL_SECONDS)

@@ -20,6 +20,7 @@ from patrol_service import single_instance
 from patrol_worker import BatchMatchAdapter, PatrolWorker
 from task_store import TaskStore
 from robot_config import get_config
+import order_patrol_window as patrol_window
 
 ROOT = Path(__file__).resolve().parent
 from order_department_runtime import settings as department_settings
@@ -58,11 +59,14 @@ def queue_db(root=STATE):
         created REAL NOT NULL, updated REAL NOT NULL, result TEXT NOT NULL DEFAULT '',
         delivery TEXT NOT NULL DEFAULT 'pending', evidence TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ops_external_jobs (
+        request_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, kind TEXT NOT NULL,
+        number TEXT NOT NULL, shop TEXT NOT NULL);
     ''')
     return db
 
 
-def enqueue(kind, number='', shop='', origin='manual', root=STATE):
+def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=None, expected_route=None):
     # 这里只校验参数并入队；queued 表示待处理，不能对外宣称匹配成功。
     if kind not in ('today', 'shipping', 'order', 'rematch_order', 'spu', 'rematch_spu', 'number') or shop not in ('', *SHOPS):
         raise ValueError('仅支持今天巡检、订单或SPU匹配，以及本部门已配置店铺')
@@ -77,6 +81,30 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         raise ValueError('今天巡检不接受订单号')
     with contextlib.closing(queue_db(root)) as db:
         db.execute('BEGIN IMMEDIATE')
+        if external_id is not None:
+            # 外部请求和任务在同一事务绑定；已有回执允许在服务停止后回读。
+            if origin != 'ops-command' or not re.fullmatch('[a-f0-9]{64}', external_id) or not shop or kind not in ('order', 'today'):
+                raise ValueError('运营指令任务身份无效')
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN "
+                "('heartbeat','serviceEnabled','stopRequested','workerStopped','robotConfig','pendingRobotConfig')"))
+            # 和排队共用写事务，避免校验刚通过就被另一个进程切换到新群。
+            keys = ('profile','groupId','robotCode','appId')
+            current = json.loads(settings.get('robotConfig') or '{}')
+            if (not isinstance(expected_route,dict) or set(expected_route)!=set(keys)
+                    or not all(expected_route.get(key) for key in keys if key!='appId')
+                    or settings.get('pendingRobotConfig') or any(current.get(k)!=expected_route[k] for k in keys)):
+                return dict(status='unavailable')
+            saved = db.execute('SELECT * FROM ops_external_jobs WHERE request_id=?', (external_id,)).fetchone()
+            if saved:
+                if (saved['kind'], saved['number'], saved['shop']) != (kind, number, shop):
+                    raise ValueError('外部请求编号冲突')
+                state = db.execute('SELECT state FROM jobs WHERE id=?', (saved['job_id'],)).fetchone()
+                return dict(jobId=saved['job_id'], status=state[0] if state else 'unknown', duplicate=True)
+            age = time.time() - float(settings.get('heartbeat', '0'))
+            if not 0 <= age < 90 or settings.get('serviceEnabled') == '0' or settings.get('stopRequested') == '1' or settings.get('workerStopped') == '1':
+                return dict(status='unavailable')
+        elif origin == 'ops-command':
+            raise ValueError('运营指令缺少外部请求编号')
         enabled = db.execute("SELECT value FROM settings WHERE key='serviceEnabled'").fetchone()
         if enabled and enabled[0] == '0':
             db.rollback()
@@ -86,8 +114,14 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         duplicate = db.execute("SELECT * FROM jobs WHERE kind=? AND number=? AND shop=? AND "
                                "(state IN ('queued','running','unknown') OR (? AND created>?)) "
                                "ORDER BY created DESC LIMIT 1",
-                               (kind, number, shop, not manual_patrol,
+                               (kind, number, shop, not manual_patrol and external_id is None,
                                 time.time() - (120 if kind == 'today' else 300))).fetchone()
+        if duplicate and external_id is not None:
+            # 在途任务可以复用，但回复归属仍以原任务来源为准。
+            db.execute('INSERT INTO ops_external_jobs VALUES (?,?,?,?,?)',
+                       (external_id, duplicate['id'], kind, number, shop))
+            db.commit()
+            return dict(jobId=duplicate['id'], status=duplicate['state'], duplicate=True)
         if duplicate:
             result = {'jobId': duplicate['id'], 'status': duplicate['state'], 'duplicate': True}
             if manual_patrol:
@@ -106,9 +140,67 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE):
         job_id = uuid.uuid4().hex
         db.execute('INSERT INTO jobs(id,kind,number,shop,origin,state,created,updated) VALUES(?,?,?,?,?,?,?,?)',
                    (job_id, kind, number, shop, origin, 'queued', time.time(), time.time()))
+        if external_id is not None:
+            db.execute('INSERT INTO ops_external_jobs VALUES (?,?,?,?,?)', (external_id, job_id, kind, number, shop))
         db.commit()
         return {'jobId': job_id, 'status': 'queued', 'duplicate': False,
                 'message': '已入队，结果将由配置的机器人发到目标群；入队不代表匹配完成。'}
+
+
+def save_patrol_window(root, start, end, interval_minutes=None):
+    start,end = patrol_window.validate(start,end)
+    if interval_minutes is not None:
+        interval_minutes = patrol_window.validate_interval(interval_minutes)
+    with contextlib.closing(queue_db(root)) as db:
+        db.execute('BEGIN IMMEDIATE')
+        current = dict(db.execute('SELECT key,value FROM settings WHERE key IN (?,?)',
+                                  (patrol_window.SETTING,'robotConfig')))
+        values = dict(start=start,end=end)
+        if interval_minutes is None:
+            # 旧版工作台仅保存时段时，仍保留独立设置的间隔。
+            previous = patrol_window.read_settings(current.get(patrol_window.SETTING)) or {}
+            interval_minutes = previous.get('intervalMinutes')
+        if interval_minutes is not None:
+            values['intervalMinutes'] = interval_minutes
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                   (patrol_window.SETTING,json.dumps(values,ensure_ascii=False)))
+        saved, = db.execute('SELECT value FROM settings WHERE key=?',(patrol_window.SETTING,)).fetchone()
+        db.commit()
+    legacy = json.loads(current.get('robotConfig') or '{}').get('intervalMinutes',patrol_window.DEFAULT_INTERVAL)
+    return patrol_window.describe(saved,time.time(),legacy)
+
+
+def expire_scheduled_patrols(db, at, start):
+    # 只取消还没开始、且错过运行时段的自动订单巡检；不碰手动或正在执行的任务。
+    db.execute("""UPDATE jobs SET state='cancelled',delivery='suppressed',updated=?,
+        evidence='已错过自动巡检时段，未开始执行'
+        WHERE state='queued' AND kind='today' AND origin='schedule' AND (? IS NULL OR created<?)""",
+        (at,start,start))
+
+
+def claim_next_job(db, at=None):
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        at = time.time() if at is None else at
+        settings = dict(db.execute('SELECT key,value FROM settings WHERE key IN (?,?,?,?)',
+                                   (patrol_window.SETTING,'schedulePaused','serviceEnabled','stopRequested')))
+        if settings.get('stopRequested')=='1' or settings.get('serviceEnabled')=='0':
+            db.commit()
+            return None
+        start = patrol_window.slot_start(patrol_window.times(patrol_window.read_settings(settings.get(patrol_window.SETTING))),at)
+        expire_scheduled_patrols(db,at,start)
+        # 暂停或时段关闭只限制订单自动巡检；发货监控和手动任务照常领取。
+        can_auto = start is not None and settings.get('schedulePaused')!='1'
+        job = db.execute("""SELECT * FROM jobs WHERE state='queued'
+            AND (? OR origin<>'schedule' OR kind<>'today')
+            ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END,created LIMIT 1""",(can_auto,)).fetchone()
+        if job:
+            db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?",(at,job['id']))
+        db.commit()
+        return job
+    except Exception:
+        db.rollback()
+        raise
 
 
 def status(job_id='', root=STATE):
@@ -128,6 +220,8 @@ def status(job_id='', root=STATE):
                 report = json.loads(row['result'])
                 item['summary'] = summary_for(report)
                 item['replyText'] = message_for(report)
+            elif job_id and row['state']=='cancelled':
+                item['replyText'] = row['evidence']
             jobs.append(item)
         preferred = next((job for job in jobs if job.get('replyText') and (job_id or job['kind'] == 'today')), None)
         preferred = preferred or next((job for job in jobs if job.get('replyText') and job['kind'] != 'shipping'), None)
@@ -140,10 +234,12 @@ def status(job_id='', root=STATE):
         # 页面显示真实任务与投递状态，查询完成不代表群已收到提醒。
         shipping['replyText'] = ('任务：' + shipping_row['state'] + '｜通知：' + shipping_row['delivery'] + '\n\n' +
                                  message_for(json.loads(shipping_row['result']))) if shipping_row else '尚未执行发货监控'
-        return {'shippingMonitor': shipping, 'workerOnline': time.time()-heartbeat < 90, 'intervalMinutes': config['intervalMinutes'],
+        window = patrol_window.describe(setting.get(patrol_window.SETTING),time.time(),config['intervalMinutes'])
+        return {'shippingMonitor': shipping, 'workerOnline': time.time()-heartbeat < 90, 'intervalMinutes': window['intervalMinutes'],
                 'robotConfig': config, 'robotSwitchPending': bool(setting.get('pendingRobotConfig')),
                 'serviceEnabled': setting.get('serviceEnabled', '1') != '0',
                 'schedulePaused': setting.get('schedulePaused', '0') == '1',
+                'patrolWindow': window,
                 'stopRequested': setting.get('stopRequested', '0') == '1',
                 'workerStopped': setting.get('workerStopped', '0') == '1',
                 'lastScheduled': float(setting.get('lastScheduled', '0')),
@@ -251,11 +347,30 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
     if job['kind'] == 'shipping':
         from shipping_monitor import scan
         from shipping_online import sync
-        report = scan(dict(job), root, now=clock())
-        # 在线同步在物流核验后独立记录结果，库存查询部分失败仍保留紧急订单。
-        report['onlineSync'] = sync(report, root)
+        from ops_shipping_board import configuration
+        try:
+            binding = configuration(root)
+        except (ValueError, TypeError, KeyError, OSError):
+            # 配置出错时暂停主表写入，避免旧流程对已切换主表删除历史。
+            report = scan(dict(job), root, now=clock())
+            report['onlineSync'] = dict(enabled=True, complete=False, errors=['发货看板绑定待核对'])
+            return report
+        if binding:
+            from ops_shipping_board import scan_for_board, publish_board
+            from shipping_monitor import Source, PENDING
+            report, pending = scan_for_board(dict(job), root, clock(), scan, Source, PENDING)
+            scope = {job['shop']} if job['shop'] else set(SHOPS)
+            # 同一订单主表仅保留一个写入方，避免原同步删除已揽收历史。
+            publish_board(root, binding, pending, report, scope)
+        else:
+            report = scan(dict(job), root, now=clock())
+            # 没有新表绑定时保留原监控流程。
+            report['onlineSync'] = sync(report, root)
         from shipping_shortage import sync_shortages
         report['shortageSync'] = sync_shortages(report, root)
+        if binding:
+            from ops_shipping_board import publish_shortages
+            publish_shortages(root, binding, report, scope)
         return report
     elapsed_start = time.monotonic()
     now = clock()
@@ -321,6 +436,16 @@ def run_job(job, root=STATE, adapter_factory=BatchMatchAdapter, clock=now_cn):
             item['exceptions'] = [dict(row) for row in rows if row['classification'] not in ('ignored', 'non_host')
                                   and row['readback_state'] != 'verified']
             item['orderSummary'] = order_summary(rows)
+            if dict(job).get('origin') == 'ops-command' and scan['complete'] and all(row['billcode'] for row in rows):
+                # 与原巡检相同按完整网店单号归组；同单有异常时优先归为待核对。
+                grouped = {}
+                for row in rows:
+                    for number in web_order_numbers(row['platform_no']) or (row['billcode'],):
+                        grouped.setdefault(number, []).append(row)
+                item['opsSummary'] = dict(success=item['orderSummary']['success'], review=item['orderSummary']['pending'],
+                                          skipped=sum(any(r['classification'] == 'ignored' for r in group)
+                                                      and all(r['classification'] in ('ignored', 'non_host') for r in group)
+                                                      for group in grouped.values()))
             if item['exceptions']:
                 report['complete'] = False
             report['shops'].append(item)
@@ -479,6 +604,10 @@ def deliver(job_id, report, root=STATE, runner=subprocess.run):
         job = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not job or job['delivery'] != 'pending':
             return
+        if job['origin'] == 'ops-command':
+            # 指令接收端独占群回复；原后台通知不会再发一次。
+            db.execute("UPDATE jobs SET delivery='ops-owned' WHERE id=?", (job_id,))
+            return
         # 定时巡检无新增成功且异常未变化时保持静默；手动任务仍返回结果。
         signature = hashlib.sha256(json.dumps({
             'error': report.get('error'), 'shops': [{
@@ -534,24 +663,26 @@ def service(root=STATE, once=False):
                     db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat','0')")
                     db.execute("INSERT OR REPLACE INTO settings VALUES('workerStopped','1')")
                     return
-                # 暂停只限制定时巡检；用户明确提交的手动匹配仍可领取。
-                paused = settings.get('schedulePaused') == '1'
-                db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)", (str(time.time()),))
-                last = db.execute("SELECT value FROM settings WHERE key='lastScheduled'").fetchone()
-                if not once and not paused and (not last or time.time()-float(last[0]) >= get_config(root)['intervalMinutes']*60):
-                    enqueue('today', origin='schedule', root=root)
-                    db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)", (str(time.time()),))
+                now = time.time()
+                db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)",(str(now),))
+                schedule = patrol_window.read_settings(settings.get(patrol_window.SETTING))
+                window = patrol_window.times(schedule)
+                if not once and settings.get('schedulePaused')!='1' and patrol_window.slot_start(window,now) is not None:
+                    # 订单间隔独立设置；不改变发货监控可能沿用的机器人路由间隔。
+                    minutes = schedule.get('intervalMinutes') or get_config(root)['intervalMinutes']
+                    if patrol_window.due(window,now,float(settings.get('lastScheduled','0')),minutes):
+                        # 上个窗口遗留的任务不能被当成今天已安排的巡检。
+                        expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
+                        enqueue('today',origin='schedule',root=root)
+                        db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)",(str(now),))
                 # 发货扫描使用独立开关，不因匹配巡检暂停而停止监控。
                 from shipping_monitor import config as shipping_config
                 shipping = shipping_config(root)
                 if not once and shipping['enabled'] and time.time()-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60:
                     enqueue('shipping', origin='schedule', root=root)
                     db.execute("INSERT OR REPLACE INTO settings VALUES('lastShippingScheduled',?)", (str(time.time()),))
-                job = db.execute("SELECT * FROM jobs WHERE state='queued'" +
-                                 (" AND (origin<>'schedule' OR kind='shipping')" if paused else '') +
-                                 " ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END,created LIMIT 1").fetchone()
+                job = claim_next_job(db)
                 if job:
-                    db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?", (time.time(), job['id']))
                     # 父进程负责心跳和状态汇总，子进程负责匹配并原子写入结果文件。
                     output = root / (job['id'] + '.result.json')
                     log = root / (job['id'] + '.log')

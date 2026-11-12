@@ -1,5 +1,6 @@
 """用隔离订单验证网店单号匹配和通知，避免访问真实 ERP 和群。"""
 import importlib.util
+import json
 import sys
 import tempfile
 import types
@@ -29,13 +30,44 @@ class OrderWebNumberTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / 'integrations/order_backend/matching/group_order_bot.py'
         spec = importlib.util.spec_from_file_location('fixture_group_order_bot', path)
         self.bot = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, modules):
+        with patch.dict(sys.modules, modules),patch.object(sys,'path',[str(path.parent),*sys.path]):
             spec.loader.exec_module(self.bot)
 
     def queue_root(self):
         base = Path(__file__).resolve().parents[1] / '.codex_tmp/order-repeat-tests'
         base.mkdir(parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(dir=base))
+
+    def test_ops_enqueue_persists_external_id_and_owns_reply(self):
+        # 隔离队列验证心跳、暂停区分和外部键持久性；发送器不访问群。
+        root = self.queue_root()
+        key = 'a' * 64
+        shop = '1'
+        target=dict(profile='org:staff',groupId='cid-original',robotCode='robot',appId='app')
+        args=dict(shop=shop,origin='ops-command',root=root,external_id=key,expected_route=target)
+        self.assertEqual(self.bot.enqueue('today',**args)['status'],'unavailable')
+        with closing(self.bot.queue_db(root)) as db:
+            db.executemany('INSERT INTO settings VALUES (?,?)',[('heartbeat','1000'),('serviceEnabled','1'),
+                ('schedulePaused','1'),('robotConfig',json.dumps(target)),('pendingRobotConfig','{}')])
+        with patch.object(self.bot.time, 'time', return_value=1001):
+            self.assertEqual(self.bot.enqueue('today',**args)['status'],'unavailable')
+            with closing(self.bot.queue_db(root)) as db:
+                db.execute("UPDATE settings SET value='' WHERE key='pendingRobotConfig'")
+            first=self.bot.enqueue('today',**args)
+            self.assertEqual(first['status'],'queued')
+            replay=self.bot.enqueue('today',**args)
+            with closing(self.bot.queue_db(root)) as db:
+                db.execute("UPDATE settings SET value=? WHERE key='robotConfig'",(json.dumps(dict(target,groupId='cid-new')),))
+            self.assertEqual(self.bot.enqueue('today',**dict(args,external_id='b'*64))['status'],'unavailable')
+        self.assertEqual(first['jobId'], replay['jobId'])
+        self.assertTrue(replay['duplicate'])
+        sender = Mock()
+        with patch.object(self.bot, 'message_for', return_value='样例'):
+            self.bot.deliver(first['jobId'], {'kind':'today'}, root, runner=sender)
+        sender.assert_not_called()
+        with closing(self.bot.queue_db(root)) as db:
+            self.assertEqual(db.execute('SELECT delivery FROM jobs').fetchone()[0], 'ops-owned')
+            self.assertEqual(db.execute('SELECT count(*) FROM ops_external_jobs').fetchone()[0], 1)
 
     def test_manual_patrol_can_repeat_immediately_after_previous_run_finishes(self):
         root = self.queue_root()
@@ -75,6 +107,58 @@ class OrderWebNumberTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
                 db.execute("UPDATE jobs SET state='completed'")
             self.assertEqual(self.bot.enqueue('today', origin='schedule', root=root)['jobId'], first['jobId'])
+
+    def test_auto_patrol_window_prevents_late_start_without_blocking_manual_or_shipping(self):
+        window = self.bot.patrol_window
+        at = lambda value:datetime.fromisoformat(value+'+08:00').timestamp()
+        opening = at('2026-11-12T18:30:00')
+        closing_at = at('2026-11-13T00:00:00')
+        self.assertFalse(window.due(window.DEFAULT,opening-1,0,240))
+        self.assertTrue(window.due(window.DEFAULT,opening,opening-1,240))
+        self.assertFalse(window.due(window.DEFAULT,opening+60,opening,240))
+        self.assertTrue(window.due(window.DEFAULT,opening+14400,opening,240))
+        self.assertFalse(window.due(window.DEFAULT,closing_at,opening,240))
+        self.assertEqual(window.slot_start(('18:30','01:00'),closing_at),opening)
+        self.assertIsNone(window.slot_start(window.times(window.read_settings('broken')),opening))
+        root = self.queue_root()
+        with patch.object(self.bot.time,'time',return_value=opening):
+            auto = self.bot.enqueue('today',origin='schedule',root=root)['jobId']
+            self.bot.enqueue('shipping',origin='schedule',root=root)
+            self.bot.enqueue('order',number='NO-TEST1',root=root)
+        with closing(self.bot.queue_db(root)) as db:
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'order')
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'shipping')
+            self.assertIsNone(self.bot.claim_next_job(db,closing_at))
+            self.assertEqual(tuple(db.execute('SELECT state,delivery FROM jobs WHERE id=?',(auto,)).fetchone()),
+                             ('cancelled','suppressed'))
+        saved = self.bot.save_patrol_window(root,'18:30','01:00')
+        self.assertTrue(saved['nextDay'])
+        with patch.object(self.bot.time,'time',return_value=closing_at):
+            self.bot.enqueue('today',origin='schedule',root=root)
+        with closing(self.bot.queue_db(root)) as db:
+            db.execute("INSERT INTO settings VALUES('schedulePaused','1')")
+            self.assertIsNone(self.bot.claim_next_job(db,closing_at))
+            db.execute("UPDATE settings SET value='0' WHERE key='schedulePaused'")
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'today')
+
+    def test_patrol_interval_preserves_legacy_routing_and_persists_with_window(self):
+        root = self.queue_root()
+        legacy = json.dumps(dict(intervalMinutes=240,groupId='fixture-group'))
+        with closing(self.bot.queue_db(root)) as db:
+            db.execute("INSERT INTO settings VALUES('robotConfig',?)",(legacy,))
+            db.execute("INSERT INTO settings VALUES('schedulePaused','1')")
+        self.assertEqual(self.bot.save_patrol_window(root,'18:30','00:00')['intervalMinutes'],240)
+        self.assertEqual(self.bot.save_patrol_window(root,'19:00','01:00',90)['intervalMinutes'],90)
+        # 回退的旧界面只改时间，也不会覆盖已设间隔。
+        self.assertEqual(self.bot.save_patrol_window(root,'18:30','00:00')['intervalMinutes'],90)
+        with closing(self.bot.queue_db(root)) as db:
+            settings = dict(db.execute('SELECT key,value FROM settings'))
+        self.assertEqual(settings['robotConfig'],legacy)
+        self.assertEqual(settings['schedulePaused'],'1')
+        window = self.bot.patrol_window
+        configured = window.read_settings(settings[window.SETTING])
+        start = datetime.fromisoformat('2026-11-12T18:30:00+08:00').timestamp()
+        self.assertTrue(window.due(window.times(configured),start+5400,start,configured['intervalMinutes']))
 
     def test_find_orders_prefers_web_number_preserves_suffix_and_internal_identity(self):
         row = dict(shopId='1', billcode=self.internal, platformNo=f'{self.first}， {self.second}')

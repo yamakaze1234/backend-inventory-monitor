@@ -242,4 +242,11 @@ def sync_online(store, ident, *, force=False, client=None):
     except Exception as error:
         receipt.update(ok=False, uncertain=writing, message=str(error) if isinstance(error, ValueError) else '在线同步未完成，请检查钉钉登录；本地记录已保留')
     save_status(store.root, ident, receipt)
+    # 批次索引独立于原明细同步；写入未知不改变原明细的回读结论。
+    try:
+        from ops_front_publish import publish
+        publish(store.root, shop, config, receipt, verified_rows=after if receipt.get('ok') else ())
+    except Exception:
+        receipt['ops_report_status'] = 'unknown'
+        save_status(store.root, ident, receipt)
     return receipt

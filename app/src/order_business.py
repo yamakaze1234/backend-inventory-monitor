@@ -25,9 +25,36 @@ def view(b,q):
     target=state.get('target') or {}
     robot['text']='当前接单机器人：'+str(target.get('robotName') or '未配置')+'；群：'+str(target.get('groupName') or '未配置')
     if state.get('deployed'):
-        robot['forms']=[A('robot-search','查找并配置匹配机器人',[F('groupQuery','群名称'),F('robotQuery','机器人名称'),F('intervalMinutes','订单巡检间隔（分钟）','number')],dict(groupQuery=target.get('groupName',''),robotQuery=target.get('robotName',''),intervalMinutes=target.get('intervalMinutes',120)))]
+        robot['forms']=[A('robot-search','查找并配置匹配机器人',[F('groupQuery','群名称'),F('robotQuery','机器人名称')],dict(groupQuery=target.get('groupName',''),robotQuery=target.get('robotName','')))]
+        if state.get('patrolWindowReady'):
+            robot['planLink']='orders'
+        else:
+            robot['text']+='；自动巡检时段需要新版兼容后端。'
     else:robot['text']+='。请先保存匹配服务配置并安装兼容后端。'
     return dict(module='order-settings',filters=[],query=q,sections=[backend,robot])
+
+
+def patrol_window_form(state):
+    from order_bot_config import patrol_window_view
+    if not state.get('deployed') or not state.get('patrolWindowReady'):
+        return None
+    target=state.get('target') or {}
+    window=state.get('patrolWindow') or patrol_window_view(None,target.get('intervalMinutes'))
+    return A('patrol-window','设置自动巡检时段',
+             [F('start','开始时间','time'),F('end','结束时间','time'),F('intervalMinutes','巡检间隔（分钟）','number')],
+             dict(start=window['start'],end=window['end'],intervalMinutes=window['intervalMinutes']),
+             module='order-settings',
+             description='北京时间。结束早于开始时按次日处理；到点后不再开始新一轮，已开始的巡检会正常完成。',
+             submitLabel='保存设置')
+
+
+def save_patrol_window(b,v):
+    from order_bot_config import patrol_window_tools
+    tools=patrol_window_tools()
+    start,end=tools['validate'](v.get('start'),v.get('end'))
+    interval=tools['validate_interval'](v.get('intervalMinutes'))
+    result=adapter(b).action('save-patrol-window',dict(start=start,end=end,intervalMinutes=interval))
+    return dict(message=f"自动巡检设置已保存：{result['start']} 至 {('次日 ' if result['nextDay'] else '')+result['end']}（北京时间），每 {result['intervalMinutes']} 分钟")
 
 
 def backend_form(state,title):
@@ -80,7 +107,13 @@ def deploy_backend(b,v):
 
 
 def _save_target(b,plan,robot,group):
-    result=adapter(b).action('save-robot',dict(appId=robot['appId'],groupId=group['groupId'],groupName=group['name'],profile=plan['profile'],intervalMinutes=plan['intervalMinutes']))
+    bot=adapter(b)
+    # 绑定机器人保留旧路由间隔；它也可能是发货巡检的默认间隔。
+    target=bot.configuration().get('target') or {}
+    from order_bot_config import patrol_window_tools
+    legacy=target.get('intervalMinutes') or patrol_window_tools()['DEFAULT_INTERVAL']
+    result=bot.action('save-robot',dict(appId=robot['appId'],groupId=group['groupId'],groupName=group['name'],
+                                       profile=plan['profile'],intervalMinutes=legacy))
     return dict(message=str(result.get('message') or '匹配机器人配置已提交，请以接单状态为准'))
 
 
@@ -88,16 +121,13 @@ def search_robot(b,v):
     b.external()
     group_name=str(v.get('groupQuery','')).strip();robot_name=str(v.get('robotQuery','')).strip()
     if not group_name or not robot_name:raise ValueError('请填写群名称和机器人名称')
-    try:minutes=int(v.get('intervalMinutes',120))
-    except (TypeError,ValueError):raise ValueError('巡检间隔需为整数分钟') from None
-    if not 15<=minutes<=1440:raise ValueError('巡检间隔需为 15 至 1440 分钟')
     result=adapter(b).action('discover-robots',dict(groupQuery=group_name,robotQuery=robot_name))
     if result.get('moreRobots'):raise ValueError('匹配机器人结果未完整返回，请填写更完整名称')
     robots=result.get('robots') or [];groups=result.get('groups') or []
     if not robots or not groups:raise ValueError('未找到可用的群或 Stream 机器人，请核对名称与账号权限')
     exact_robots=[r for r in robots if r['name']==robot_name];exact_groups=[r for r in groups if r['name']==group_name]
     robots=exact_robots or robots;groups=exact_groups or groups
-    plan=dict(profile=result['profile'],intervalMinutes=minutes,robots=robots,groups=groups)
+    plan=dict(profile=result['profile'],robots=robots,groups=groups)
     if len(exact_robots)==1 and len(exact_groups)==1:return _save_target(b,plan,robots[0],groups[0])
     token=b.review('order-robot',plan)
     return dict(message='存在重名或相近结果，请选择实际群和匹配机器人',forms=[A('robot-select','确认匹配机器人',[F('robot','机器人',options=[(str(i),r['name']+' · '+r['appId'][-8:]) for i,r in enumerate(robots)]),F('group','群',options=[(str(i),r['name']+' · '+r['groupId'][-8:]) for i,r in enumerate(groups)])],dict(token=token))])
