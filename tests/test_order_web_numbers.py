@@ -29,7 +29,7 @@ class OrderWebNumberTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / 'integrations/order_backend/matching/group_order_bot.py'
         spec = importlib.util.spec_from_file_location('fixture_group_order_bot', path)
         self.bot = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, modules):
+        with patch.dict(sys.modules, modules),patch.object(sys,'path',[str(path.parent),*sys.path]):
             spec.loader.exec_module(self.bot)
 
     def queue_root(self):
@@ -97,6 +97,39 @@ class OrderWebNumberTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
                 db.execute("UPDATE jobs SET state='completed'")
             self.assertEqual(self.bot.enqueue('today', origin='schedule', root=root)['jobId'], first['jobId'])
+
+    def test_auto_patrol_window_prevents_late_start_without_blocking_manual_or_shipping(self):
+        window = self.bot.patrol_window
+        at = lambda value:datetime.fromisoformat(value+'+08:00').timestamp()
+        opening = at('2026-11-12T18:30:00')
+        closing_at = at('2026-11-13T00:00:00')
+        self.assertFalse(window.due(window.DEFAULT,opening-1,0,240))
+        self.assertTrue(window.due(window.DEFAULT,opening,opening-1,240))
+        self.assertFalse(window.due(window.DEFAULT,opening+60,opening,240))
+        self.assertTrue(window.due(window.DEFAULT,opening+14400,opening,240))
+        self.assertFalse(window.due(window.DEFAULT,closing_at,opening,240))
+        self.assertEqual(window.slot_start(('18:30','01:00'),closing_at),opening)
+        self.assertIsNone(window.slot_start(window.read('broken'),opening))
+        root = self.queue_root()
+        with patch.object(self.bot.time,'time',return_value=opening):
+            auto = self.bot.enqueue('today',origin='schedule',root=root)['jobId']
+            self.bot.enqueue('shipping',origin='schedule',root=root)
+            self.bot.enqueue('order',number='NO-TEST1',root=root)
+        with closing(self.bot.queue_db(root)) as db:
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'order')
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'shipping')
+            self.assertIsNone(self.bot.claim_next_job(db,closing_at))
+            self.assertEqual(tuple(db.execute('SELECT state,delivery FROM jobs WHERE id=?',(auto,)).fetchone()),
+                             ('cancelled','suppressed'))
+        saved = self.bot.save_patrol_window(root,'18:30','01:00')
+        self.assertTrue(saved['nextDay'])
+        with patch.object(self.bot.time,'time',return_value=closing_at):
+            self.bot.enqueue('today',origin='schedule',root=root)
+        with closing(self.bot.queue_db(root)) as db:
+            db.execute("INSERT INTO settings VALUES('schedulePaused','1')")
+            self.assertIsNone(self.bot.claim_next_job(db,closing_at))
+            db.execute("UPDATE settings SET value='0' WHERE key='schedulePaused'")
+            self.assertEqual(self.bot.claim_next_job(db,closing_at)['kind'],'today')
 
     def test_find_orders_prefers_web_number_preserves_suffix_and_internal_identity(self):
         row = dict(shopId='1', billcode=self.internal, platformNo=f'{self.first}， {self.second}')

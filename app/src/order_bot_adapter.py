@@ -59,11 +59,13 @@ class OrderBotAdapter:
             return dict(available=False, workerOnline=False, jobs=[], total=0, configured=bool(config),shops=shops,message='请先在订单匹配设置中配置独立后端与 Stream 机器人' if not config else '尚未启动本部门订单机器人')
         with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
             db.row_factory = sqlite3.Row
-            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested')").fetchall())
+            settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','schedulePaused','serviceEnabled','stopRequested','matchPatrolWindow')").fetchall())
             total = db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
             rows = db.execute('SELECT id,kind,number,shop,state,created,delivery FROM jobs ORDER BY created DESC LIMIT ? OFFSET ?', (size, page * size)).fetchall()
             active = db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running','unknown')").fetchone()[0]
-        return dict(available=True,configured=bool(config),shops=shops, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
+        from order_bot_config import patrol_window_ready, patrol_window_view
+        return dict(available=True,configured=bool(config),shops=shops,
+                    patrolWindow=patrol_window_view(settings.get('matchPatrolWindow')) if patrol_window_ready(config) else None, workerOnline=time.time()-float(settings.get('heartbeat','0')) < 90,
                     schedulePaused=settings.get('schedulePaused') == '1', serviceEnabled=settings.get('serviceEnabled','1') != '0',
                     stopRequested=settings.get('stopRequested') == '1', jobs=[dict(r) for r in rows], total=total, active=active)
 
@@ -115,7 +117,7 @@ class OrderBotAdapter:
 
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','ops-enqueue','ops-order-status'}:
+        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
@@ -139,6 +141,9 @@ root=Path(request['state'])
 if action in ('order','spu','number'):
     payload=request['payload']
     result=control.bot.enqueue(action,number=payload.get('number',''),shop=payload.get('shop',''),root=root)
+elif action=='save-patrol-window':
+    payload=request['payload']
+    result=control.bot.save_patrol_window(root,payload['start'],payload['end'])
 elif action=='ops-order-status':
     # 固定模块由该部门订单后端提供；接口升级前不回退为猜测或模糊匹配。
     if request['status_sdk']:
@@ -158,10 +163,11 @@ elif action=='start':
 elif action=='detail':
     import sqlite3,contextlib
     with contextlib.closing(sqlite3.connect((root/'jobs.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
-        row=db.execute('SELECT result FROM jobs WHERE id=?',(request['payload'].get('id',''),)).fetchone()
+        row=db.execute('SELECT result,state,evidence FROM jobs WHERE id=?',(request['payload'].get('id',''),)).fetchone()
     if not row:
         raise ValueError('任务记录不存在')
-    result={'replyText':control.bot.message_for(json.loads(row[0])) if row[0] else '任务尚未生成结果，请稍后刷新'}
+    result={'replyText':control.bot.message_for(json.loads(row[0])) if row[0] else
+            row[2] if row[1]=='cancelled' and row[2] else '任务尚未生成结果，请稍后刷新'}
 else:
     result=control.handle(action,root=root,payload=request['payload'])
 print(json.dumps(result,ensure_ascii=False))

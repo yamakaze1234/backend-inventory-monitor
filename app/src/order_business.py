@@ -26,8 +26,27 @@ def view(b,q):
     robot['text']='当前接单机器人：'+str(target.get('robotName') or '未配置')+'；群：'+str(target.get('groupName') or '未配置')
     if state.get('deployed'):
         robot['forms']=[A('robot-search','查找并配置匹配机器人',[F('groupQuery','群名称'),F('robotQuery','机器人名称'),F('intervalMinutes','订单巡检间隔（分钟）','number')],dict(groupQuery=target.get('groupName',''),robotQuery=target.get('robotName',''),intervalMinutes=target.get('intervalMinutes',120)))]
+        if state.get('patrolWindowReady'):
+            from order_bot_config import patrol_window_view
+            window=state.get('patrolWindow') or patrol_window_view(None)
+            end=('次日 ' if window['nextDay'] else '')+window['end']
+            robot['text']+=('；自动巡检时段：'+window['start']+'–'+end+'（北京时间）' if window['valid'] else
+                            '；自动巡检时段无效，请重新保存')
+            robot['forms'].append(A('patrol-window','设置自动巡检时段',
+                [F('start','开始时间','time'),F('end','结束时间','time')],dict(start=window['start'],end=window['end']),
+                description='北京时间。结束早于开始时按次日处理；到点后不再开始新一轮，已开始的巡检会正常完成。',
+                submitLabel='保存时段'))
+        else:
+            robot['text']+='；自动巡检时段需要新版兼容后端。'
     else:robot['text']+='。请先保存匹配服务配置并安装兼容后端。'
     return dict(module='order-settings',filters=[],query=q,sections=[backend,robot])
+
+
+def save_patrol_window(b,v):
+    from order_bot_config import patrol_window_tools
+    start,end=patrol_window_tools()['validate'](v.get('start'),v.get('end'))
+    result=adapter(b).action('save-patrol-window',dict(start=start,end=end))
+    return dict(message=f"自动巡检时段已保存：{result['start']} 至 {('次日 ' if result['nextDay'] else '')+result['end']}（北京时间）")
 
 
 def backend_form(state,title):

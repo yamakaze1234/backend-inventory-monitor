@@ -87,7 +87,7 @@ function FieldInput({field,value,onChange}:{field:Field;value:unknown;onChange:(
   const input=field.kind==='select'?<Select value={String(value??choices[0]?.value??'')} onValueChange={v=>onChange(v??'')} items={Object.fromEntries(choices.map(o=>[o.value,o.label]))}><SelectTrigger aria-label={field.label}><SelectValue placeholder="请选择"/></SelectTrigger><SelectContent>{choices.map(o=><SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>:
     field.kind==='textarea'?<Textarea id={id} aria-label={field.label} className="min-h-32 max-h-96" value={String(value??'')} onChange={e=>onChange(e.target.value)}/>:
     field.kind==='file'?<FileInput label={field.label} pickOnly={field.pickOnly} value={String(value??'')} onChange={onChange}/>:
-    <Input id={id} aria-label={field.label} readOnly={field.readonly} type={['password','number','date'].includes(field.kind)?field.kind:'text'} autoComplete={field.kind==='password'?'new-password':'off'} value={String(value??'')} onChange={e=>onChange(e.target.value)}/>;
+    <Input id={id} aria-label={field.label} readOnly={field.readonly} type={['password','number','date','time'].includes(field.kind)?field.kind:'text'} autoComplete={field.kind==='password'?'new-password':'off'} value={String(value??'')} onChange={e=>onChange(e.target.value)}/>;
   return <div className="flex min-w-0 flex-col gap-2"><label htmlFor={id} className="text-sm font-medium">{field.label}</label>{input}</div>;
 }
 /** 维护表清单复用文件选择器，其余业务行保持原字段行为。 */

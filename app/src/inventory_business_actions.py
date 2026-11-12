@@ -568,6 +568,12 @@ def order_robot_search(b,v):
     from order_business import search_robot
     return search_robot(b,v)
 
+@action('order-settings','patrol-window')
+def order_patrol_window_save(b,v):
+    from order_business import save_patrol_window
+    return save_patrol_window(b,v)
+
+
 @action('order-settings','robot-select')
 def order_robot_select(b,v):
     from order_business import select_robot

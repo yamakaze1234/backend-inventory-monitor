@@ -20,6 +20,7 @@ from patrol_service import single_instance
 from patrol_worker import BatchMatchAdapter, PatrolWorker
 from task_store import TaskStore
 from robot_config import get_config
+import order_patrol_window as patrol_window
 
 ROOT = Path(__file__).resolve().parent
 from order_department_runtime import settings as department_settings
@@ -138,6 +139,48 @@ def enqueue(kind, number='', shop='', origin='manual', root=STATE, external_id=N
                 'message': '已入队，结果将由配置的机器人发到目标群；入队不代表匹配完成。'}
 
 
+def save_patrol_window(root, start, end):
+    start,end = patrol_window.validate(start,end)
+    value = json.dumps(dict(start=start,end=end),ensure_ascii=False)
+    with contextlib.closing(queue_db(root)) as db:
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(patrol_window.SETTING,value))
+        saved, = db.execute('SELECT value FROM settings WHERE key=?',(patrol_window.SETTING,)).fetchone()
+    return patrol_window.describe(saved,time.time())
+
+
+def expire_scheduled_patrols(db, at, start):
+    # 只取消还没开始、且错过运行时段的自动订单巡检；不碰手动或正在执行的任务。
+    db.execute("""UPDATE jobs SET state='cancelled',delivery='suppressed',updated=?,
+        evidence='已错过自动巡检时段，未开始执行'
+        WHERE state='queued' AND kind='today' AND origin='schedule' AND (? IS NULL OR created<?)""",
+        (at,start,start))
+
+
+def claim_next_job(db, at=None):
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        at = time.time() if at is None else at
+        settings = dict(db.execute('SELECT key,value FROM settings WHERE key IN (?,?,?,?)',
+                                   (patrol_window.SETTING,'schedulePaused','serviceEnabled','stopRequested')))
+        if settings.get('stopRequested')=='1' or settings.get('serviceEnabled')=='0':
+            db.commit()
+            return None
+        start = patrol_window.slot_start(patrol_window.read(settings.get(patrol_window.SETTING)),at)
+        expire_scheduled_patrols(db,at,start)
+        # 暂停或时段关闭只限制订单自动巡检；发货监控和手动任务照常领取。
+        can_auto = start is not None and settings.get('schedulePaused')!='1'
+        job = db.execute("""SELECT * FROM jobs WHERE state='queued'
+            AND (? OR origin<>'schedule' OR kind<>'today')
+            ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END,created LIMIT 1""",(can_auto,)).fetchone()
+        if job:
+            db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?",(at,job['id']))
+        db.commit()
+        return job
+    except Exception:
+        db.rollback()
+        raise
+
+
 def status(job_id='', root=STATE):
     # 心跳只说明工作进程在线；业务结果以任务回执及逐行回读状态为准。
     config = get_config(root)
@@ -155,6 +198,8 @@ def status(job_id='', root=STATE):
                 report = json.loads(row['result'])
                 item['summary'] = summary_for(report)
                 item['replyText'] = message_for(report)
+            elif job_id and row['state']=='cancelled':
+                item['replyText'] = row['evidence']
             jobs.append(item)
         preferred = next((job for job in jobs if job.get('replyText') and (job_id or job['kind'] == 'today')), None)
         preferred = preferred or next((job for job in jobs if job.get('replyText') and job['kind'] != 'shipping'), None)
@@ -171,6 +216,7 @@ def status(job_id='', root=STATE):
                 'robotConfig': config, 'robotSwitchPending': bool(setting.get('pendingRobotConfig')),
                 'serviceEnabled': setting.get('serviceEnabled', '1') != '0',
                 'schedulePaused': setting.get('schedulePaused', '0') == '1',
+                'patrolWindow': patrol_window.describe(setting.get(patrol_window.SETTING),time.time()),
                 'stopRequested': setting.get('stopRequested', '0') == '1',
                 'workerStopped': setting.get('workerStopped', '0') == '1',
                 'lastScheduled': float(setting.get('lastScheduled', '0')),
@@ -594,24 +640,23 @@ def service(root=STATE, once=False):
                     db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat','0')")
                     db.execute("INSERT OR REPLACE INTO settings VALUES('workerStopped','1')")
                     return
-                # 暂停只限制定时巡检；用户明确提交的手动匹配仍可领取。
-                paused = settings.get('schedulePaused') == '1'
-                db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)", (str(time.time()),))
-                last = db.execute("SELECT value FROM settings WHERE key='lastScheduled'").fetchone()
-                if not once and not paused and (not last or time.time()-float(last[0]) >= get_config(root)['intervalMinutes']*60):
-                    enqueue('today', origin='schedule', root=root)
-                    db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)", (str(time.time()),))
+                now = time.time()
+                db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)",(str(now),))
+                window = patrol_window.read(settings.get(patrol_window.SETTING))
+                if (not once and settings.get('schedulePaused')!='1' and patrol_window.slot_start(window,now) is not None
+                        and patrol_window.due(window,now,float(settings.get('lastScheduled','0')),get_config(root)['intervalMinutes'])):
+                    # 上个窗口遗留的任务不能被当成今天已安排的巡检。
+                    expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
+                    enqueue('today',origin='schedule',root=root)
+                    db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)",(str(now),))
                 # 发货扫描使用独立开关，不因匹配巡检暂停而停止监控。
                 from shipping_monitor import config as shipping_config
                 shipping = shipping_config(root)
                 if not once and shipping['enabled'] and time.time()-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60:
                     enqueue('shipping', origin='schedule', root=root)
                     db.execute("INSERT OR REPLACE INTO settings VALUES('lastShippingScheduled',?)", (str(time.time()),))
-                job = db.execute("SELECT * FROM jobs WHERE state='queued'" +
-                                 (" AND (origin<>'schedule' OR kind='shipping')" if paused else '') +
-                                 " ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END,created LIMIT 1").fetchone()
+                job = claim_next_job(db)
                 if job:
-                    db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?", (time.time(), job['id']))
                     # 父进程负责心跳和状态汇总，子进程负责匹配并原子写入结果文件。
                     output = root / (job['id'] + '.result.json')
                     log = root / (job['id'] + '.log')
