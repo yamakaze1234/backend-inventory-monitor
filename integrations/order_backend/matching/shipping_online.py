@@ -66,6 +66,7 @@ def collected_route(response, number):
 class Logistics:
     def __init__(self, root, config):
         self.root, self.config, self.clients = root, config, {}
+        self.direct_error = ''
 
     def close(self):
         for client in self.clients.values():
@@ -95,8 +96,9 @@ class Logistics:
             value = str(item.get('c_platform_delivery_billcode') or '').strip().upper()
             if value:
                 numbers.update(x for x in re.split(r'[,，;；\s]+', value) if x)
-        phone = re.sub(r'\D', '', str(heads[0].get('c_receiver_mobile') or heads[0].get('c_receiver_phone') or ''))
-        return sorted(numbers), complete and bool(numbers), phone[-4:] if len(phone) >= 4 else None
+        # 仅使用真实可见的末四位，不能从尾号已脱敏的手机号中拼出错误校验码。
+        phone = re.search(r'(\d{4})\s*$', str(heads[0].get('c_receiver_mobile') or heads[0].get('c_receiver_phone') or ''))
+        return sorted(numbers), complete and bool(numbers), phone.group(1) if phone else None
 
     def check(self, shop, code):
         numbers, complete, phone = self.parcels(shop, code)
@@ -107,8 +109,11 @@ class Logistics:
         # 密钥留在本机独立文件中，不写进源码、日志或在线表格。
         auth = read_json(self.root / 'shipping-sf-auth.json', {})
         token = str(auth.get('apiKey') or os.environ.get('SHIPPING_SF_API_KEY') or '')
-        if not token:
+        direct = auth.get('provider') in ('sf-open', 'sf-sdk')
+        if not token and not direct:
             return dict(result, status='物流接口未授权，待核实揽收')
+        if direct and self.direct_error:
+            return dict(result, status='顺丰接口未确认（' + self.direct_error + '），保留记录')
         for number in numbers:
             if not re.fullmatch(r'SF\d{10,18}', number):
                 result['evidence'].append({'number': number, 'collected': False, 'status': '非顺丰或运单格式待核实'})
@@ -116,11 +121,21 @@ class Logistics:
             payload = {'tracking_number': number}
             if phone:
                 payload['check_phone_no'] = phone
-            request = urllib.request.Request(self.config['routeUrl'], data=json.dumps(payload).encode(),
-                headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
             try:
-                with urllib.request.urlopen(request, timeout=35) as response:
-                    ok, status = collected_route(json.load(response), number)
+                if direct:
+                    from shipping_sf_route import query_route
+                    response = query_route(auth, number, phone)
+                    ok, status = collected_route(response, number)
+                    if not response.get('ok'):
+                        status = '顺丰接口未确认（' + response.get('errorCode', 'UNKNOWN') + '），保留记录'
+                        # 认证、权限或限流失败后，本轮不对其余订单重复发起相同无效请求。
+                        if response.get('errorCode') in ('A1003', 'A1004', 'A1005', 'A1006', 'A1011'):
+                            self.direct_error = response['errorCode']
+                else:
+                    request = urllib.request.Request(self.config['routeUrl'], data=json.dumps(payload).encode(),
+                        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
+                    with urllib.request.urlopen(request, timeout=35) as response:
+                        ok, status = collected_route(json.load(response), number)
             except Exception:
                 ok, status = False, '物流查询失败，保留记录'
             result['evidence'].append({'number': number, 'collected': ok, 'status': status})
