@@ -26,7 +26,7 @@ def promote_to_v1(service):
         db.execute('DELETE FROM snapshots')
         service.put(db, 'production_v1_started', time.time())
         # 新用户没有产品时先显示配置引导，不自动启动采集或发送。
-        service.put(db, 'enabled', bool(db.execute('SELECT 1 FROM products LIMIT 1').fetchone()))
+        service.put(db, 'enabled', service.get(db, 'enabled', bool(db.execute('SELECT 1 FROM products LIMIT 1').fetchone())))
         service.put(db, 'next_check', 0)
     return True
 
@@ -109,6 +109,10 @@ def main():
     parser.add_argument('--offline-demo', action='store_true', help='使用独立模拟数据体验重构界面')
     parser.add_argument('--douyin-erp-check', help='只读复核整机快照的 ERP 配件，保存相邻结果文件，不发送消息')
     args = parser.parse_args()
+    # 正式 EXE 自行加载便携环境，不要求通过 CMD 或启动器进入。
+    if getattr(sys, 'frozen', False):
+        from inventory_portable import configure_environment
+        configure_environment(Path(sys.executable).parent)
     if args.console_preview_data:
         from inventory_console import preview
         return preview(args.console_preview_data, desktop=not args.console_headless,
@@ -155,6 +159,8 @@ def main():
     folder = Path(sys.executable).parent if getattr(sys, 'frozen', False) else PROJECT_ROOT
     from inventory_workspace_config import resolve_data_root, message_data_root
     data_root = resolve_data_root(args.data_dir, folder)
+    from inventory_portable import initialize_workspace
+    initialize_workspace(folder, data_root)
     # 旧安装保留原数据目录；新目录只使用本工作区自己的机器人与监听设置。
     legacy_workspace = data_root == (folder / '.local_inventory_ui_test').resolve()
     service = InventoryService(data_root)

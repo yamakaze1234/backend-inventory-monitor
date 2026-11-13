@@ -70,7 +70,7 @@ def assert_state_owner(workspace,root):
 
 
 def assert_connector_stopped(config,root=None):
-    """停止请求不是停止完成；只接受 DWS 明确回读的 down 状态。"""
+    """只接受 DWS 明确回读的本机停止状态。"""
     root=Path(root or config['state_root'])
     if not (root/'jobs.sqlite3').is_file():return
     target=queue_state(root)['target']
@@ -79,7 +79,10 @@ def assert_connector_stopped(config,root=None):
     try:
         result=subprocess.run([config['dws_path'],'dev','connect','status','--robot-client-id',target['robotCode'],'--profile',target['profile'],'--json','--format','json'],capture_output=True,text=True,encoding='utf-8',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         value=json.loads(result.stdout)
-        if result.returncode or value.get('error') or value.get('state')!='down':raise ValueError()
+        if result.returncode or not isinstance(value,dict) or value.get('error'):raise ValueError()
+        state=value.get('state')
+        # 从未启动过此连接器的新机没有守护进程记录，DWS 回读 not_running 且不带 PID。
+        if state!='down' and not (state=='not_running' and value.get('pid') is None):raise ValueError()
     except (OSError,ValueError,subprocess.TimeoutExpired):
         raise ValueError('订单 Stream 连接器尚未确认停止，请先在原程序完成停止再部署或修改环境') from None
 
@@ -259,9 +262,17 @@ def describe(workspace):
     defaults={key:'' for key in PATH_FIELDS};defaults.update(agent_model='deepseek/deepseek-flash',shops=[])
     if not config:return dict(configured=False,deployed=False,**defaults,target={},message='请先单独配置订单匹配后端、店铺及 Stream 机器人')
     state=queue_state(config['state_root'])
-    shipping_ready=(Path(config['match_root'])/'app/src/shipping_monitor.py').is_file()
+    shipping_source=Path(config['match_root'])/'app/src'
+    shipping_ready=(shipping_source/'shipping_monitor.py').is_file()
+    # 桌面更新只换 EXE；即使简报代码相同，也要核对同步和揽收查询的全部文件。
+    try:
+        shipped=bundle_root()/'matching'
+        shipping_current=shipping_ready and all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
+            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py'))
+    except OSError:
+        shipping_current=False
     return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),
                 patrolWindowReady=patrol_window_ready(config),schedulePaused=state.get('schedulePaused',True),
-                serviceEnabled=state['enabled'],shippingReady=shipping_ready,shipping=state.get('shipping',{}),
+                serviceEnabled=state['enabled'],shippingReady=shipping_ready,shippingBackendCurrent=shipping_current,shipping=state.get('shipping',{}),
                 switching=state.get('switching',False),stopRequested=state.get('stopRequested',False),
                 message='订单匹配与库存通知使用独立配置')

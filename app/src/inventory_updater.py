@@ -43,8 +43,12 @@ def powershell_executable():
     raise ValueError('缺少 PowerShell 7，请先运行安装包中的“一键部署环境.cmd”')
 
 
-def restart_arguments(arguments):
+def restart_arguments(arguments, workspace=None):
     """仅保留工作区和显示方式，不透传旧健康回执、worker 或任意命令。"""
+    if workspace is not None:
+        # 重启与回退均绑定本次实际打开的工作区，不重新按 EXE 目录猜测。
+        modes = [arg for arg in ('--tray', '--legacy-ui') if arg in arguments]
+        return ['--data-dir', str(Path(workspace).resolve()), *modes]
     result=[]
     iterator=iter(arguments)
     for argument in iterator:
@@ -93,7 +97,8 @@ def verify_manifest(envelope, public_key):
 
 class InventoryUpdater:
     def __init__(self, root, public_key=None, opener=None):
-        self.root = Path(root) / 'updates'
+        self.workspace = Path(root).resolve()
+        self.root = self.workspace / 'updates'
         self.public_key = public_key
         self.opener = opener or urllib.request.urlopen
         self.lock = threading.Lock()
@@ -199,7 +204,7 @@ class InventoryUpdater:
         # 安装计划仅包含本进程确定的路径，不接受网页传入可执行路径。
         plan.write_text(json.dumps(dict(pid=os.getpid(), target=str(target), source=str(self.staged.resolve()),
             sha256=self.release['sha256'], marker=str((self.root/('healthy-'+uuid.uuid4().hex+'.txt')).resolve()),
-            expected=self.release['version'],ready=str(ready.resolve()),arguments=restart_arguments(sys.argv[1:])), ensure_ascii=False), encoding='utf-8')
+            expected=self.release['version'],ready=str(ready.resolve()),arguments=restart_arguments(sys.argv[1:], self.workspace)), ensure_ascii=False), encoding='utf-8')
         helper = self.root / 'apply-update.ps1'
         helper.write_bytes((UI_ROOT / 'apply-update.ps1').read_bytes())
         process = subprocess.Popen([shell,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(helper),'-Plan',str(plan)],

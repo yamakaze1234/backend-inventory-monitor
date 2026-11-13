@@ -95,11 +95,14 @@ class UpdaterTests(unittest.TestCase):
         updater.staged.write_bytes(self.binary)
         updater.release=self.manifest
         updater.state['phase']='downloaded'
-        with patch('inventory_updater.sys.frozen',True,create=True), patch('inventory_updater.powershell_executable',return_value='pwsh.exe'), patch('inventory_updater.subprocess.Popen') as launch:
+        with patch('inventory_updater.sys.frozen',True,create=True), patch('inventory_updater.sys.argv',['app.exe','--tray']), patch('inventory_updater.powershell_executable',return_value='pwsh.exe'), patch('inventory_updater.subprocess.Popen') as launch:
             launch.return_value.poll.return_value=1
             with self.assertRaisesRegex(ValueError,'更新助手未就绪'):updater.install()
             self.assertNotEqual('installing',updater.state['phase'])
             self.assertIn('Bypass',launch.call_args.args[0])
+            # 双击 EXE 无数据目录参数，安装计划仍绑定已打开的实际目录。
+            plan=json.loads((updater.root/'install.json').read_text(encoding='utf-8'))
+            self.assertEqual(plan['arguments'], ['--data-dir',str(self.temp.resolve()),'--tray'])
 
     def test_restart_preserves_workspace_but_not_worker_or_old_receipt(self):
         args=restart_arguments(['--data-dir',str(self.temp/'中文 工作区'),'--tray','--worker','--update-health','old.txt'])

@@ -53,6 +53,15 @@ class DepartmentTests(unittest.TestCase):
         (self.control/'order-department.json').write_text(json.dumps(dict(configPath=str(self.root/'other.json'))))
         with self.assertRaisesRegex(ValueError,'其他部门'):config.deploy(self.workspace)
 
+    def test_shipping_readiness_detects_stale_sync_even_with_current_monitor(self):
+        config.save(self.workspace,self.values)
+        config.deploy(self.workspace)
+        self.assertTrue(config.describe(self.workspace)['shippingBackendCurrent'])
+        (self.match/'app/src/shipping_online.py').write_text('# 旧同步实现',encoding='utf-8')
+        result=config.describe(self.workspace)
+        self.assertTrue(result['shippingReady'])
+        self.assertFalse(result['shippingBackendCurrent'])
+
     def test_unknown_delivery_blocks_install(self):
         config.save(self.workspace,self.values)
         self.state.mkdir()
@@ -65,10 +74,18 @@ class DepartmentTests(unittest.TestCase):
         with sqlite3.connect(self.state/'jobs.sqlite3') as db:
             db.executescript('CREATE TABLE settings(key TEXT,value TEXT); CREATE TABLE jobs(state TEXT,delivery TEXT);')
             db.execute('INSERT INTO settings VALUES(?,?)',('robotConfig',json.dumps(dict(robotCode='dingtest',profile='test-profile'))))
-        for state in ('running','unknown'):
-            with patch.object(config.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(dict(state=state)),'')):
+        # 在线、矛盾或不可用的回读均不能覆盖后端。
+        for exit_code,payload in ((0,{'state':'healthy'}),(0,{'state':'degraded'}),
+                                  (0,{'state':'unknown'}),(0,{'state':'not_running','pid':42}),
+                                  (0,{'state':'not_running','error':'probe failed'}),
+                                  (1,{'state':'not_running'}),(0,None)):
+            with self.subTest(exit_code=exit_code,payload=payload), patch.object(
+                    config.subprocess,'run',return_value=subprocess.CompletedProcess([],exit_code,json.dumps(payload),'')):
                 with self.assertRaisesRegex(ValueError,'连接器'):config.deploy(self.workspace)
         with patch.object(config.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{"state":"down"}','')):
+            config.assert_connector_stopped(self.values)
+        # 复制旧队列到从未运行过 DWS Stream 的新电脑，实测返回 not_running、无 PID。
+        with patch.object(config.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{"state":"not_running","supervised":false}','')):
             self.assertTrue(config.deploy(self.workspace)['changed'])
 
     def test_same_named_group_robot_with_different_code_is_rejected(self):
