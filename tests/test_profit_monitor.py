@@ -139,6 +139,42 @@ class PriceMonitorTest(unittest.TestCase):
         self.monitor.check()
         self.assertEqual(len(self.events()), 2)
 
+    def test_round_combines_rises_and_falls_without_repeat(self):
+        # 多配件一轮只生成一条汇总，未变化的下一轮不重复提醒。
+        value = manifest()
+        part = copy.deepcopy(value['configs'][0]['parts'][0])
+        part.update(lineId='gpu', goodsId='456', name='显卡')
+        value['configs'][0]['parts'].append(part)
+        self.write(rehash(value))
+        self.monitor.bind(self.file)
+        self.monitor.check()
+        self.source.read_profit_costs = lambda ids: dict(
+            costs={'123': 20000, '456': 0}, failed=[], sourceScope=self.source.scope, collectedAt=1234567890.0)
+        run = self.monitor.check()
+        self.assertEqual(len(self.events()), 1)
+        text = json.loads(self.events()[0]['payload'])['text']['content']
+        self.assertIn('2 个配件（上涨 1 / 下降 1）', text)
+        self.assertIn('goods_id 123', text)
+        self.assertIn('goods_id 456', text)
+        self.assertEqual(text.count('成本采集：'), 1)
+        self.assertEqual(len(self.results(run)), 2)
+        self.monitor.check()
+        self.assertEqual(len(self.events()), 1)
+
+    def test_large_round_pages_keep_every_component_once(self):
+        # 超长名称和大批量变化按字节分页，所有商品都保留且没有重复。
+        changes = [(str(index), {'names': ['长配件名' * 200]}, 10000, 20000) for index in range(1, 81)]
+        with self.monitor.db() as db:
+            self.monitor._insert_summary_events(db, 'large-round', changes, 1234567890, ['r1'])
+        events = self.events()
+        self.assertGreater(len(events), 1)
+        texts = [json.loads(event['payload'])['text']['content'] for event in events]
+        for index, text in enumerate(texts, 1):
+            self.assertLessEqual(len(text.encode('utf-8')), 12000)
+            self.assertIn(f'第 {index}/{len(events)} 页', text)
+        ids = [line.split('goods_id ')[1] for text in texts for line in text.splitlines() if 'goods_id ' in line]
+        self.assertEqual(sorted(ids), sorted(str(index) for index in range(1, 81)))
+
     def test_event_insert_failure_rolls_back_anchor_and_latest_together(self):
         self.write(manifest())
         self.monitor.bind(self.file)

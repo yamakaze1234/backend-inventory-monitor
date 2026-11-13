@@ -393,6 +393,7 @@ class ProfitMonitor:
                     db.execute('UPDATE price_baselines SET active=0 WHERE source_id=? AND workspace_id=?', scope_key)
                 notify = allow_notifications and self._get(db, 'notify', False)
                 recipients = [r['id'] for r in self.robots.list_robots() if r['enabled'] and 'profit' in r['channels']] if notify and self.robots else []
+                changes = []  # 同轮变化统一入队，避免每个配件各发一条刷屏。
                 for gid in sorted(ids):
                     old = db.execute('''SELECT * FROM price_baselines WHERE source_id=? AND workspace_id=?
                         AND sql_scope=? AND goods_id=? AND active=1''', (*scope_key, sql_scope, gid)).fetchone() if sql_scope else None
@@ -425,7 +426,8 @@ class ProfitMonitor:
                             anchor_cents=excluded.anchor_cents,anchor_result_id=excluded.anchor_result_id''',
                                    (*scope_key, sql_scope, gid, unit, result_id, next_anchor, next_anchor_id))
                     if changed and allow_notifications:
-                        self._insert_change_events(db, run_id, manifest, gid, watch[gid], anchor, unit, cost_at, recipients)
+                        changes.append((gid, watch[gid], anchor, unit))
+                self._insert_summary_events(db, run_id, changes, cost_at, recipients)
                 db.execute('UPDATE runs SET status=?,finished=?,error=? WHERE id=?',
                            ('failed' if cost_error else 'completed', time.time(), cost_error or None, run_id))
                 if allow_notifications:
@@ -449,24 +451,37 @@ class ProfitMonitor:
                 self.running = False
                 self.run_thread_ident = None
 
-    def _price_message(self, gid, info, before, after, cost_at):
-        # 群通知只说明配件变价；配置和链接关系仍保留在检测结果中供页面查询。
-        direction = '上涨' if after > before else '下降'
-        percent = f'{(after-before)/before*100:+.2f}%' if before > 0 else '从零上涨（不计算百分比）'
-        lines = [f'ERP 配件调价提醒 · goods_id {gid}',
-                 f'配件：{"、".join(info["names"][:3]) or "未命名配件"}',
-                 f'公司大库库存成本：上次提醒基准 {before/100:.2f} → 当前 {after/100:.2f} 元',
-                 f'累计{direction} {abs(after-before)/100:.2f} 元；涨跌幅：{percent}',
-                 f'成本采集：{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cost_at))}']
-        return '\n'.join(lines)
-
-    def _insert_change_events(self, db, run_id, manifest, gid, info, before, after, cost_at, recipients):
-        # 一个配件一次变化只生成一条提醒，不再按受影响配置拆成多条群消息。
-        event_id = sha([PRICE_MODE, run_id, gid, 0, before, after])
-        payload = canonical(dict(msgtype='text', text=dict(content=self._price_message(gid, info, before, after, cost_at))))
-        db.execute('''INSERT INTO events(id,shop_id,created,payload,status,recipients,kind)
-            VALUES(?,?,?,?,?,?,?)''',
-            (event_id, 'ERP单价', time.time(), payload, 'pending' if recipients else 'skipped', canonical(recipients), PRICE_EVENT_KIND))
+    def _insert_summary_events(self, db, run_id, changes, cost_at, recipients):
+        # 汇总与价格基准使用同一事务；失败一起回滚，重试沿用每页固定事件 ID。
+        if not changes:
+            return
+        changes = sorted(changes, key=lambda item: (item[3] < item[2], -abs(item[3]-item[2]), item[0]))
+        rising = sum(after > before for _, _, before, after in changes)
+        header = (f'ERP 配件调价汇总 · {len(changes)} 个配件（上涨 {rising} / 下降 {len(changes)-rising}）\n'
+                  '公司大库库存成本 · 对比上次提醒基准\n'
+                  f'成本采集：{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cost_at))}')
+        pages, blocks = [], []
+        for gid, info, before, after in changes:
+            # 名称过长只缩略展示，完整名称及关联配置仍保存在检测明细。
+            name = ' '.join(('、'.join(info['names'][:3]) or '未命名配件').split())
+            name = name[:240] + '…' if len(name) > 240 else name
+            direction = '上涨' if after > before else '下降'
+            percent = f'{(after-before)/before*100:+.2f}%' if before else '从零上涨（不计算百分比）'
+            block = (f'{name} · goods_id {gid}\n'
+                     f'{before/100:.2f} → 当前 {after/100:.2f} 元；累计{direction} {abs(after-before)/100:.2f} 元（{percent}）')
+            # 为分页标题预留字节；始终按完整配件分段，不截断明细。
+            if blocks and len((header + '\n\n' + '\n\n'.join(blocks + [block])).encode('utf-8')) > 11500:
+                pages.append(blocks)
+                blocks = []
+            blocks.append(block)
+        pages.append(blocks)
+        for index, page in enumerate(pages, 1):
+            title = header + (f'\n第 {index}/{len(pages)} 页' if len(pages) > 1 else '')
+            payload = canonical(dict(msgtype='text', text=dict(content=title + '\n\n' + '\n\n'.join(page))))
+            event_id = sha([PRICE_MODE, run_id, 'summary', index])
+            db.execute('''INSERT INTO events(id,shop_id,created,payload,status,recipients,kind)
+                VALUES(?,?,?,?,?,?,?)''',
+                (event_id, 'ERP单价', time.time(), payload, 'pending' if recipients else 'skipped', canonical(recipients), PRICE_EVENT_KIND))
 
     def deliver_pending(self):
         with self.db() as db:
