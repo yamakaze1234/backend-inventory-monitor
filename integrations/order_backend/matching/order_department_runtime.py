@@ -11,7 +11,7 @@ def settings():
         if pointer.is_file():path=json.loads(pointer.read_text(encoding='utf-8'))['configPath']
     if not path:raise ValueError('尚未配置本部门订单匹配运行环境')
     path=Path(path).resolve()
-    value=json.loads(path.read_text(encoding='utf-8'))
+    value=json.loads(path.read_text(encoding='utf-8-sig'))
     if value.get('version')!=1 or not value.get('shops'):raise ValueError('订单部门配置格式无效')
     os.environ['ORDER_BOT_CONFIG']=str(path)
     return value

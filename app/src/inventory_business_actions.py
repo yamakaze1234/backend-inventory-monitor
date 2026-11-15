@@ -645,3 +645,9 @@ def order_engine_check(b,v):
     from order_business import adapter
     b.external()
     return adapter(b).action('engine-check')
+
+
+@action('order-settings','daily-report-open')
+def daily_report_open(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'open',v)

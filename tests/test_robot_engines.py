@@ -65,3 +65,12 @@ class EngineTests(DepartmentTests):
         self.assertEqual(runtime['status'](values,rows=[])['state'],'down')
         self.assertEqual(runtime['status'](values,rows=[dict(pid=1,created='x',owned=False)])['state'],'unmanaged')
         with self.assertRaises(ValueError):runtime['patch_stream']('// unknown plugin')
+
+
+    def test_bridge_supports_harness_client_and_timeout(self):
+        import inspect
+        from ops_receiver import LocalCommandClient
+        bridge=runpy.run_path(str(config.bundle_root()/'control/ops-bridge/inventory_query_bridge.py'))
+        self.assertIn('client',inspect.signature(bridge['run']).parameters)
+        self.assertIn('journal',inspect.signature(bridge['run']).parameters)
+        self.assertEqual(LocalCommandClient('http://127.0.0.1:12345','fixture',timeout=4).timeout,4)

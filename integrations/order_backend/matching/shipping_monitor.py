@@ -11,6 +11,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path  # 投递时读取本工作区已经绑定的发货明细入口。
 
 from robot_config import get_config, validate
 
@@ -290,7 +291,11 @@ def deliver(job_id, report, root, runner=subprocess.run):
     from group_order_bot import queue_db, DWS
     target = config(root)['target']
     # 未开启写表同步时仍提供已绑定明细入口，并明确它不是本轮同步结果。
-    bindings=Path(root).parent/'ops-command-sources.json'
+    # 一体包的订单队列在 robot/state，工作台绑定位于配置指针所在工作区。
+    import os
+    settings_path=os.environ.get('ORDER_BOT_CONFIG')
+    workspace=Path(settings_path).parent if settings_path else Path(root).parent
+    bindings=workspace/'ops-command-sources.json'
     if bindings.is_file() and not report.get('onlineSync',{}).get('enabled'):
         from urllib.parse import urlsplit
         from group_order_bot import SHOPS

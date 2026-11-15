@@ -20,12 +20,12 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class LocalCommandClient:
-    def __init__(self, url, token):
+    def __init__(self, url, token, *, timeout=110):
         parsed = urlsplit(url)
         if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port
                 or parsed.username or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
             raise ValueError('指令接口必须使用固定本机回环地址')
-        self.url, self.token = url.rstrip('/'), token
+        self.url, self.token, self.timeout = url.rstrip('/'), token, timeout
 
     def request(self, suffix, body=None, actor=None):
         headers = {'Authorization': 'Bearer ' + self.token}
@@ -37,7 +37,7 @@ class LocalCommandClient:
         try:
             # 回环请求不经机器代理，凭证只送往本机工作台。
             from urllib.request import ProxyHandler
-            response = build_opener(ProxyHandler({}), NoRedirect).open(request, timeout=110)
+            response = build_opener(ProxyHandler({}), NoRedirect).open(request, timeout=self.timeout)
         except HTTPError as error:
             response = error
         with response:

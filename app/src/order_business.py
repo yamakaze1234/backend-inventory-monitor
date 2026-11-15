@@ -15,9 +15,9 @@ def adapter(b):
 
 def view(b,q):
     state=adapter(b).configuration()
-    backend=S('backend','匹配服务配置')
+    backend=S('backend','AI 引擎与运行环境')
     backend['description']='为本部门连接独立匹配后端和运行队列；保存配置不会启动服务或修改 ERP。'
-    backend['forms']=[A('backend-auto','一键配置',immediate=True), backend_form(state,'手动配置'),
+    backend['forms']=[A('backend-auto','一键配置',immediate=True), backend_form(state,'配置引擎与运行路径'),
         A('backend-deploy','安装部门兼容后端',confirm='将备份并更新所选后端的兼容文件。必须先停止原订单服务并核对未完成任务；本操作不会启动匹配或发送消息。')]
     backend['text']=state.get('message','')+'；当前引擎：'+state.get('connector_mode','codex')+'。Harness 的模型、登录和钉钉插件由其独立配置目录管理；Codex 使用自身账号/provider 配置。保存不会安装依赖或启动机器人。'
     if state.get('deployed'):backend['forms'].append(A('engine-check','检查引擎连接',immediate=True))

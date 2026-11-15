@@ -53,6 +53,17 @@ def matches_product(row,q):
 
 def build_view(b,module,q):
     sections=[];filters=[]
+    if module in ('engine-settings','daily-settings'):
+        # 独立导航沿用同一业务操作，防止形成两套配置保存路径。
+        if module=='engine-settings':
+            from order_business import view
+            sections=view(b,q)['sections'][:1]
+        else:
+            from daily_report_business import view
+            sections=[view(b.service.root)]
+        for section in sections:
+            for form in section['forms']:form['module']='order-settings'
+        return dict(module=module,filters=[],query=q,sections=sections)
     if module=='shipping':
         from shipping_business import view
         return view(b,q)
@@ -61,7 +72,9 @@ def build_view(b,module,q):
         return view(b,q)
     if module=='order-settings':
         from order_business import view
-        return view(b,q)
+        result=view(b,q)
+        result['sections']=result['sections'][1:2]
+        return result
     if module=='monitor':
         all_products=b.service.products()
         rows=[p for p in all_products if matches_product(p,q)]

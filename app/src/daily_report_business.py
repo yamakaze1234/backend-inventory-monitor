@@ -12,7 +12,7 @@ def view(workspace):
     section=S('daily-report','日报数据库配置')
     try:
         value=config.load(workspace) or {}
-        section['text']='统计项目组：抖英特旗舰组；只读；内网直连。'+('已配置' if value else '待配置')
+        section['text']='统计项目组：抖英特旗舰组；只读；内网直连。'+('连接：'+value['connectionName'] if value else '待配置')
     except ValueError as error:
         value={};section['text']=str(error)
     section['forms']=[A('daily-report-save','配置日报连接',[
@@ -20,6 +20,7 @@ def view(workspace):
         F('dbxExecutable','DBX MCP 可执行文件'),F('dbxData','DBX 数据目录'),F('python','Python 可执行文件')],
         dict(value,database='ERP'),description='只填写连接引用和运行路径；账号、密码及服务器地址在 DBX 管理。保存不会重启机器人。'),
         A('daily-report-import','导入非敏感配置',[F('configJson','配置 JSON','textarea')],description='仅导入配置引用，不迁移 DBX 凭据；导入后请重新测试连接。'),
+        A('daily-report-open','打开 DBX 配置',immediate=True),
         A('daily-report-test','测试连接',immediate=True),
         A('daily-report-generate','生成测试日报',[F('date','已结束自然日','date')])]
     return section
@@ -27,6 +28,13 @@ def view(workspace):
 
 def action(b,operation,value):
     root=b.service.root
+    if operation=='open':
+        value=config.load(root)
+        if not value:raise ValueError('请先保存日报连接')
+        exe=Path(value['dbxExecutable']).with_name('DBX.exe')
+        if not exe.is_file():raise ValueError('未找到配套 DBX 程序')
+        subprocess.Popen([str(exe)],cwd=exe.parent,env=dict(os.environ,DBX_DATA_DIR=value['dbxData']))
+        return dict(message='已打开 DBX；修改连接后请返回测试连接')
     if operation=='import':
         try: imported=json.loads(value.get('configJson',''))
         except (ValueError,TypeError):raise ValueError('配置 JSON 无效') from None
