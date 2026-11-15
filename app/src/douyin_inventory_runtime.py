@@ -34,6 +34,8 @@ def _patrol_error(error):
     if isinstance(error, ValueError):
         # 只保存已知业务错误的固定说明，不持久化外部程序返回的原始内容。
         for phrase, label in (('登录失效', '页面未就绪或店铺登录失效'),
+                              ('CWS 采集未确认', 'CWS 采集未确认，请检查本店登录、店铺身份和失败记录'),
+                              ('CWS 巡检超时', 'CWS 巡检超时，原报表任务已保留'),
                               ('本店浏览器', '本店浏览器崩溃、断开或响应超时'),
                               ('导出提交结果未确认', '导出提交结果未确认，未重复提交'),
                               ('导出任务记录无法核对', '导出任务记录无法核对，未重复提交'),
@@ -222,6 +224,10 @@ class DouyinRuntime:
 
     def validate_connection(self, config):
         """多店必须显式绑定独立扩展连接；同一浏览器账号环境不能冒充不同店铺。"""
+        if config.get('connection_mode') == 'cws':
+            from douyin_cws_worker import binding
+            binding(self.store.root.parent, config['id'])
+            return
         if config.get('connection_mode') == 'managed':
             return
         others = [s for s in self.store.stores() if s['id'] != config['id'] and s['confirmed'] and s.get('connection_mode') != 'managed']
@@ -341,6 +347,9 @@ class DouyinRuntime:
         if ident not in self.workers:
             config = self.store.store(ident)
             factory = self.worker_factory
+            if config.get('connection_mode') == 'cws' and factory is ChromeMachineExportWorker:
+                from douyin_cws_worker import CwsWorker
+                factory = CwsWorker
             if config.get('connection_mode') == 'managed' and factory is ChromeMachineExportWorker:
                 from douyin_managed_export import ManagedExportWorker
                 factory = ManagedExportWorker
@@ -427,8 +436,10 @@ class DouyinRuntime:
                                           online_signature=online.get('signature') if isinstance(online, dict) else None)
             _patrol_stage.reset(phase)
         if getattr(self, 'live', False):
-            detail += '；在线明细' + ('已回读' if online_ready else '未完成回读')
-        return ('success' if online_ready or not getattr(self, 'live', False) else 'incomplete',
+            detail += '；在线明细' + ('已回读' if online_ready else '未配置，未启用同步' if isinstance(online, dict) and online.get('skipped') else '未完成回读')
+        # 未配置的可选同步不是巡检失败；实际配置后的回读失败仍保留不完整状态。
+        online_skipped = isinstance(online, dict) and online.get('skipped') is True
+        return ('success' if online_ready or online_skipped or not getattr(self, 'live', False) else 'incomplete',
                 detail, _patrol_delivery(config, notify, count, results, manual=manual))
 
     def sync_online(self, ident, *, force=False):
@@ -505,7 +516,7 @@ class DouyinRuntime:
                 if previous:
                     previous.close()
             if operation.get('open'):
-                if value['mode'] != 'managed':
+                if value['mode'] not in ('managed', 'cws'):
                     raise ValueError('现有扩展模式请自行打开已登录的浏览器')
                 try:
                     self.worker(ident).call('open')

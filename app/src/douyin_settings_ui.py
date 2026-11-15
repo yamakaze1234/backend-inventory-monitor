@@ -99,7 +99,7 @@ def login_dialog(panel):
     win, body = window(panel, '店铺登录设置 · ' + config['name'])
     win.geometry('680x530'); win.minsize(630, 500)
     browser = tk.StringVar(win, 'Edge' if config['browser'] == 'edge' else 'Chrome')
-    modes = {'独立店铺浏览器（推荐）': 'managed', '现有浏览器扩展（兼容）': 'extension'}
+    modes = {'独立店铺浏览器（推荐）': 'managed', 'CWS 独立店铺配置': 'cws', '现有浏览器扩展（兼容）': 'extension'}
     mode = tk.StringVar(win, next(k for k,v in modes.items() if v == config.get('connection_mode','extension')))
     profile = tk.StringVar(win, config['browser_profile'])
     hint = tk.StringVar(win, '')
@@ -153,7 +153,7 @@ def login_dialog(panel):
         current_mode = modes[mode.get()]
         value = dict(browser=browser.get().lower(),profile=profile.get().strip(),mode=current_mode)
         reply = queue.Queue(maxsize=1)
-        panel.runtime.submit(dict(kind='browser_settings',value=value,open=open_browser and current_mode=='managed',reply=reply),config['id'])
+        panel.runtime.submit(dict(kind='browser_settings',value=value,open=open_browser and current_mode in ('managed','cws'),reply=reply),config['id'])
         response(reply)
         if open_browser and current_mode == 'extension':
             from douyin_browser import find_browser
@@ -175,11 +175,18 @@ def login_dialog(panel):
         control.pack(side='left', padx=(0,8)); controls.append(control)
     def render(*_):
         native.pack_forget(); extension.pack_forget()
-        selected = native if modes[mode.get()] == 'managed' else extension
+        selected = native if modes[mode.get()] in ('managed','cws') else extension
         selected.pack(fill='x', before=hint_label)
         if selected is native:
-            from douyin_browser import ShopBrowser
-            location.config(text='本店专用目录：' + str(ShopBrowser(panel.runtime.store.root,config['id'],browser.get().lower()).user_data))
+            if modes[mode.get()] == 'cws':
+                from douyin_cws_worker import binding
+                try:
+                    location.config(text='CWS 本店目录：' + binding(panel.runtime.store.root.parent,config['id'])['data_dir'])
+                except ValueError as error:
+                    location.config(text=str(error))
+            else:
+                from douyin_browser import ShopBrowser
+                location.config(text='本店专用目录：' + str(ShopBrowser(panel.runtime.store.root,config['id'],browser.get().lower()).user_data))
         hint.set('打开本店浏览器 → 手动登录 → 校验连接。切换连接方式需在新窗口重新登录一次。')
     mode.trace_add('write',render); browser.trace_add('write',render)
     win.native_frame, win.extension_frame, win.login_controls = native, extension, controls

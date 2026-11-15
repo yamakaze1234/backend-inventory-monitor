@@ -199,7 +199,7 @@ def sync_online(store, ident, *, force=False, client=None):
     """先完整回读再计算差量；中断后只补云端尚未完成的变更。"""
     config = binding(store.root)
     if not config:
-        return dict(ok=False, message='尚未配置在线明细表')
+        return dict(ok=False, skipped=True, message='尚未配置在线明细表，未启用同步')
     shop = store.store(ident); preview = store.restock_preview(ident); snapshots = store.snapshots(ident)
     fingerprint = hashlib.sha256(json.dumps([preview, snapshots, config], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     previous = status(store.root, ident)

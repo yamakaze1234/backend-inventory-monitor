@@ -10,7 +10,7 @@ class CwsExportWorker(ManagedExportWorker):
     """页面、登录与下载由 CWS 持有；不打开原工作台浏览器。"""
 
     def __init__(self, script, state_root, shop):
-        super().__init__(None, Path(state_root) / 'profiles' / 'cws-gigabyte')
+        super().__init__(None, Path(state_root) / 'profiles' / 'cws-export')
         self.script = script
         self.expected_shop = shop
         self.expected_browser = ''
@@ -33,7 +33,7 @@ class CwsExportWorker(ManagedExportWorker):
         self.check_shop()
 
     def prepare_download(self):
-        # CWS 的 download 已注册本次页面下载事件，不能改写全局下载行为。
+        # 下载事件已由本适配器注册；不能调用旧浏览器的下载通道。
         pass
 
     def click(self, selector, text, *, seconds=15):

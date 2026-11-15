@@ -16,6 +16,11 @@ a = Analysis(
     pathex=[str(source)],
     binaries=[(os.environ['INVENTORY_BUILD_DWS'], '.')],
     datas=[(str(root / 'docs' / 'inventory-setup.md'), '.'),
+           # CWS 在独立 Python 中执行公开脚本，运行配置仍留在工作区。
+           (str(root / 'integrations/cws/DY-官方库存巡检.py'), 'cws'),
+           *[(str(source / (name + '.py')), 'cws-support') for name in
+             ('douyin_cws_export', 'douyin_export', 'douyin_managed_export',
+              'douyin_browser', 'douyin_inventory', 'douyin_scope')],
            (str(source / 'douyin_dom_bridge.mjs'), '.'),
            (str(source / 'douyin_erp_bridge.py'), '.'),
            (str(ui / 'inventory-erp.user.js'), '.'),
