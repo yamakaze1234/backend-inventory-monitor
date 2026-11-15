@@ -121,6 +121,12 @@ def build_view(b,module,q):
         source=S('source','库存数据来源');source['forms']=[A('source','保存 SQL 连接',[F('server','服务器'),F('port','端口','number'),F('database','数据库'),F('user','查询账号'),F('password','密码（留空使用已保存密码）','password'),F('remember','加密保存密码','bool')],dict({k:cfg.get(k,1433 if k=='port' else 'ERP' if k=='database' else '') for k in ('server','port','database','user')},remember=remember)),A('catalog','刷新完整 ERP 目录')]
         source['planLink']='inventory'
         source['text']='使用 SQL 查询 ERP 库存。旧来源配置可通过保存 SQL 连接切换。'
+        with b.service.db() as db:
+            network=b.service.get(db,'sql_network_override',{})
+            address=network.get('address','') if network.get('scope')==b.service.get(db,'scope') else ''
+        source['forms'].append(A('sql-network','设置本机直连地址',[F('address','直连 IP（留空使用原服务器地址）')],dict(address=address),
+            description='用于域名解析异常；保存前验证连接和库存视图。保留原账号、数据库、库存基线及其他工具配置；不设置代理。'))
+        source['text']+=' 当前连接地址：'+(address or str(cfg.get('server') or '未配置'))
         robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。这里仅管理通知，订单匹配机器人单独配置。';rows=b.robots().list_robots()
         for row in rows:row['_forms']=[robot_form(row),A('robot-toggle','暂停' if row['enabled'] else '启用',[],dict(id=row['id'],enabled=not row['enabled']),confirm='确认调整该机器人的通知开关？'),A('robot-delete','移除机器人',[],dict(id=row['id']),confirm='移除机器人，历史回执保留。')]
         robots['forms']=[robot_form()];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]

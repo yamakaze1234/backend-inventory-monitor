@@ -120,6 +120,11 @@ def source_save(b,v):
 def catalog_refresh(b,v):
     b.external();b.service.sql_worker.refresh_catalog();return dict(message='已安排刷新完整商品目录')
 
+@action('settings','sql-network')
+def sql_network_save(b,v):
+    b.external();b.service.configure_sql_network(v.get('address',''))
+    return dict(message='连接及库存视图校验通过，已保存本机地址并安排采集；原账号、数据库及库存基线保留')
+
 @action('settings','interval')
 def interval(b,v):b.service.set_interval(v['minutes']);return dict(message='监控周期已保存')
 
