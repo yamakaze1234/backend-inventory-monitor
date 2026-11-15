@@ -638,3 +638,10 @@ def daily_report_select(b,v):
 def daily_report_import(b,v):
     from daily_report_business import action as execute
     return execute(b,'import',v)
+
+
+@action('order-settings','engine-check')
+def order_engine_check(b,v):
+    from order_business import adapter
+    b.external()
+    return adapter(b).action('engine-check')

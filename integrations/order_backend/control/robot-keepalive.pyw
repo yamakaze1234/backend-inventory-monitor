@@ -15,6 +15,7 @@ PWSH = DEPARTMENT['pwsh_path']
 WORKER = Path(DEPARTMENT['match_root']) / 'app/src/group_order_bot.py'
 sys.path.insert(0,str(WORKER.parent))
 from robot_config import get_config
+import harness_runtime
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 
@@ -33,6 +34,8 @@ def main():
         if enabled and enabled[0] == '0':
             return
     config=get_config(STATE)
+    # Harness 是唯一 Stream 接收者；DWS 仍可执行原有查询和通知投递。
+    harness = harness_runtime.connector_mode(DEPARTMENT) == 'harness'
     script = r'''
     $p = @(Get-CimInstance Win32_Process)
     $w = @($p | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like ('*'+$env:ORDER_BOT_MATCH_SCRIPT+'*') -and $_.CommandLine -match ' serve( |$)' })
@@ -48,12 +51,20 @@ def main():
     state = json.loads(check.stdout)
     if state.get('foreignConnector'):
         raise ValueError('该 Stream 机器人已有其他工作区连接，请使用本部门独立机器人')
+    if not harness and DEPARTMENT.get('harness_entry') and DEPARTMENT.get('harness_home'):
+        if harness_runtime.status(DEPARTMENT)['state']!='down':
+            raise ValueError('旧 Harness 尚未停止，禁止启动第二条接收连接')
+    if harness:
+        if state['connector']:
+            raise ValueError('请先停止同一机器人的旧 DWS Stream 连接')
+        harness_runtime.start(DEPARTMENT, config, Path(os.environ['ORDER_BOT_CONFIG']).parent)
+        state['connector']=harness_runtime.status(DEPARTMENT)['state'] != 'down'
     if not state['worker']:
         python = Path(DEPARTMENT['python_path'])
         if not python.is_file():
             raise RuntimeError('匹配运行环境不存在')
         state['startedWorker'] = start([str(python), '-B', '-X', 'utf8', str(WORKER), 'serve'], WORKER.parent, 'worker')
-    if not state['connector']:
+    if not harness and not state['connector']:
         state['startedConnector'] = start([PWSH, '-NoProfile', '-NonInteractive', '-File',
                                            str(ROOT / '启动机器人.ps1')], ROOT, 'connector')
     state['checkedAt'] = datetime.now().isoformat(timespec='seconds')
