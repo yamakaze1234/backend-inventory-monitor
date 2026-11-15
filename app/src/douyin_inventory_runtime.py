@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 from douyin_inventory import DouyinInventory
 from douyin_export import ChromeExportWorker, ChromeMachineExportWorker
@@ -23,6 +24,7 @@ from douyin_browser import BrowserInterrupted
 
 # 每个店铺在自己的执行线程内记录阶段，失败原因不引用其他店铺的进度。
 _patrol_stage = ContextVar('patrol_stage', default='')
+_patrol_snapshot_saved = ContextVar('patrol_snapshot_saved', default=False)
 _patrol_operations = ('check', 'export', 'confirm', 'inspect', 'scheduled-inspect', 'resume-inspect')
 _patrol_triggers = {'scheduled-inspect': '定时', 'resume-inspect': '重启续取', 'confirm': '手动确认'}
 
@@ -43,7 +45,7 @@ def _patrol_error(error):
                 return label
     code = getattr(error, 'winerror', None) or getattr(error, 'errno', None)
     name = type(error).__name__
-    return f'{name}（错误码 {code}）' if isinstance(code, int) else name
+    return (f'{name}（错误码 {code}）' if isinstance(code, int) else name) + '，具体原因待核查'
 
 
 def _patrol_delivery(config, ready, count, results, *, manual=False):
@@ -247,6 +249,8 @@ class DouyinRuntime:
     def collect_reserved(self, ident, *, confirm=False, trigger='手动', manual=False):
         """成功和失败都释放占位，并推后下一次定时检查，避免手动后紧接着重导。"""
         started = time.time()
+        run_id = uuid.uuid4().hex
+        snapshot_token = _patrol_snapshot_saved.set(False)
         token = _patrol_stage.set('核对店铺身份' if confirm else '连接抖店')
         shop = None
         outcome, detail, delivery = 'cancelled', '巡检已中断', '未发送'
@@ -293,6 +297,24 @@ class DouyinRuntime:
             outcome, detail, delivery = 'failed', f'{_patrol_stage.get()}：{_patrol_error(error)}', '本轮结果未确认'
             raise
         finally:
+            # 仅最终自动巡检失败时投递；浏览器重试、报表等待和手动检查不发此告警。
+            if (shop is not None and outcome in ('failed', 'incomplete')
+                    and trigger in ('定时', '重启续取') and getattr(self, 'live', False)
+                    and not self.stop_event.is_set()):
+                try:
+                    from notification_robots import store_for_service
+                    from douyin_patrol_failure import deliver
+                    result = deliver(store_for_service(self.service), run_id, shop, started, time.time(),
+                                     detail if outcome == 'failed' else '库存采集已完成，在线明细未完成回读，具体原因待核查。',
+                                     snapshot_saved=_patrol_snapshot_saved.get())
+                    labels = {'sent': '已发送', 'skipped': '未启用接收方', 'failed': '发送失败',
+                              'partial': '部分发送成功', 'unknown': '投递结果待核对，未自动重发'}
+                    delivery += '；失败提醒：' + labels.get(result['status'], '结果待核对')
+                except Exception as error:
+                    # 提醒异常不得掩盖原始错误或阻止调度占位释放。
+                    logging.getLogger(__name__).warning('巡检失败提醒异常：%s', type(error).__name__)
+                    delivery += '；失败提醒：投递未确认，未自动重发'
+            _patrol_snapshot_saved.reset(snapshot_token)
             _patrol_stage.reset(token)
             if recoveries:
                 detail = f'已尝试恢复本店浏览器 {recoveries} 次；' + detail
@@ -379,6 +401,7 @@ class DouyinRuntime:
         notify = self.notification_ready()
         self.store.accept(ident, config['revision'], result['products'], complete=result['complete'],
                           notify=notify, field=result.get('field'))
+        _patrol_snapshot_saved.set(bool(result['complete']))
         if result.get('export'):
             with self.store.db() as db:
                 db.execute('UPDATE stores SET export_file=? WHERE id=?', (result['export']['file'], ident))

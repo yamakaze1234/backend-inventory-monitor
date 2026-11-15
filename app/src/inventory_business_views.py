@@ -9,7 +9,7 @@ def table(title,columns,rows,**extra):
     return dict(title=title,columns=[dict(key=k,label=v) for k,v in columns],rows=rows,**extra)
 def section(key,title,**extra):return dict(id=key,title=title,forms=[],tables=[],**extra)
 F,A,T,S=field,form,table,section
-CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存（自动群发送关闭）'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
+CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存（自动群发送关闭）'),('douyin_patrol_failure','巡检失败提醒'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
 
 def robot_form(row=None):
     row=row or {}

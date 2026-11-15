@@ -13,6 +13,7 @@ import time
 import uuid
 
 CHANNELS = {'inventory': '库存提醒', 'douyin_inventory': '抖店补库存提醒（单独启用）',
+            'douyin_patrol_failure': '巡检失败提醒（单独启用）',
             'daily': '货源日报', 'messages': '钉钉货源消息', 'profit': 'ERP 单价累计涨跌 100 元提醒'}
 
 
@@ -165,7 +166,7 @@ class RobotStore:
             return [dict(channel=r[0], name=r[1], status='unknown' if r[2] == 'sending' and time.time() - r[3] > 60 else r[2], at=r[3]) for r in db.execute(
                 'SELECT channel,name,status,updated FROM receipts ORDER BY updated DESC LIMIT ?', (limit,))]
 
-    def send(self, channel, job, payload, occurred_at, transport=None, recipient_ids=None):
+    def send(self, channel, job, payload, occurred_at, transport=None, recipient_ids=None, *, retry_failed=True):
         if channel not in CHANNELS:
             raise ValueError('未知通知类型。')
         transport = transport or send_encrypted
@@ -186,14 +187,14 @@ class RobotStore:
                     db.execute('INSERT INTO receipts VALUES (?,?,?,?,?,?,0,?)',
                                (channel, job, ident, name, status, epoch, time.time()))
             targets = [r[0] for r in db.execute(
-                "SELECT robot FROM receipts WHERE channel=? AND job=? AND (status='pending' OR (status='failed' AND retryable=1)) ORDER BY rowid",
-                (channel, job))]
+                "SELECT robot FROM receipts WHERE channel=? AND job=? AND (status='pending' OR (status='failed' AND retryable=1 AND ?)) ORDER BY rowid",
+                (channel, job, int(retry_failed)))]
         for ident in targets:
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 receipt = db.execute('SELECT status,epoch,retryable FROM receipts WHERE channel=? AND job=? AND robot=?',
                                      (channel, job, ident)).fetchone()
-                if receipt[0] != 'pending' and not (receipt[0] == 'failed' and receipt[2]):
+                if receipt[0] != 'pending' and not (retry_failed and receipt[0] == 'failed' and receipt[2]):
                     continue
                 robot = db.execute('SELECT enabled,channels,since,deleted,secret FROM robots WHERE id=?', (ident,)).fetchone()
                 enterprise = db.execute('SELECT target FROM enterprise_robots WHERE robot=?', (ident,)).fetchone()
@@ -212,7 +213,8 @@ class RobotStore:
                 status = result.get('status', 'unknown')
                 if status not in ('sent', 'failed', 'unknown'):
                     status = 'unknown'
-                retryable = status == 'failed' and result.get('retryable') is True
+                # 单次告警即使收到可重试错误，也不在后续回读时再次发送。
+                retryable = retry_failed and status == 'failed' and result.get('retryable') is True
             except Exception:
                 status, retryable = 'unknown', False
             with self.db() as db:
