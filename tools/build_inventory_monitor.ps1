@@ -83,7 +83,7 @@ required_assets = {'order_backend/matching/group_order_bot.py', 'order_backend/m
 # 发货提醒和物流核验由外置后端执行，必须确保安装包携带全部兼容文件。
 required_assets |= {f'order_backend/control/{name}' for name in ('harness_runtime.py','harness_setup.py','harness_bridge.py','harness-entry.mjs','harness-route.mjs','ops-bridge/inventory_query_bridge.py','ops-bridge/src/ops_receiver.py')}
 required_assets |= {f'order_backend/control/{name}' for name in ('report-server.mjs','report.mjs','mcp-client.mjs','daily-report-config.mjs','daily-report-command.mjs','daily_report_excel.py')}
-required_assets |= {f'order_backend/matching/{name}.py' for name in ('shipping_monitor', 'shipping_online', 'shipping_shortage', 'shipping_sf_route')}
+required_assets |= {f'order_backend/matching/{name}.py' for name in ('shipping_monitor', 'shipping_online', 'shipping_shortage', 'shipping_sf_route', 'shipping_sf_config', 'monitor_secret_store')}
 assert required_assets <= names, required_assets - names
 pyz = archive.open_embedded_archive('PYZ.pyz')
 modules = set(pyz.toc)

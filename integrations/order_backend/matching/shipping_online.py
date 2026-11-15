@@ -125,7 +125,11 @@ class Logistics:
         if not numbers:
             return dict(result, status='尚无运单，保留记录')
         # 密钥留在本机独立文件中，不写进源码、日志或在线表格。
-        auth = read_json(self.root / 'shipping-sf-auth.json', {})
+        from shipping_sf_config import load as load_sf_auth
+        try:
+            auth = load_sf_auth(self.root)
+        except ValueError:
+            return dict(result, status='顺丰认证无法读取，请重新配置；保留记录')
         token = str(auth.get('apiKey') or os.environ.get('SHIPPING_SF_API_KEY') or '')
         direct = auth.get('provider') in ('sf-open', 'sf-sdk')
         if not token and not direct:

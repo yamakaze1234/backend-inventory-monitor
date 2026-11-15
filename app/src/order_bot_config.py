@@ -299,7 +299,7 @@ def describe(workspace):
     try:
         shipped=bundle_root()/'matching'
         shipping_current=shipping_ready and all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
-            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py',
+            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py','shipping_sf_config.py',
                          'patrol_notifications.py','notification_robots.py','notification_enterprise.py','monitor_secret_store.py'))
         schedule_current=all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
                              for name in ('group_order_bot.py','patrol_time_window.py'))

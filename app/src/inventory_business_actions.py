@@ -691,3 +691,17 @@ def order_engine_check(b,v):
 def daily_report_open(b,v):
     from daily_report_business import action as execute
     return execute(b,'open',v)
+
+
+@action('shipping','sf-auth-save')
+def shipping_sf_auth_save(b,v):
+    b.external()
+    from order_business import adapter
+    from shipping_sf_config import save
+    state=adapter(b).configuration()
+    if not state.get('configured') or not state.get('state_root'):
+        raise ValueError('请先配置订单匹配后端')
+    if state.get('shippingBackendCurrent') is not True:
+        raise ValueError('请先部署最新兼容后端，再保存加密顺丰认证')
+    save(state['state_root'],v)
+    return dict(message='顺丰生产认证已加密保存；未启动巡检，未验证接口权限')
