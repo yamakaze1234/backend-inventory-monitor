@@ -610,3 +610,31 @@ def shipping_interval(b,v):
         raise ValueError('监控周期须为 15 至 1440 分钟')
     b.external()
     return adapter(b).action('shipping-interval',dict(minutes=int(value)))
+
+
+@action('order-settings','daily-report-save')
+def daily_report_save(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'save',v)
+
+@action('order-settings','daily-report-test')
+def daily_report_test(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'test',v)
+
+@action('order-settings','daily-report-generate')
+def daily_report_generate(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'report',v)
+
+
+@action('order-settings','daily-report-select')
+def daily_report_select(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'select',v)
+
+
+@action('order-settings','daily-report-import')
+def daily_report_import(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'import',v)

@@ -31,7 +31,8 @@ def view(b,q):
         else:
             robot['text']+='；自动巡检时段需要新版兼容后端。'
     else:robot['text']+='。请先保存匹配服务配置并安装兼容后端。'
-    return dict(module='order-settings',filters=[],query=q,sections=[backend,robot])
+    from daily_report_business import view as daily_view
+    return dict(module='order-settings',filters=[],query=q,sections=[backend,robot,daily_view(b.service.root)])
 
 
 def patrol_window_form(state):
