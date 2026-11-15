@@ -1,0 +1,2 @@
+# 兼容旧入口；更新依赖的唯一来源为 pyproject.toml / uv.lock 导出。
+-r ../../requirements.txt

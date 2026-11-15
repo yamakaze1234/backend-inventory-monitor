@@ -99,7 +99,7 @@ class PriceMonitorTest(unittest.TestCase):
         self.monitor.check()
         self.assertEqual(len(self.events()), 2)
         text = '\n'.join(json.loads(event['payload'])['text']['content'] for event in self.events())
-        for word in ('goods_id 123', '累计上涨 100.00', '累计下降 100.00', '受影响配置', '配置1', '公司大库库存成本'):
+        for word in ('goods_id 123', '累计上涨 100.00', '累计下降 100.00', '+100.00%', '-50.00%', '公司大库库存成本'):
             self.assertIn(word, text)
         self.assertNotIn('利润', text)
         self.assertNotIn('核算', text)
@@ -138,6 +138,42 @@ class PriceMonitorTest(unittest.TestCase):
         self.source.cost = 30000
         self.monitor.check()
         self.assertEqual(len(self.events()), 2)
+
+    def test_round_combines_rises_and_falls_without_repeat(self):
+        # 多配件一轮只生成一条汇总，未变化的下一轮不重复提醒。
+        value = manifest()
+        part = copy.deepcopy(value['configs'][0]['parts'][0])
+        part.update(lineId='gpu', goodsId='456', name='显卡')
+        value['configs'][0]['parts'].append(part)
+        self.write(rehash(value))
+        self.monitor.bind(self.file)
+        self.monitor.check()
+        self.source.read_profit_costs = lambda ids: dict(
+            costs={'123': 20000, '456': 0}, failed=[], sourceScope=self.source.scope, collectedAt=1234567890.0)
+        run = self.monitor.check()
+        self.assertEqual(len(self.events()), 1)
+        text = json.loads(self.events()[0]['payload'])['text']['content']
+        self.assertIn('2 个配件（上涨 1 / 下降 1）', text)
+        self.assertIn('goods_id 123', text)
+        self.assertIn('goods_id 456', text)
+        self.assertEqual(text.count('成本采集：'), 1)
+        self.assertEqual(len(self.results(run)), 2)
+        self.monitor.check()
+        self.assertEqual(len(self.events()), 1)
+
+    def test_large_round_pages_keep_every_component_once(self):
+        # 超长名称和大批量变化按字节分页，所有商品都保留且没有重复。
+        changes = [(str(index), {'names': ['长配件名' * 200]}, 10000, 20000) for index in range(1, 81)]
+        with self.monitor.db() as db:
+            self.monitor._insert_summary_events(db, 'large-round', changes, 1234567890, ['r1'])
+        events = self.events()
+        self.assertGreater(len(events), 1)
+        texts = [json.loads(event['payload'])['text']['content'] for event in events]
+        for index, text in enumerate(texts, 1):
+            self.assertLessEqual(len(text.encode('utf-8')), 12000)
+            self.assertIn(f'第 {index}/{len(events)} 页', text)
+        ids = [line.split('goods_id ')[1] for text in texts for line in text.splitlines() if 'goods_id ' in line]
+        self.assertEqual(sorted(ids), sorted(str(index) for index in range(1, 81)))
 
     def test_event_insert_failure_rolls_back_anchor_and_latest_together(self):
         self.write(manifest())
@@ -180,9 +216,10 @@ class PriceMonitorTest(unittest.TestCase):
         self.assertEqual(self.source.calls, [{'123'}, {'123'}, {'123'}])
         self.assertEqual(len(self.events()), 1)
         text = json.loads(self.events()[0]['payload'])['text']['content']
-        self.assertIn('配置1', text)
-        self.assertIn('配置2', text)
-        self.assertIn('受影响配置：2 套', text)
+        self.assertNotIn('配置1', text)
+        self.assertNotIn('配置2', text)
+        self.assertNotIn('受影响配置', text)
+        self.assertEqual(self.monitor.status()['lastResults'][0]['affectedConfigs'], 2)
 
     def test_failed_missing_and_zero_cost_preserve_baseline(self):
         self.write(manifest())
@@ -284,7 +321,7 @@ class PriceMonitorTest(unittest.TestCase):
         self.assertEqual(len(self.source.calls[-1]), 1)
         self.assertEqual(self.results(run)[0]['changed'], 1)
         self.assertEqual(self.monitor.status()['lastResults'][0]['affectedConfigs'], 1)
-        self.assertIn('受影响配置：1 套', json.loads(self.events()[0]['payload'])['text']['content'])
+        self.assertNotIn('受影响配置', json.loads(self.events()[0]['payload'])['text']['content'])
 
     def test_external_bind_during_query_cannot_resurrect_deleted_baseline(self):
         import threading
@@ -449,7 +486,7 @@ class PriceMonitorTest(unittest.TestCase):
         finally:
             migrated.stop()
 
-    def test_restart_baseline_and_long_message_splitting(self):
+    def test_restart_baseline_and_many_configs_send_one_component_notice(self):
         value = manifest()
         value['configs'][0]['name'] = '长名称' * 75
         for index in range(1, 30):
@@ -464,9 +501,14 @@ class PriceMonitorTest(unittest.TestCase):
         self.source.cost += 10000
         self.monitor.check()
         events = self.events()
-        self.assertGreater(len(events), 1)
-        self.assertTrue(all(len(json.loads(event['payload'])['text']['content'].encode('utf-8')) <= 12000 for event in events))
-        self.assertEqual(sum(json.loads(event['payload'])['text']['content'].count('长名称') for event in events), 30 * 75)
+        self.assertEqual(len(events), 1)
+        text=json.loads(events[0]['payload'])['text']['content']
+        self.assertLessEqual(len(text.encode('utf-8')),12000)
+        self.assertNotIn('长名称',text)
+        self.assertNotIn('链接',text)
+        self.assertNotIn('配置发布',text)
+        # 不发送配置列表，但历史检测结果仍完整保留全部关联配置。
+        self.assertEqual(len(self.monitor.status()['lastResults'][0]['refs']),30)
 
     def test_coordinated_source_keeps_scope_with_captured_connection(self):
         import threading
@@ -485,6 +527,17 @@ class PriceMonitorTest(unittest.TestCase):
         result = CoordinatedProfitSource(worker).read_profit_costs({'123'})
         self.assertEqual(result['sourceScope'], 'sql:A')
         self.assertEqual(result['costs']['123'], 1)
+
+
+    def test_zero_price_change_notice_does_not_invent_percentage(self):
+        # 原价为零时仅展示真实金额，不能除零或生成虚构涨幅。
+        self.write(manifest());self.monitor.bind(self.file)
+        self.source.cost=0;self.monitor.check()
+        self.source.cost=10000;self.monitor.check()
+        self.assertEqual(len(self.events()),1)
+        text=json.loads(self.events()[0]['payload'])['text']['content']
+        self.assertIn('0.00 → 当前 100.00 元',text)
+        self.assertIn('从零上涨（不计算百分比）',text)
 
 
 if __name__ == '__main__':

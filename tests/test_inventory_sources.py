@@ -16,7 +16,7 @@ from sql_inventory_source import warehouse_key
 SETTINGS=dict(server='offline-test',port=1433,database='ERP',user='fixture')
 
 def raw(stock=8,pending=0):
-    return dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',库房='公司大库',分库数=stock,分库可销数=stock,分库待入=pending)
+    return dict(goods_id='101',商品编码='SKU101',商品名称='测试商品',库房='公司大库',分库数=stock,分库可销数=stock,分库待入=pending,分库待审=0)
 
 class Connector:
     def __init__(self): self.rows=[raw()]; self.closed=0; self.queries=[]; self.fail=False
@@ -169,7 +169,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(event['after']['purchase'],60)
         self.assertEqual(event['before']['purchase'],50)
         body=format_events([event],self.service)
-        # 通知已有颜色标签，断言可见业务文案而非标签拼接方式。
+        # 消息含颜色标签，按用户实际看到的连续文本验证。
         import re
         self.assertIn('ERP 总待入：60 件 · 仓库未确认', re.sub(r'<[^>]+>', '', body))
         self.assertNotIn('公司大库',body)

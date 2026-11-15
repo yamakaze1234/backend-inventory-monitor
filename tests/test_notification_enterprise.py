@@ -38,3 +38,24 @@ class EnterpriseTest(unittest.TestCase):
     def test_ambiguous_response_is_unknown(self):
         with patch.object(EnterpriseClient,'verify',return_value=TARGET), patch.object(EnterpriseClient,'call',return_value=dict(ok=True,result={})):
             self.assertEqual(send_enterprise(TARGET,PAYLOAD)['status'],'unknown')
+
+
+    def test_price_text_is_sent_as_markdown_without_mutating_event(self):
+        # 模拟价格监控实际生成的 text 事件，核对路由、内容和换行转换。
+        content='ERP 单价累计变化达到 100 元 · goods_id 123\n配件：处理器\n公司大库库存成本：100.00 → 200.00 元'
+        payload=dict(msgtype='text',text=dict(content=content))
+        success=dict(ok=True,result=dict(success=True,result=dict(processQueryKey='fixture')))
+        with patch.object(EnterpriseClient,'verify',return_value=TARGET), patch.object(EnterpriseClient,'call',return_value=success) as call:
+            self.assertEqual(send_enterprise(TARGET,payload),dict(status='sent',retryable=False))
+            args,profile=call.call_args.args
+            self.assertEqual(profile,TARGET['profile'])
+            self.assertEqual(args[args.index('--robot-code')+1],TARGET['robot_code'])
+            self.assertEqual(args[args.index('--group')+1],TARGET['group_id'])
+            self.assertEqual(args[args.index('--markdown')+1],content.replace('\n','  \n'))
+            self.assertEqual(payload,dict(msgtype='text',text=dict(content=content)))
+
+    def test_invalid_or_empty_text_never_sends(self):
+        with patch.object(EnterpriseClient,'verify',return_value=TARGET), patch.object(EnterpriseClient,'call') as call:
+            for payload in (dict(msgtype='text',text=dict(content='   ')),dict(msgtype='text',text=dict(content=123)),dict(msgtype='image'),dict(msgtype='markdown',markdown=dict(text=None))):
+                self.assertEqual(send_enterprise(TARGET,payload),dict(status='failed',retryable=False))
+            call.assert_not_called()

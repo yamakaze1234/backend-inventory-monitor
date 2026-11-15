@@ -1,140 +1,56 @@
-# 后台库存监控 rc26 候选源码
-
-当前源码为 `1.05.0-rc26`：抖店官方导出、维护表与 ERP 配件核对、零库存补库存提醒、独立企业机器人路由。仅已启用且订阅抖店频道的机器人接收通知；历史预览不补发，同一清单去重。
-
-本轮更新本机现用程序，不发布新的公开下载附件。下方 v1.04 下载说明仅指历史正式版。
-
-构建依赖：Python、PyInstaller、Pillow、pystray、pymssql、websockets、openpyxl、pyxlsb；通过 `build_inventory_monitor.ps1` 构建，DWS 由 `-DwsPath` 指定。候选包不带运行数据库、机器人配置或浏览器资料。
-
----
-
 # 后台库存监控
 
-Windows 桌面库存与货源监控工具，当前版本为 **正式版 v1.04**。
+Windows 桌面工作台，统一查看 ERP 库存、抖店库存巡检、订单匹配和通知处理状态。通用版支持不同部门独立配置工作区、店铺及机器人；ERP 仍须符合本项目的字段和库存口径，其他 ERP 需要适配。
 
-默认直接查询 SQL Server 库存，也可选择 ERP 浏览器脚本采集；在本地 SQLite 保存关注产品、快照和提醒记录，继续通过原有钉钉机器人发送通知。
+[Gitea 仓库](https://gitea.cq360.top/CoreStudio/backend-inventory-monitor) · [正式下载与版本说明](https://gitea.cq360.top/CoreStudio/backend-inventory-monitor/releases)
 
-## 下载使用
+源码版本以 `app/src/inventory_version.py` 为准，已发布版本以发行页为准。源码提交、发行附件上传、更新通道可用和本机安装完成是不同状态，验证记录分别说明。
 
-到 [Releases](https://github.com/yamakaze1234/backend-inventory-monitor/releases/latest) 下载 `backend-inventory-monitor-v1.04-windows.zip`，解压后运行 `后台库存监控_正式版_v1.04.exe`。安装包内置 Python 和 DWS，不需要另装 Python。
+## 快速开始
 
-1. 在采集设置填写自己的 SQL Server 地址、端口、数据库和只读查询账号；如选择脚本查询，再安装 `inventory-erp.user.js` 并登录 ERP。
-2. 添加关注产品，选择库存依据、仓库及预警数量。
-3. 在采集设置中配置自己的钉钉机器人。
-4. 如需货源消息监听，在钉钉监控中登录并配置自己的群和人员。首次展示的名称均为示例，请替换。
-5. 如需 AI 日报、周报，在货源汇报中配置自己的接口、模型及 Key。
+1. 下载发行包并解压到长期保留、当前用户可写的目录。
+2. 运行包根目录的 `一键部署环境.cmd`（源码目录为 `tools/一键部署环境.cmd`），检测并补齐运行环境；安装器需要的系统确认按提示完成。
+3. 启动程序，在“连接与通知设置”填写本部门 ERP 连接，核对工作区位置。
+4. 添加监控商品、仓库和阈值；需要抖店巡检时再添加店铺、绑定维护表并登录对应浏览器。
+5. 按需要配置通知机器人。先核对库存和目标，再启用定时巡检及通知。
 
-首次使用请看 [中文使用说明](使用说明.md)，库存口径和详细规则见 [功能说明](inventory-setup.md)。
+后续升级从侧栏“软件更新”检查版本，点击“一键更新并重启”。自动检查不会自动安装。完整步骤、依赖及更新失败处理见 [使用说明](docs/使用说明.md)。
 
-## v1.04 更新
+## 文档
 
-- 缺少分库待入时，独立监测 ERP 总待入并标注“仓库未确认”，不会替代所选仓库库存。
-- 库存未知也能监测待入；首次读取建立基线，后续出现或增加才提醒。
-- 分库待入恢复后优先使用分库值，切换口径不重复播报旧待入；保留仓库、阈值及机器人配置。
-
-## v1.03 已有功能
-
-- SQL 默认查询，支持切回浏览器脚本；保留原有机器人及播报格式。
-- 全商品目录包含零库存产品；新增关注排除停售、套餐及名称含星号的产品。
-- 按指定仓库监控库存与待入，待入 NULL 按 0，缺失仓库记录保留未知；切换来源首轮建立基线。
-- 库存提醒记录支持筛选和导出；保存密码使用当前 Windows 用户加密。
-- 同步已有日报修复：支持纯到货信息，生成失败有限重试，发送结果未知不重发。
-
-## v1.02 已有功能
-
-- 表格导入：支持 Excel / CSV，goodsid 精确匹配，预警值校验，总览确认后批量保存，统一使用公司大库可销数。
-- 批量删除关注：独立窗口逐项勾选、全选、取消全选，确认后删除并保留历史记录。
-- 普通到货、库存消息显示“货源情况”；指定成本表来源的重开消息显示“价格调整｜重开成本表”。
-- 两个新窗口沿用程序统一样式，提供小窗口操作验证。
-
-老用户可单独下载 EXE，退出旧程序后放到原目录运行，保留 `.local_inventory_ui_test` 和其他原有配置。若旧 EXE 文件名不同，更新快捷方式目标后再启动；不要同时运行两个版本。升级默认选择 SQL，需要填写连接信息或手动切回脚本；采集脚本仍为 0.4.0。
-
-## v1.01 已有功能
-
-- 库存监控独立运行，钉钉监听按需配置，修复首次配置和子进程资源路径。
-- 本机“自动重登（无人值守）”开关；脚本 0.4.0 与 OpenCLI 浏览器点击配合，不读取密码。
-- 重登后恢复公司大库并安排新采集；重试失败后一次性机器人断连提醒。
-- 完整离线 HTML 教程、统一界面配色、联网一键准备 Node.js/OpenCLI 环境。
-
-Windows 11 x64 + Chrome 已实测，Windows 10 x64 尚未整套验收，Win7 不支持。Edge 自动重登未验收。一键准备不自动确认扩展安装或代填密码；普通库存监控不要求 Node/OpenCLI。
-
-[完整 HTML 教程下载](https://github.com/yamakaze1234/backend-inventory-monitor/releases/download/v1.04/inventory-guide-v1.04.html) · [在线中文教程](使用说明.md)
-
-## 功能
-
-- 重点产品低库存、库存归零、超售及恢复提醒。
-- 公司大库可销数或指定分库库存监控，保留数量未知状态。
-- 入库单流水识别、库存增加提醒及产品搜索配置。
-- 多钉钉机器人、按通知类型选择接收方及独立投递记录。
-- 货源消息监听、AI 日报和周报、发送前预览。
-- 托盘运行、历史记录、缓存整理和统一滚动界面。
-
-ERP 采集桥接仅监听 `127.0.0.1:18763`。浏览器采集脚本针对现有 3cerp 页面；其他 ERP 需要适配。库存规则不依赖 AI，货源 AI 汇报需要自行配置接口。
-
-## SQL 部署与连接
-
-使用 Windows 11 x64 打包版，不需要另装 Python、DBX、SQL Server 客户端或 ODBC 驱动。保持电脑唤醒和程序运行，确保可访问管理员提供的数据库地址及端口。SQL 查询无需 ERP 网页、Node.js、OpenCLI 或浏览器无人值守；提醒播报需要网络和机器人配置。
-
-当前 SQL 适配 `[库存].[库存查询]` 和 `[库存].[分库库存]`，账号需要这两个对象的查询权限。字段要求、首次配置和“缺少仓库记录”的解释见 [中文使用说明](使用说明.md)。不同 ERP 表结构需先适配，公开版不提供数据库地址、账号或数据。
-
-## 开发运行
-
-验证环境：Windows、Python 3.13、PowerShell 7、Node.js。Python 需要包含 Tkinter。
-
-在仓库根目录执行：
-
-```powershell
-py -3 -m pip install -r requirements.txt
-py -3 inventory_app.py
-```
-
-`inventory_app.py` 是正式运行入口，配置完成后会按规则发通知。离线界面检查使用：
-
-```powershell
-py -3 inventory_app.py --ui-check --data-dir .build/ui-check
-```
-
-钉钉功能需要 DWS；源码运行时可将 `dws.exe` 放在 `monitor_assets/`，或加入系统 `PATH`。
-
-## 验证
-
-```powershell
-py -3 -m unittest discover -s tests -t . -q
-node --test test_inventory_collector.cjs test_inventory_recovery.cjs
-```
-
-测试使用临时目录、模拟消息和网络替身。离线 UI 检查不连接 ERP、不启动监听、不发送消息。
-
-## 构建 Windows EXE
-
-准备 DWS 可执行文件，然后在仓库根目录执行：
-
-```powershell
-py -3 -m pip install -r requirements-build.txt
-pwsh -File ./build_inventory_monitor.ps1 -DwsPath "C:/tools/dws.exe"
-```
-
-默认输出为 `dist/backend-inventory-monitor-v1.04/`。已有 EXE 时默认拒绝覆盖；需要重新构建可使用 `-Rebuild`。构建脚本会验证归档依赖并生成 SHA-256 清单。分发时同时附上 `THIRD_PARTY_LICENSES/`。
-
-## 源码结构
-
-| 路径 | 用途 |
+| 文档 | 用途 |
 | --- | --- |
-| `inventory_app.py` | 正式版入口 |
-| `inventory_monitor.py`、`inventory_rules.py` | 本地库存存储与规则 |
-| `inventory_bridge.py`、`inventory-erp.user.js` | ERP 采集桥接与浏览器脚本 |
-| `inventory_panel.py`、`inventory_theme.py`、`*_ui.py` | 桌面界面 |
-| `inventory_daily.py`、`inventory_weekly.py`、`inventory_ai.py` | 货源汇报 |
-| `monitor_*.py`、`source_monitor_supervisor.py` | 钉钉设置、安装和监听 |
-| `notification_*.py`、`inventory_delivery.py` | 机器人与通知投递 |
-| `test_inventory_ui_local.py` | 正式入口复用的工作区界面构建函数 |
-| `tests/` | Python 回归测试 |
-| `packaging/` | PyInstaller 打包配置 |
+| [使用说明](docs/使用说明.md) | 一键部署、首次配置、日常操作、更新及故障处理 |
+| [结构与数据流](docs/结构与数据流.md) | 模块结构图、数据流和存储位置 |
+| [开发与构建](docs/开发与构建.md) | 开发环境、本地验证、功能分支与 PR 流程 |
+| [发布边界](docs/PUBLICATION.md) | 源码、发行包、签名更新及验收要求 |
+| [库存业务规则](docs/inventory-setup.md) | 库存判断的详细约定 |
+| [订单后端说明](integrations/order_backend/README.md) | 外部匹配项目与部门兼容层 |
+| [机器人数据查询](docs/机器人数据查询接口.md) | 只读查询接口契约 |
 
-## 升级与数据
+`docs/` 中带日期或“候选验收”的文件保留历史证据，不代表当前版本已完成相同环境的验收。
 
-升级前从托盘退出程序，再替换 EXE 和采集脚本。保留程序目录的 `.local_inventory_ui_test/`，以及 `%LOCALAPPDATA%/DingTalkSourceMonitor/` 中原有数据；关闭窗口仅收起到托盘。
+## 目录
 
-本仓库及安装包不包含本机数据库、消息记录、账户登录资料、机器人地址或 AI Key。公开版本将默认群名和人员名替换为示例；库存规则与正式版 v1.04 一致。整理详情见 [发布说明](PUBLICATION.md)，历史功能记录见 [版本记录](版本记录.md)。
+```text
+app/
+  src/                Python 业务模块与 Windows 桌面宿主源码
+  web/                React 工作台源码及前端依赖锁文件
+  ui/                 图标、采集脚本、更新公钥与安装助手
+  runtime/            启动入口
+integrations/
+  order_backend/      可选订单匹配兼容层
+tools/                环境部署、检查、构建及验证脚本
+  packaging/          PyInstaller 配置及更新依赖
+tests/                Python 与浏览器回归测试
+docs/                 使用、结构、开发和发布文档
+THIRD_PARTY_LICENSES/  随包第三方许可
+dev.ps1               开发命令入口
+启动.cmd              本地启动入口
+```
 
-第三方组件许可见 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。
+运行数据库、登录资料、机器人配置、维护表和业务导出不进入仓库或通用发行包。首次安装创建独立工作区；已有安装升级保留原数据位置。
+
+## uv 开发环境
+
+Python 开发、测试与构建统一使用 uv。运行 `tools/一键部署环境.cmd -Mode Development`，或安装 uv 后执行 `uv sync --locked` 和 `npm --prefix app/web ci`。依赖声明为 `pyproject.toml`，锁文件为 `uv.lock`；前端继续使用 npm。普通 EXE 使用者无需安装 uv。具体流程见 [开发与构建](docs/开发与构建.md)。

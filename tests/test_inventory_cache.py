@@ -43,6 +43,97 @@ class CacheTests(unittest.TestCase):
         archive=json.loads(next(self.trash.glob('*.json')).read_text('utf-8'))
         self.assertEqual(len(archive['records']),3)
 
+    def export_fixture(self):
+        """三份有归档凭据的导出：历史、当前和最新；另含未完成下载。"""
+        import hashlib, os
+        from douyin_inventory import DouyinInventory
+        store = DouyinInventory(self.root); ident = store.add_store('缓存测试店')
+        folder = store.root/'exports'/ident; folder.mkdir(parents=True)
+        downloads = store.root/'managed-downloads'/ident; downloads.mkdir(parents=True)
+        groups = []
+        for i in range(1,4):
+            target = folder/f'2026010{i}_120000_abcdef.xlsx'
+            raw = downloads/(str(i)*32+'.xlsx')
+            data = ('导出'+str(i)).encode()
+            target.write_bytes(data); raw.write_bytes(data)
+            evidence = target.with_suffix('.json')
+            evidence.write_text(json.dumps(dict(file=str(target),download_file=str(raw),sha256=hashlib.sha256(data).hexdigest())),encoding='utf-8')
+            for path in (target,raw,evidence):os.utime(path,(self.old,self.old))
+            groups.append((target,raw,evidence))
+        unfinished = downloads/('f'*32+'.crdownload');unfinished.write_bytes(b'partial')
+        with store.db() as db:
+            db.execute('UPDATE stores SET export_file=? WHERE id=?',(str(groups[1][0]),ident))
+            db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)',('manual-note','保留备注'))
+        return store, ident, groups, unfinished
+
+    def test_history_export_cache_recycles_only_verified_old_files(self):
+        store,ident,groups,unfinished = self.export_fixture()
+        plan = preview(self.service,0,now=self.now)
+        self.assertEqual({x['path'] for x in plan['files']},{str(x.resolve()) for x in groups[0]})
+        result = execute(self.service,plan,recycler=self.recycle)
+        self.assertEqual(result['recycled_files'],3)
+        self.assertTrue(all(x.exists() for group in groups[1:] for x in group))
+        self.assertTrue(unfinished.exists())
+        with store.db() as db:
+            self.assertEqual(db.execute('SELECT value FROM preferences WHERE key=?',('manual-note',)).fetchone()[0],'保留备注')
+
+    def test_archive_failure_preserves_evidence_and_can_retry(self):
+        _,_,groups,_=self.export_fixture()
+        archive,raw,evidence=groups[0]
+        def fail_archive(path):
+            if path==archive:raise OSError('locked archive')
+            self.recycle(path)
+        result=execute(self.service,preview(self.service,0,now=self.now),recycler=fail_archive)
+        self.assertTrue(result['errors']);self.assertTrue(archive.exists());self.assertTrue(evidence.exists())
+        self.assertFalse(raw.exists())
+        execute(self.service,preview(self.service,0,now=self.now),recycler=self.recycle)
+        self.assertFalse(archive.exists());self.assertFalse(evidence.exists())
+
+    def test_raw_failure_after_archive_recycles_keeps_recoverable_evidence(self):
+        _,_,groups,_=self.export_fixture()
+        archive,raw,evidence=groups[0]
+        def fail_raw(path):
+            if path==raw:raise OSError('locked raw')
+            self.recycle(path)
+        result=execute(self.service,preview(self.service,0,now=self.now),recycler=fail_raw)
+        self.assertTrue(result['errors']);self.assertFalse(archive.exists());self.assertTrue(evidence.exists())
+        retry=preview(self.service,0,now=self.now)
+        self.assertEqual({x['path'] for x in retry['files']},{str(raw.resolve()),str(evidence.resolve())})
+        execute(self.service,retry,recycler=self.recycle)
+        self.assertFalse(raw.exists());self.assertFalse(evidence.exists())
+
+    def test_old_evidence_does_not_remove_a_young_archive_proof(self):
+        import os
+        _,_,groups,_=self.export_fixture();archive,raw,evidence=groups[0]
+        os.utime(archive,(self.now,self.now))
+        execute(self.service,preview(self.service,30,now=self.now),recycler=self.recycle)
+        self.assertTrue(archive.exists());self.assertTrue(evidence.exists())
+        self.assertFalse(raw.exists())
+
+    def test_evidence_only_failure_can_be_retried(self):
+        _,_,groups,_=self.export_fixture();archive,raw,evidence=groups[0]
+        def fail_proof(path):
+            if path==evidence:raise OSError('locked evidence')
+            self.recycle(path)
+        execute(self.service,preview(self.service,0,now=self.now),recycler=fail_proof)
+        self.assertFalse(archive.exists());self.assertFalse(raw.exists());self.assertTrue(evidence.exists())
+        execute(self.service,preview(self.service,0,now=self.now),recycler=self.recycle)
+        self.assertFalse(evidence.exists())
+
+    def test_export_becoming_current_after_preview_is_preserved(self):
+        store,ident,groups,_ = self.export_fixture()
+        plan = preview(self.service,0,now=self.now)
+        with store.db() as db:db.execute('UPDATE stores SET export_file=? WHERE id=?',(str(groups[0][0]),ident))
+        result = execute(self.service,plan,recycler=self.recycle)
+        self.assertEqual(result['recycled_files'],0)
+        self.assertTrue(all(x.exists() for x in groups[0]))
+
+    def test_modified_history_workbook_and_unowned_download_are_preserved(self):
+        _,_,groups,_ = self.export_fixture()
+        groups[0][0].write_bytes(b'user-edited')
+        plan = preview(self.service,0,now=self.now)
+        self.assertEqual(plan['files'],[])
+
     def test_recycle_failure_prevents_database_deletion(self):
         def fail(path): raise OSError('no recycle bin')
         result=execute(self.service,preview(self.service,30,now=self.now),recycler=fail)
@@ -81,7 +172,7 @@ class CacheTests(unittest.TestCase):
         for days in (7,30,90,0):
             plan=preview(self.service,days,now=self.now+1)
             self.assertEqual(plan['row_count'],4 if days==0 else 0 if days==90 else 3)
-        for days in (-1,None,1):
+        for days in (-1,None,3651,True):
             with self.assertRaises(ValueError):preview(self.service,days)
 
     def test_completed_record_becoming_pending_is_preserved(self):

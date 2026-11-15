@@ -92,13 +92,14 @@ class OnlineTests(unittest.TestCase):
         manual=dict(recordId='manual',cells={self.fields['店铺']:'测试店铺'})
         self.client.rows.extend([other,manual]);self.accept(quantity=3)
         result=self.sync(force=True)
-        self.assertTrue(result['ok']);self.assertEqual(result['deleted'],1)
-        self.assertEqual([r['recordId'] for r in self.client.rows],['other-shop','manual'])
+        self.assertTrue(result['ok']);self.assertEqual(result['deleted'],0)
+        self.assertEqual([r['recordId'] for r in self.client.rows],['record-0','other-shop','manual'])
+        self.assertEqual(self.client.rows[0]['cells'][self.fields['补库存标记']],'已退出提醒')
 
     def test_unknown_committed_create_is_verified_without_replay(self):
         self.client.unknown_once=True;self.assertFalse(self.sync()['ok'])
         self.assertTrue(status(self.store.root,self.ident)['uncertain'])
-        self.assertFalse(self.sync()['ok']);self.assertEqual(self.client.writes,1)
+        self.assertTrue(self.sync()['ok']);self.assertEqual(self.client.writes,1)
         result=self.sync(force=True)
         self.assertTrue(result['ok']);self.assertEqual(self.client.writes,1);self.assertEqual(len(self.client.rows),1)
 
@@ -106,6 +107,82 @@ class OnlineTests(unittest.TestCase):
         self.sync();self.client.rows.append(deepcopy(self.client.rows[0]));self.accept(quantity=3)
         result=self.sync(force=True)
         self.assertFalse(result['ok']);self.assertIn('重复',result['message']);self.assertEqual(self.client.deletes,[])
+
+    def test_partial_update_resumes_only_remaining_cells_and_keeps_manual_fields(self):
+        """旧批次部分成功时，自动恢复不等待旧目标全量一致。"""
+        self.sync()
+        cells=self.client.rows[0]['cells']
+        cells[self.fields['平台库存']]=9
+        cells[self.fields['处理状态']]='人工跟进'
+        cells[self.fields['备注']]='不要覆盖'
+        saved=status(self.store.root,self.ident)
+        saved.update(ok=False,uncertain=True,intent={'outdated-key':{}},delete_ids=[])
+        from douyin_online import save_status
+        save_status(self.store.root,self.ident,saved)
+        original=self.client.write
+        self.client.write=Mock(side_effect=original)
+        result=self.sync()
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.client.write.call_args.args[0],['record','update'])
+        self.assertEqual(self.client.write.call_args.args[1],[dict(recordId='record-0',cells={self.fields['平台库存']:0})])
+        self.assertEqual(cells[self.fields['处理状态']],'人工跟进')
+        self.assertEqual(cells[self.fields['备注']],'不要覆盖')
+
+    def test_exit_keeps_rows_with_manual_work(self):
+        """退出提醒不得删除用户备注或处理结果；只改程序管理的标记。"""
+        self.sync()
+        cells=self.client.rows[0]['cells'];cells[self.fields['备注']]='活动结束后复查'
+        cells[self.fields['处理状态']]='已处理'
+        self.accept(quantity=5)
+        self.assertTrue(self.sync(force=True)['ok'])
+        self.assertEqual(self.client.deletes,[])
+        self.assertEqual(cells[self.fields['补库存标记']],'已退出提醒')
+        self.assertEqual(cells[self.fields['备注']],'活动结束后复查')
+        self.assertEqual(cells[self.fields['处理状态']],'已处理')
+
+    def test_partial_create_resumes_without_duplicate_and_partial_read_never_writes(self):
+        """已经落库的创建只核对；读取失败时不清除待恢复状态。"""
+        self.client.unknown_once=True;self.sync()
+        original=self.client.query
+        self.client.query=Mock(side_effect=ValueError('未完整读取'))
+        self.assertFalse(self.sync()['ok']);self.assertEqual(self.client.writes,1)
+        self.client.query=original
+        self.assertTrue(self.sync()['ok']);self.assertEqual(self.client.writes,1)
+
+    def test_resume_only_creates_missing_business_key(self):
+        """第一条创建已落库、第二条未执行时，只补第二条。"""
+        config=self.store.store(self.ident)
+        sku=deepcopy(self.store.snapshots(self.ident)[0]);sku['sku_id']='3385942630294054';sku['export_sellable']=0
+        first=deepcopy(sku);first['sku_id']='3385942630294053'
+        self.store.accept(self.ident,config['revision'],[dict(product_id=sku['product_id'],product_name='商品',
+            monitor_scope=MACHINE_SCOPE,skus=[first,sku])],complete=True,notify=False,now=1700000000)
+        write=self.client.write
+        def partial(operation,records):
+            write(operation,records[:1])
+            raise TimeoutError('只完成首条')
+        self.client.write=Mock(side_effect=partial)
+        self.assertFalse(self.sync()['ok'])
+        self.client.write=Mock(side_effect=write)
+        self.assertTrue(self.sync()['ok'])
+        sent=self.client.write.call_args.args[1]
+        self.assertEqual(len(sent),1)
+        self.assertEqual(sent[0]['cells'][self.fields['SKU ID']],'3385942630294054')
+        self.assertEqual(len(self.client.rows),2)
+
+    def test_unmatched_return_clears_archived_marker_without_touching_status(self):
+        """曾退出的 SKU 再次待人工核对时，清除过期的退出标记。"""
+        self.sync();self.accept(quantity=5);self.sync(force=True)
+        rows=self.store.snapshots(self.ident);rows[0]['erp']['matching_state']='sku_unmatched'
+        _,changes,_,wanted=reconcile(self.store.store(self.ident),None,rows,self.client.rows,self.fields)
+        self.assertEqual(changes[0]['cells'][self.fields['补库存标记']], '待人工核对')
+        # 模拟钉钉忽略空值，并把单选返回为带名称的对象。
+        for change in changes:
+            actual=next(r for r in self.client.rows if r['recordId']==change['recordId'])
+            actual['cells'].update({k:v for k,v in change['cells'].items() if v is not None})
+            actual['cells'][self.fields['补库存标记']]={'name':'待人工核对'}
+        from douyin_online import verified
+        self.assertTrue(verified(self.client.query(),wanted,[],self.fields['关联键']))
+        self.assertNotIn(self.fields['处理状态'],changes[0]['cells'])
 
     def test_incomplete_query_is_rejected(self):
         client=DwsTable(self.bind);client.call=Mock(return_value=dict(complete=False,hasMore=True,records=[]))

@@ -26,3 +26,12 @@ auth.json
 *.pem
 *.key
 !tests/fixtures/monitor_sources.json
+
+app/data/
+.verification/
+
+# ReUI 构建产物由候选打包生成。
+app/ui/console/
+app/web/node_modules/
+
+app/ui/console-host/

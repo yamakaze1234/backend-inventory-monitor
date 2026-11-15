@@ -1,0 +1,26 @@
+[project]
+name = "backend-inventory-monitor"
+version = "1.7.0"
+description = "Windows 库存监控工作台"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "Pillow==12.2.0",
+    "pystray==0.19.5",
+    "six==1.17.0",
+    "openpyxl==3.1.5",
+    "et-xmlfile==2.0.0",
+    "pymssql==2.4.1",
+    "websockets==15.0.1",
+    "pyxlsb==1.0.10",
+    "cryptography==50.0.2",
+]
+
+[dependency-groups]
+# 开发与打包共用锁定环境，运行版 EXE 不需要安装这些工具。
+dev = ["PyInstaller==6.20.0"]
+
+[tool.uv]
+# 当前是脚本式桌面应用，由 PyInstaller 打包，不安装为 Python 分发包。
+package = false
+required-version = ">=0.12.3"
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
