@@ -35,16 +35,17 @@ class MultiGroupTests(unittest.TestCase):
     def test_shipping_target_is_read_from_settings_each_time(self):
         # 只用临时队列验证目标选择，模拟发送器不连接钉钉。
         import sqlite3, tempfile, types
+        from contextlib import closing
         with tempfile.TemporaryDirectory() as temp:
             dbpath=Path(temp)/'jobs.sqlite3'
-            with sqlite3.connect(dbpath) as db:
+            with closing(sqlite3.connect(dbpath)) as db, db:
                 db.execute('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)')
             bot=types.SimpleNamespace(queue_db=lambda root:sqlite3.connect(dbpath))
             robot=types.SimpleNamespace(get_config=lambda root:dict(groupId='configured-default',intervalMinutes=30),validate=lambda target:target)
             with patch.dict(sys.modules,group_order_bot=bot,robot_config=robot):
                 module=runpy.run_path(str(CONTROL.parent/'matching/shipping_monitor.py'))
                 self.assertEqual(module['config'](temp)['target']['groupId'],'configured-default')
-                with sqlite3.connect(dbpath) as db:
+                with closing(sqlite3.connect(dbpath)) as db, db:
                     db.execute("INSERT INTO settings VALUES('shippingTarget',?)",('{"groupId":"configured-shipping","intervalMinutes":60}',))
                 value=module['config'](temp)
                 self.assertEqual(value['target']['groupId'],'configured-shipping');self.assertFalse(value['inherit'])
