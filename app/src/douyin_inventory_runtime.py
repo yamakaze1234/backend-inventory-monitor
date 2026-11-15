@@ -419,7 +419,7 @@ class DouyinRuntime:
         detail = f"{self.store.store(ident)['status']}；可补库存 {count} 个 SKU"
         # 只有成功采集并接受库存后才关闭专属窗口；失败/待登录时保留现场。
         finish = getattr(worker, 'finish_collection', None)
-        if finish:
+        if finish and config.get('connection_mode') != 'cws':
             try:
                 finish()
             except Exception:
@@ -439,7 +439,15 @@ class DouyinRuntime:
             detail += '；在线明细' + ('已回读' if online_ready else '未配置，未启用同步' if isinstance(online, dict) and online.get('skipped') else '未完成回读')
         # 未配置的可选同步不是巡检失败；实际配置后的回读失败仍保留不完整状态。
         online_skipped = isinstance(online, dict) and online.get('skipped') is True
-        return ('success' if online_ready or online_skipped or not getattr(self, 'live', False) else 'incomplete',
+        outcome = 'success' if online_ready or online_skipped or not getattr(self, 'live', False) else 'incomplete'
+        # CWS 仅在整轮成功后关窗；采集、保存或在线同步失败保留本店窗口。
+        if finish and config.get('connection_mode') == 'cws' and outcome == 'success' and not self.stop_event.is_set():
+            try:
+                finish()
+            except Exception:
+                self.notice += '；本店 CWS 浏览器未确认退出，请手动关闭'
+                detail += '；浏览器未确认退出'
+        return (outcome,
                 detail, _patrol_delivery(config, notify, count, results, manual=manual))
 
     def sync_online(self, ident, *, force=False):

@@ -15,6 +15,9 @@ from notification_robots import RobotStore
 
 class FailureTests(unittest.TestCase):
     def setUp(self):
+        # 其他采集单测可直接写上下文；每个提醒用例从无快照状态开始。
+        token = _patrol_snapshot_saved.set(False)
+        self.addCleanup(_patrol_snapshot_saved.reset, token)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

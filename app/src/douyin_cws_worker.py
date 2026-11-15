@@ -57,6 +57,11 @@ class CwsWorker:
         self.expected_shop = ''
         self.stopped = threading.Event()
 
+    def finish_collection(self):
+        """巡检成功后正常关闭本店实例，下次 CWS 按原目录重开并复用登录。"""
+        from douyin_cws_browser import close_browser
+        close_browser(binding(self.workspace, self.ident))
+
     def close(self):
         self.stopped.set()
 
