@@ -121,7 +121,7 @@ function BusinessTable({table,onAction}:{table:Table;onAction:(a:Action)=>void})
 }
 function ResultPanel({result,onAction}:{result:Result;onAction:(a:Action)=>void}){
 
-  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void downloadResult(result).catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
+  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length||result.nextForm)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void downloadResult(result).catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.nextForm&&<Button type="button" size="sm" variant="outline" onClick={()=>onAction(result.nextForm!)}>继续：{result.nextForm.title}</Button>}{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
 }
 
 type CatalogProduct={sku:string;goods_id:string;name:string;watched?:boolean};
@@ -199,20 +199,25 @@ export function BusinessPage({module,openAddProduct=false,planTarget="",initialS
   const job=useSnapshot<Job>(jobId?'/api/business/job?id='+encodeURIComponent(jobId):'/api/business/idle',1000);
   const busy=submitting||!!jobId&&!job.error&&(job.data?.id!==jobId||job.data?.state==='running');
   const [result,setResult]=useState<Result>();
-  const openedFollowup=useRef('');
+  const pendingFollowup=useRef('');
+  const handledReceipt=useRef('');
   const pendingDownload=useRef('');
-  useEffect(()=>{if(job.data?.id!==jobId)return;if(job.data?.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}
-    // 查群成功后自动接续候选或已填好的确认表单；轮询不能重置用户已选的功能。
-    const next=job.data.result?.nextForm;if(next&&openedFollowup.current!==jobId){openedFollowup.current=jobId;setValues(initialValues(next));setForm(next);}
+  useEffect(()=>{if(!jobId||job.data?.id!==jobId||job.data.state==='running'||handledReceipt.current===jobId)return;
+    handledReceipt.current=jobId;
+    // 已处理回执不再跨页面恢复；历史在途任务仍保留结果和手动继续入口。
+    if(sessionStorage.getItem('business-job-'+module)===jobId)sessionStorage.removeItem('business-job-'+module);
+    if(job.data.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}
+    // 只有本次进入页面后主动提交的操作可以自动接续表单。
+    const next=job.data.result?.nextForm;if(next&&pendingFollowup.current===jobId){pendingFollowup.current='';setValues(initialValues(next));setForm(next);}
     // 模板准备好就直接下载一次，结果区仍可手动补下。
     if(pendingDownload.current===jobId&&job.data.result?.download){
       pendingDownload.current='';
       void downloadResult(job.data.result).catch(()=>toast.error('下载失败，请在操作结果里重新下载。'));
     }
-    snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,snapshot.refresh]);
+    snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,module,snapshot.refresh]);
   const openAction=(action:Action)=>{if(action.immediate){void submit(action,action.values);return;}setValues(initialValues(action));setForm(action);};
   const submit=async(selected:Action|null=form,payload:Values=values)=>{if(!selected||busy)return;setSubmitting(true);setConfirmation(false);
-    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});if(selected.action==='ops-members-template')pendingDownload.current=response.job;setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
+    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});if(selected.action==='ops-members-template')pendingDownload.current=response.job;pendingFollowup.current=response.job;setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
     catch(e){toast.error(e instanceof Error?e.message:'操作未提交');}finally{setSubmitting(false);}};
   const addOpened=useRef(false);
   useEffect(()=>{
