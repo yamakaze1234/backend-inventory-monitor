@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 from douyin_inventory import DouyinInventory
 from douyin_export import ChromeExportWorker, ChromeMachineExportWorker
@@ -23,6 +24,7 @@ from douyin_browser import BrowserInterrupted
 
 # 每个店铺在自己的执行线程内记录阶段，失败原因不引用其他店铺的进度。
 _patrol_stage = ContextVar('patrol_stage', default='')
+_patrol_snapshot_saved = ContextVar('patrol_snapshot_saved', default=False)
 _patrol_operations = ('check', 'export', 'confirm', 'inspect', 'scheduled-inspect', 'resume-inspect')
 _patrol_triggers = {'scheduled-inspect': '定时', 'resume-inspect': '重启续取', 'confirm': '手动确认'}
 
@@ -32,6 +34,8 @@ def _patrol_error(error):
     if isinstance(error, ValueError):
         # 只保存已知业务错误的固定说明，不持久化外部程序返回的原始内容。
         for phrase, label in (('登录失效', '页面未就绪或店铺登录失效'),
+                              ('CWS 采集未确认', 'CWS 采集未确认，请检查本店登录、店铺身份和失败记录'),
+                              ('CWS 巡检超时', 'CWS 巡检超时，原报表任务已保留'),
                               ('本店浏览器', '本店浏览器崩溃、断开或响应超时'),
                               ('导出提交结果未确认', '导出提交结果未确认，未重复提交'),
                               ('导出任务记录无法核对', '导出任务记录无法核对，未重复提交'),
@@ -43,7 +47,7 @@ def _patrol_error(error):
                 return label
     code = getattr(error, 'winerror', None) or getattr(error, 'errno', None)
     name = type(error).__name__
-    return f'{name}（错误码 {code}）' if isinstance(code, int) else name
+    return (f'{name}（错误码 {code}）' if isinstance(code, int) else name) + '，具体原因待核查'
 
 
 def _patrol_delivery(config, ready, count, results, *, manual=False):
@@ -220,6 +224,10 @@ class DouyinRuntime:
 
     def validate_connection(self, config):
         """多店必须显式绑定独立扩展连接；同一浏览器账号环境不能冒充不同店铺。"""
+        if config.get('connection_mode') == 'cws':
+            from douyin_cws_worker import binding
+            binding(self.store.root.parent, config['id'])
+            return
         if config.get('connection_mode') == 'managed':
             return
         others = [s for s in self.store.stores() if s['id'] != config['id'] and s['confirmed'] and s.get('connection_mode') != 'managed']
@@ -247,6 +255,8 @@ class DouyinRuntime:
     def collect_reserved(self, ident, *, confirm=False, trigger='手动', manual=False):
         """成功和失败都释放占位，并推后下一次定时检查，避免手动后紧接着重导。"""
         started = time.time()
+        run_id = uuid.uuid4().hex
+        snapshot_token = _patrol_snapshot_saved.set(False)
         token = _patrol_stage.set('核对店铺身份' if confirm else '连接抖店')
         shop = None
         outcome, detail, delivery = 'cancelled', '巡检已中断', '未发送'
@@ -293,6 +303,24 @@ class DouyinRuntime:
             outcome, detail, delivery = 'failed', f'{_patrol_stage.get()}：{_patrol_error(error)}', '本轮结果未确认'
             raise
         finally:
+            # 仅最终自动巡检失败时投递；浏览器重试、报表等待和手动检查不发此告警。
+            if (shop is not None and outcome in ('failed', 'incomplete')
+                    and trigger in ('定时', '重启续取') and getattr(self, 'live', False)
+                    and not self.stop_event.is_set()):
+                try:
+                    from notification_robots import store_for_service
+                    from douyin_patrol_failure import deliver
+                    result = deliver(store_for_service(self.service), run_id, shop, started, time.time(),
+                                     detail if outcome == 'failed' else '库存采集已完成，在线明细未完成回读，具体原因待核查。',
+                                     snapshot_saved=_patrol_snapshot_saved.get())
+                    labels = {'sent': '已发送', 'skipped': '未启用接收方', 'failed': '发送失败',
+                              'partial': '部分发送成功', 'unknown': '投递结果待核对，未自动重发'}
+                    delivery += '；失败提醒：' + labels.get(result['status'], '结果待核对')
+                except Exception as error:
+                    # 提醒异常不得掩盖原始错误或阻止调度占位释放。
+                    logging.getLogger(__name__).warning('巡检失败提醒异常：%s', type(error).__name__)
+                    delivery += '；失败提醒：投递未确认，未自动重发'
+            _patrol_snapshot_saved.reset(snapshot_token)
             _patrol_stage.reset(token)
             if recoveries:
                 detail = f'已尝试恢复本店浏览器 {recoveries} 次；' + detail
@@ -319,6 +347,9 @@ class DouyinRuntime:
         if ident not in self.workers:
             config = self.store.store(ident)
             factory = self.worker_factory
+            if config.get('connection_mode') == 'cws' and factory is ChromeMachineExportWorker:
+                from douyin_cws_worker import CwsWorker
+                factory = CwsWorker
             if config.get('connection_mode') == 'managed' and factory is ChromeMachineExportWorker:
                 from douyin_managed_export import ManagedExportWorker
                 factory = ManagedExportWorker
@@ -379,6 +410,7 @@ class DouyinRuntime:
         notify = self.notification_ready()
         self.store.accept(ident, config['revision'], result['products'], complete=result['complete'],
                           notify=notify, field=result.get('field'))
+        _patrol_snapshot_saved.set(bool(result['complete']))
         if result.get('export'):
             with self.store.db() as db:
                 db.execute('UPDATE stores SET export_file=? WHERE id=?', (result['export']['file'], ident))
@@ -387,7 +419,7 @@ class DouyinRuntime:
         detail = f"{self.store.store(ident)['status']}；可补库存 {count} 个 SKU"
         # 只有成功采集并接受库存后才关闭专属窗口；失败/待登录时保留现场。
         finish = getattr(worker, 'finish_collection', None)
-        if finish:
+        if finish and config.get('connection_mode') != 'cws':
             try:
                 finish()
             except Exception:
@@ -404,8 +436,18 @@ class DouyinRuntime:
                                           online_signature=online.get('signature') if isinstance(online, dict) else None)
             _patrol_stage.reset(phase)
         if getattr(self, 'live', False):
-            detail += '；在线明细' + ('已回读' if online_ready else '未完成回读')
-        return ('success' if online_ready or not getattr(self, 'live', False) else 'incomplete',
+            detail += '；在线明细' + ('已回读' if online_ready else '未配置，未启用同步' if isinstance(online, dict) and online.get('skipped') else '未完成回读')
+        # 未配置的可选同步不是巡检失败；实际配置后的回读失败仍保留不完整状态。
+        online_skipped = isinstance(online, dict) and online.get('skipped') is True
+        outcome = 'success' if online_ready or online_skipped or not getattr(self, 'live', False) else 'incomplete'
+        # CWS 仅在整轮成功后关窗；采集、保存或在线同步失败保留本店窗口。
+        if finish and config.get('connection_mode') == 'cws' and outcome == 'success' and not self.stop_event.is_set():
+            try:
+                finish()
+            except Exception:
+                self.notice += '；本店 CWS 浏览器未确认退出，请手动关闭'
+                detail += '；浏览器未确认退出'
+        return (outcome,
                 detail, _patrol_delivery(config, notify, count, results, manual=manual))
 
     def sync_online(self, ident, *, force=False):
@@ -482,7 +524,7 @@ class DouyinRuntime:
                 if previous:
                     previous.close()
             if operation.get('open'):
-                if value['mode'] != 'managed':
+                if value['mode'] not in ('managed', 'cws'):
                     raise ValueError('现有扩展模式请自行打开已登录的浏览器')
                 try:
                     self.worker(ident).call('open')
@@ -591,11 +633,15 @@ class DouyinRuntime:
                     waiting.setdefault(key, deque()).append('online')
                 for config in self.due_stores():
                     ident = config['id']
-                    if (not config['enabled'] or ident in active or waiting.get(ident)
-                            or time.monotonic() < self.due.get(ident, 0)):
+                    from inventory_patrol_window import ready
+                    if not config['enabled'] or ident in active or waiting.get(ident):
                         continue
-                    if self.reserve_collection(ident):
-                        waiting.setdefault(ident, deque()).append('scheduled-inspect')
+                    if ready(self.store.root.parent,'douyin:'+ident,time.monotonic()>=self.due.get(ident,0)) and self.reserve_collection(ident):
+                        if ready(self.store.root.parent,'douyin:'+ident,time.monotonic()>=self.due.get(ident,0),claim=True):
+                            waiting.setdefault(ident, deque()).append('scheduled-inspect')
+                        else:
+                            with self.collection_lock:
+                                self.pending_collections.discard(ident)
                 for ident in list(waiting):
                     if self.stop_event.is_set() or len(active) >= self.max_parallel:
                         break
@@ -624,6 +670,10 @@ class DouyinRuntime:
     def execute_job(self, operation, ident):
         """一家店的失败只写入本店状态；其余店铺继续执行。"""
         try:
+            if operation in ('scheduled-inspect', 'resume-inspect'):
+                from inventory_patrol_window import allowed
+                if not allowed(self.store.root.parent, 'douyin:' + ident):
+                    return
             if not self.stop_event.is_set():
                 self.execute(operation, ident)
         except Exception as error:

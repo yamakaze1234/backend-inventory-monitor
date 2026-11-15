@@ -505,6 +505,9 @@ class ProfitMonitor:
             last_refresh = 0
             while not self.stop_event.wait(10):
                 status = self.status()
+                from inventory_patrol_window import allowed
+                if not allowed(self.root, 'price'):
+                    continue
                 if status['enabled'] and status['scheduleMode'] != 'daily' and time.time()-last_refresh >= 30:
                     last_refresh = time.time()
                     with self.db() as db:

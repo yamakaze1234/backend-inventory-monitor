@@ -120,8 +120,48 @@ def source_save(b,v):
 def catalog_refresh(b,v):
     b.external();b.service.sql_worker.refresh_catalog();return dict(message='已安排刷新完整商品目录')
 
+@action('settings','sql-network')
+def sql_network_save(b,v):
+    b.external();b.service.configure_sql_network(v.get('address',''))
+    return dict(message='连接及库存视图校验通过，已保存本机地址并安排采集；原账号、数据库及库存基线保留')
+
 @action('settings','interval')
 def interval(b,v):b.service.set_interval(v['minutes']);return dict(message='监控周期已保存')
+
+
+@action('settings','patrol-window')
+def patrol_window(b,v):
+    from inventory_patrol_window import save
+    key=str(v.get('key',''))
+    if key.startswith('douyin:'):
+        b.douyin.store.store(key.split(':',1)[1])
+    elif key not in ('inventory','shipping','price'):
+        raise ValueError('未知巡检计划')
+    value=save(b.service.root,key,v.get('allDay'),v.get('start'),v.get('end'))
+    return dict(message='已设为全天运行' if value['allDay'] else '本项巡检运行时段已保存（北京时间）')
+
+
+@action('settings','patrol-schedule')
+def patrol_schedule(b,v):
+    from inventory_patrol_window import save_schedule
+    key=str(v.get('key',''))
+    if key.startswith('douyin:'):
+        b.douyin.store.store(key.split(':',1)[1])
+        if v.get('mode')=='interval':
+            minutes=v.get('minutes')
+            if isinstance(minutes,bool) or not str(minutes).isdigit() or not 15<=int(minutes)<=1440:
+                raise ValueError('巡检周期须为 15–1440 分钟')
+            minutes=int(minutes)
+            # 沿用店铺工作队列，避免设置与正在导出的同店任务互相覆盖。
+            shop_interval(b,dict(shop=key.split(':',1)[1],minutes=minutes))
+    elif key not in ('inventory','shipping','orders'):
+        raise ValueError('未知巡检计划')
+    if key in ('shipping','orders'):
+        from order_business import adapter
+        if not adapter(b).configuration().get('patrolScheduleReady'):
+            raise ValueError('请先停止订单服务并安装新版兼容后端，再修改订单或发货的运行方式')
+    save_schedule(b.service.root,key,v.get('mode'),v.get('times'))
+    return dict(message='运行方式已保存；固定时间点按北京时间执行，错过超过五分钟不补跑')
 
 @action('settings','cache-preview')
 def cache_preview(b,v):
@@ -610,3 +650,58 @@ def shipping_interval(b,v):
         raise ValueError('监控周期须为 15 至 1440 分钟')
     b.external()
     return adapter(b).action('shipping-interval',dict(minutes=int(value)))
+
+
+@action('order-settings','daily-report-save')
+def daily_report_save(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'save',v)
+
+@action('order-settings','daily-report-test')
+def daily_report_test(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'test',v)
+
+@action('order-settings','daily-report-generate')
+def daily_report_generate(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'report',v)
+
+
+@action('order-settings','daily-report-select')
+def daily_report_select(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'select',v)
+
+
+@action('order-settings','daily-report-import')
+def daily_report_import(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'import',v)
+
+
+@action('order-settings','engine-check')
+def order_engine_check(b,v):
+    from order_business import adapter
+    b.external()
+    return adapter(b).action('engine-check')
+
+
+@action('order-settings','daily-report-open')
+def daily_report_open(b,v):
+    from daily_report_business import action as execute
+    return execute(b,'open',v)
+
+
+@action('shipping','sf-auth-save')
+def shipping_sf_auth_save(b,v):
+    b.external()
+    from order_business import adapter
+    from shipping_sf_config import save
+    state=adapter(b).configuration()
+    if not state.get('configured') or not state.get('state_root'):
+        raise ValueError('请先配置订单匹配后端')
+    if state.get('shippingBackendCurrent') is not True:
+        raise ValueError('请先部署最新兼容后端，再保存加密顺丰认证')
+    save(state['state_root'],v)
+    return dict(message='顺丰生产认证已加密保存；未启动巡检，未验证接口权限')

@@ -35,3 +35,7 @@ app/ui/console/
 app/web/node_modules/
 
 app/ui/console-host/
+
+# 部门顺丰认证只保存在运行工作区。
+shipping-sf-auth.json
+sf-auth-*.pending

@@ -53,9 +53,34 @@ class BusinessTests(unittest.TestCase):
         with self.service.db() as db:
             self.service.put(db,'sql_connection',dict(server='localhost',port=1433,database='test',user='demo',password='SENTINEL_SECRET'))
             self.service.put(db,'daily_ai',dict(url='https://example.invalid',model='sample',key='SENTINEL_SECRET'))
-        for module in ('settings','daily'):
+        for module in ('settings','daily','environment-settings'):
             payload=json.dumps(self.business.snapshot(module,{}))
             self.assertNotIn('SENTINEL_SECRET',payload)
+
+    def test_environment_keeps_group_permissions_and_routes_row_actions(self):
+        # 导航重组只能暴露管理入口，不能重建或清空已保存的成员授权。
+        from ops_commands import GroupCommands
+        from ops_settings import current
+        groups=GroupCommands(self.service)
+        identity=('org','ding-robot','cid-group')
+        grants={'user':dict(commands=['help'],shops=[],fields=[])}
+        groups.save(*identity,['help'],members=grants,name='验收群')
+        before=current(self.service,identity)
+        view=self.business.snapshot('environment-settings',{})
+        self.assertNotIn('cache',[s['id'] for s in view['sections']])
+        binding=view['sections'][0]
+        self.assertEqual(binding['id'],'robot-binding')
+        row=next(r for t in binding['tables'] for r in t['rows'] if r.get('name')=='验收群')
+        self.assertEqual(row['robot_id'],'ding-robot')
+        actions={f['action']:f for f in row['_forms']}
+        self.assertIn('ops-members-list',actions)
+        self.assertIn('ops-members-search',actions)
+        self.assertIn('ops-members-import-preview',actions)
+        for form in actions.values():self.assertEqual(form['module'],'settings')
+        self.assertEqual(before,current(self.service,identity))
+        cache=self.business.snapshot('cache-settings',{})['sections'][0]
+        self.assertEqual({f['action'] for f in cache['forms']},{'cache-preview','cache-settings'})
+        self.assertTrue(all(f['module']=='settings' for f in cache['forms']))
 
     def test_catalog_add_checks_identity_and_cannot_overwrite_existing(self):
         # 同名商品也必须按 ERP ID 与 SKU 配对，重试不得覆盖阈值。

@@ -4,7 +4,7 @@ import json
 import re
 
 SETTING = 'matchPatrolWindow'
-DEFAULT = ('18:30', '00:00')
+DEFAULT = ('00:00', '00:00')
 DEFAULT_INTERVAL = 120
 CN = timezone(timedelta(hours=8))
 
@@ -12,8 +12,8 @@ CN = timezone(timedelta(hours=8))
 def validate(start, end):
     if any(not isinstance(t,str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',t) for t in (start,end)):
         raise ValueError('请选择有效的开始和结束时间（北京时间）')
-    if start == end:
-        raise ValueError('开始和结束时间不能相同')
+    if start == end and start != '00:00':
+        raise ValueError('开始和结束时间不能相同；全天请使用 00:00 至 00:00')
     return start,end
 
 

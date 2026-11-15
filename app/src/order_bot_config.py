@@ -38,7 +38,7 @@ def queue_state(root):
     if not path.is_file():return dict(active=0,online=False,enabled=False,target={})
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
         values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused','shippingEnabled','shippingTarget','stopRequested','shippingIntervalMinutes')"))
-        active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown')").fetchone()[0]
+        active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown','partial')").fetchone()[0]
     target=json.loads(values.get('robotConfig') or '{}')
     # 发货监控可以另设目标；没有独立路由时沿用订单机器人和周期。
     shipping_target=json.loads(values['shippingTarget']) if values.get('shippingTarget') else target
@@ -71,6 +71,9 @@ def assert_state_owner(workspace,root):
 
 def assert_connector_stopped(config,root=None):
     """只接受 DWS 明确回读的本机停止状态。"""
+    if config.get('harness_entry') and config.get('harness_home'):
+        runtime=runpy.run_path(str(bundle_root()/'control/harness_runtime.py'))
+        if runtime['status'](config)['state']!='down':raise ValueError('请先停止当前 Harness 连接，再修改或部署')
     root=Path(root or config['state_root'])
     if not (root/'jobs.sqlite3').is_file():return
     target=queue_state(root)['target']
@@ -124,8 +127,18 @@ def normalize(values):
             if not Path(row['path']).is_absolute():raise ValueError()
     except (OSError,ValueError,KeyError,TypeError,AttributeError):
         raise ValueError('请先在匹配项目维护表设置中，为每个部门店铺保存完整维护表路径和工作表') from None
-    model=str(values.get('agent_model') or 'deepseek/deepseek-flash').strip()
-    if not re.fullmatch(r'[A-Za-z0-9._:/-]{1,150}',model):raise ValueError('订单机器人模型标识无效')
+    mode=values.get('connector_mode','codex')
+    if mode not in ('codex','harness'):raise ValueError('请选择 Harness 或 Codex')
+    clean['connector_mode']=mode
+    for key in ('harness_entry','harness_home'):
+        raw=values.get(key,'')
+        if mode=='harness' and (not isinstance(raw,str) or not Path(raw).is_absolute()):raise ValueError('请填写 Harness 入口和独立配置目录')
+        if raw:
+            if not isinstance(raw,str) or not Path(raw).is_absolute():raise ValueError('Harness 路径必须是绝对路径')
+            clean[key]=str(Path(raw).resolve())
+    if mode=='harness' and not Path(clean['harness_entry']).is_file():raise ValueError('Harness 入口不存在，请先安装运行环境')
+    model=str(values.get('agent_model') or '').strip()
+    if model and not re.fullmatch(r'[A-Za-z0-9._:/-]{1,150}',model):raise ValueError('订单机器人模型标识无效')
     clean['agent_model']=model
     return clean
 
@@ -191,8 +204,8 @@ def deploy(workspace):
     source=bundle_root()
     targets={'matching':Path(config['match_root'])/'app/src','control':Path(config['control_root'])}
     # 已部署标记用于允许安全停止旧版本；更新部署另外比较候选附带的源码。
-    if deployed(workspace,config) and all((parent/file.name).is_file() and file.read_bytes()==(parent/file.name).read_bytes()
-        for kind,parent in targets.items() for file in (source/kind).iterdir() if file.is_file() and file.suffix in ('.py','.pyw','.mjs','.ps1')):
+    if config.get('connector_mode')!='harness' and deployed(workspace,config) and all((parent/file.relative_to(source/kind)).is_file() and file.read_bytes()==(parent/file.relative_to(source/kind)).read_bytes()
+        for kind,parent in targets.items() for file in (source/kind).rglob('*') if file.is_file() and file.suffix in ('.py','.pyw','.mjs','.ps1')):
         return dict(message='订单兼容后端已部署',changed=False)
     # 旧版有固定 STATE 时也必须检查原队列，不能借新空目录绕过停机。
     legacy=targets['matching']/'group_order_bot.py'
@@ -211,25 +224,37 @@ def deploy(workspace):
         pointer=parent/'order-department.json'
         if pointer.is_file() and Path(json.loads(pointer.read_text(encoding='utf-8'))['configPath']).resolve()!=config_path(workspace).resolve():
             raise ValueError('后端已经由其他部门配置，未覆盖')
-        for file in (source/kind).iterdir():
-            if file.is_file() and file.suffix in ('.py','.pyw','.mjs','.ps1'):changes.append((file,parent/file.name,kind))
+        for file in (source/kind).rglob('*'):
+            if file.is_file() and file.suffix in ('.py','.pyw','.mjs','.ps1'):changes.append((file,parent/file.relative_to(source/kind),kind))
     if not changes:raise ValueError('订单兼容源缺失，请检查安装包')
+    harness_patch=None
+    if config.get('connector_mode')=='harness':
+        from harness_registration import updated
+        harness_patch=Path(config['harness_home'])/'profiles/web/cordis.patch.yml'
+        harness_text=updated(config,workspace,harness_patch.read_text(encoding='utf-8') if harness_patch.exists() else '')
     backup=Path(workspace)/'order-backend-backups'/uuid.uuid4().hex;backup.mkdir(parents=True)
     records=[]
     # 路由指针和代理配置也属于部署文件，升级时同样留备份。
     extras=[*(parent/'order-department.json' for parent in targets.values()),agent/'.codex/config.toml',agent/'AGENTS.md',Path(config['state_root'])/'order-owner.json']
+    if harness_patch:extras.append(harness_patch)
     for index,target in enumerate(extras):
         if target.is_file():
             old=backup/'extra'/str(index);old.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,old)
         records.append(dict(path=str(target),existed=target.is_file(),backup=str(backup/'extra'/str(index))))
     for source_file,target,kind in changes:
         if target.is_file():
-            old=backup/kind/target.name;old.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,old)
-        records.append(dict(path=str(target),existed=target.is_file(),kind=kind,backup=str(backup/kind/target.name)))
+            old=backup/kind/target.relative_to(targets[kind]);old.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,old)
+        records.append(dict(path=str(target),existed=target.is_file(),kind=kind,backup=str(backup/kind/target.relative_to(targets[kind]))))
     (backup/'original-files.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),encoding='utf-8')
     try:
+        if harness_patch:
+            harness_patch.parent.mkdir(parents=True,exist_ok=True)
+            pending=harness_patch.with_suffix('.pending')
+            pending.write_text(harness_text,encoding='utf-8');pending.replace(harness_patch)
         # 文件已备份后才一次应用兼容层；部署不自动启动连接器或匹配。
-        for source_file,target,kind in changes:shutil.copy2(source_file,target)
+        for source_file,target,kind in changes:
+            target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(source_file,target)
         pointer=json.dumps(dict(configPath=str(config_path(workspace).resolve())),ensure_ascii=False)
         for parent in targets.values():(parent/'order-department.json').write_text(pointer,encoding='utf-8')
         agent=Path(config['state_root'])/'agent';(agent/'.codex').mkdir(parents=True,exist_ok=True)
@@ -237,10 +262,16 @@ def deploy(workspace):
         # 独立工作目录只注册订单工具，不继承某部门日报、数据库或聊天范围。
         literal=lambda value:json.dumps(str(value),ensure_ascii=False)
         toml='[mcp_servers.erp_order_matching]\ncommand = '+literal(config['node_path'])+'\nargs = ['+literal(Path(config['control_root'])/'order-match-server.mjs')+']\nstartup_timeout_sec = 30\ntool_timeout_sec = 45\n[mcp_servers.erp_order_matching.env]\nORDER_BOT_CONFIG = '+literal(config_path(workspace).resolve())+'\n'
-        (agent/'.codex/config.toml').write_text(toml,encoding='utf-8')
+        # 报表任务和查询白名单均从同一工作区配置读取，不包含默认生产连接。
+        toml+='[mcp_servers.erp_daily_report]\ncommand = '+literal(config['node_path'])+'\nargs = ['+literal(Path(config['control_root'])/'report-server.mjs')+']\ntool_timeout_sec = 300\n[mcp_servers.erp_daily_report.env]\nORDER_BOT_CONFIG = '+literal(config_path(workspace).resolve())+'\n'
+        from daily_report_registration import merge
+        registration=agent/'.codex/config.toml'
+        previous=registration.read_text(encoding='utf-8') if registration.exists() else ''
+        registration.write_text(merge(previous,toml),encoding='utf-8')
         (agent/'AGENTS.md').write_text('订单匹配只使用 erp_order_matching 工具。仅在用户明确要求匹配时提交；默认使用网店单号，号码保持字符串并保留完整后缀。用户明确提供 NO- 开头的 ERP 单号时可按该单号查找。店铺不明确时由后端识别。queued 只表示入队；未知写入不得重试。收到查询状态请求时原样返回 replyText，不把网店单号改写为 ERP 单号。重新匹配需用户明确提出，不从普通匹配推断。\n',encoding='utf-8')
         result=dict(configPath=str(config_path(workspace).resolve()),config=config,backup=str(backup),files=[dict(path=str(target),sha256=hashlib.sha256(target.read_bytes()).hexdigest()) for _,target,_ in changes])
         for extra in extras:
+            if extra==harness_patch:continue  # 用户插件配置不参与程序文件版本哈希。
             result['files'].append(dict(path=str(extra),sha256=hashlib.sha256(extra.read_bytes()).hexdigest()))
         (backup/'original-files.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),encoding='utf-8')
         (Path(workspace)/'order-backend-install.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -259,7 +290,7 @@ def deploy(workspace):
 
 def describe(workspace):
     config=load(workspace)
-    defaults={key:'' for key in PATH_FIELDS};defaults.update(agent_model='deepseek/deepseek-flash',shops=[])
+    defaults={key:'' for key in PATH_FIELDS};defaults.update(agent_model='',connector_mode='codex',harness_entry='',harness_home='',shops=[])
     if not config:return dict(configured=False,deployed=False,**defaults,target={},message='请先单独配置订单匹配后端、店铺及 Stream 机器人')
     state=queue_state(config['state_root'])
     shipping_source=Path(config['match_root'])/'app/src'
@@ -268,11 +299,15 @@ def describe(workspace):
     try:
         shipped=bundle_root()/'matching'
         shipping_current=shipping_ready and all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
-            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py'))
+            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py','shipping_sf_config.py',
+                         'patrol_notifications.py','notification_robots.py','notification_enterprise.py','monitor_secret_store.py'))
+        schedule_current=all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
+                             for name in ('group_order_bot.py','patrol_time_window.py'))
     except OSError:
         shipping_current=False
+        schedule_current=False
     return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),
-                patrolWindowReady=patrol_window_ready(config),schedulePaused=state.get('schedulePaused',True),
+                patrolWindowReady=patrol_window_ready(config),patrolScheduleReady=schedule_current,schedulePaused=state.get('schedulePaused',True),
                 serviceEnabled=state['enabled'],shippingReady=shipping_ready,shippingBackendCurrent=shipping_current,shipping=state.get('shipping',{}),
                 switching=state.get('switching',False),stopRequested=state.get('stopRequested',False),
                 message='订单匹配与库存通知使用独立配置')

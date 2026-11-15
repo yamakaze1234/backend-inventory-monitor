@@ -11,6 +11,11 @@ $department=Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $robotConfig=& $department.python_path -B -X utf8 "$PSScriptRoot/robot_desktop_control.py" config
 if($LASTEXITCODE -ne 0){throw '读取订单机器人设置失败'}
 $robotConfig=$robotConfig | ConvertFrom-Json
+# 手工入口和工作台使用同一个启动器；Harness 模式不再启动 DWS Stream。
+if ($department.connector_mode -eq 'harness') {
+    & $department.python_path -B -X utf8 "$PSScriptRoot/harness_setup.py" Start
+    exit $LASTEXITCODE
+}
 $agentRoot=Join-Path $department.state_root 'agent'
 # 只有现用配置明确指向本机专用接收程序时，才注入已受保护的回环连接。
 $workspace=Split-Path $env:ORDER_BOT_CONFIG -Parent
@@ -34,7 +39,9 @@ try {
         $env:INVENTORY_QUERY_PYTHON=$department.python_path
         $env:INVENTORY_QUERY_SCRIPT=$bridge
     }
-    & $department.dws_path dev connect --unified-app-id $robotConfig.appId --channel codex --agent-model $department.agent_model --agent-workdir $agentRoot --allowed-groups $robotConfig.groupId --profile $robotConfig.profile --format json
+    $modelArgs=@()
+    if($department.agent_model){$modelArgs=@('--agent-model',$department.agent_model)}
+    & $department.dws_path dev connect --unified-app-id $robotConfig.appId --channel codex @modelArgs --agent-workdir $agentRoot --allowed-groups $robotConfig.groupId --profile $robotConfig.profile --format json
     if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
 } finally {
     if($bytes){[Array]::Clear($bytes,0,$bytes.Length)}

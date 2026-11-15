@@ -18,6 +18,7 @@ from robot_record_cleanup import cleanup_due, cleanup_status
 from robot_config import get_config
 from robot_settings import discover, validated_target
 from ops_order_route_lock import route_guard
+import harness_runtime
 
 PWSH = DEPARTMENT['pwsh_path']
 
@@ -58,7 +59,22 @@ def ensure():
     module['main']()
 
 
+def start_services(root):
+    # 启动准备失败时恢复原开关，避免错误入口被保活不断重试。
+    with contextlib.closing(bot.queue_db(root)) as db:
+        previous = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('serviceEnabled','stopRequested')"))
+    settings({'serviceEnabled': '1', 'stopRequested': '0'}, root)
+    try:
+        ensure()
+    except Exception:
+        settings({'serviceEnabled':previous.get('serviceEnabled','0'),
+                  'stopRequested':previous.get('stopRequested','1')},root)
+        raise
+
+
 def connector_status():
+    if harness_runtime.connector_mode(DEPARTMENT) == 'harness':
+        return harness_runtime.status(DEPARTMENT)
     config = get_config(bot.STATE)
     return json.loads(run([bot.DWS, 'dev', 'connect', 'status', '--robot-client-id', config['robotCode'],
                            '--profile', config['profile'], '--json', '--format', 'json']))
@@ -71,9 +87,11 @@ def startup(enabled=None):
 
 
 def stop_connector():
+    if harness_runtime.connector_mode(DEPARTMENT) == 'harness':
+        return harness_runtime.stop(DEPARTMENT)
     config = get_config(bot.STATE)
     state = connector_status()
-    if state.get('state') == 'down':
+    if state.get('state') == 'down' or (state.get('state') == 'not_running' and state.get('pid') is None):
         return True
     # 在调用按应用停止命令前确认工作区所属，不能停止另一部门的同应用连接。
     if not isinstance(state.get('pid'),int):return False
@@ -165,15 +183,34 @@ def handle(action, root=bot.STATE, payload=None):
     if action == 'config':return get_config(root)
     if action == 'discover-robots':
         return discover(payload or {},run,bot.DWS)
+    if action == 'engine-check':
+        current=connector_status()
+        if harness_runtime.connector_mode(DEPARTMENT)=='harness':
+            from harness_bridge import probe
+            selected=get_config(root)
+            try:
+                probe(Path(os.environ['ORDER_BOT_CONFIG']).parent,selected['profile'].partition(':')[0],selected['robotCode'])
+                current['commandApiReady']=True
+            except (OSError,ValueError,KeyError,TypeError):current['commandApiReady']=False
+        return dict(message='引擎：'+harness_runtime.connector_mode(DEPARTMENT)+'；连接：'+str(current.get('state','unknown')),connector=current)
     if action == 'save-robot':
         config=validated_target(payload or {},run,bot.DWS)
+        if harness_runtime.connector_mode(DEPARTMENT) == 'harness':
+            pilot=Path(os.environ['ORDER_BOT_CONFIG']).parent/'ops-command-pilot.json'
+            if pilot.is_file():
+                binding=harness_runtime.read_public(pilot)
+                if (binding.get('robot_id'),binding.get('org_id')) != (config['robotCode'],config['profile'].partition(':')[0]):
+                    raise ValueError('此工作区已绑定其他运营机器人，请使用独立工作区')
+            # 更换群只在服务已停时保存；不会抢占当前 Stream 或自动恢复巡检。
+            if connector_status()['state'] != 'down' or bot.status(root=root)['workerOnline']:
+                raise ValueError('请先停止当前机器人和订单执行器，再更换接收群')
         with route_guard(root), contextlib.closing(bot.queue_db(root)) as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM settings WHERE key='pendingRobotConfig' AND value<>''").fetchone():
                 raise ValueError('已有切换正在进行，请稍后再保存')
             if db.execute("SELECT 1 FROM jobs WHERE state IN ('queued','unknown') OR delivery='unknown' OR (delivery='pending' AND state<>'running') LIMIT 1").fetchone():
                 raise ValueError('存在排队或投递未确认的任务，请处理完成后再切换机器人')
-            if not db.execute("SELECT 1 FROM settings WHERE key='robotConfig'").fetchone():
+            if harness_runtime.connector_mode(DEPARTMENT) == 'harness' or not db.execute("SELECT 1 FROM settings WHERE key='robotConfig'").fetchone():
                 # 新部门首次配置只保存路由，默认暂停，不能调用尚不存在的旧连接器。
                 db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
                     ('robotConfig',json.dumps(config,ensure_ascii=False)),('serviceEnabled','0'),('stopRequested','1'),('schedulePaused','1'),('workerStopped','1')])
@@ -185,8 +222,7 @@ def handle(action, root=bot.STATE, payload=None):
         return {'message':'设置已保存，正在等待当前任务结束并切换连接。'}
     if action == 'start':
         if not finish_switch(root):
-            settings({'serviceEnabled': '1', 'stopRequested': '0'}, root)
-            ensure()
+            start_services(root)
     elif action == 'ensure':
         if not finish_switch(root):ensure()
     elif action in ('pause', 'resume'):
@@ -237,7 +273,7 @@ def handle(action, root=bot.STATE, payload=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['snapshot', 'start', 'ensure', 'pause', 'resume',
+    parser.add_argument('action', choices=['engine-check', 'snapshot', 'start', 'ensure', 'pause', 'resume',
                                          'patrol', 'shipping', 'shipping-config', 'shipping-on', 'shipping-off', 'save-shipping-target', 'inherit-shipping-target', 'cleanup', 'config', 'discover-robots', 'save-robot', 'stop', 'finish-stop', 'startup-on', 'startup-off'])
     args = parser.parse_args()
     try:

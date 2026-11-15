@@ -116,7 +116,7 @@ class DouyinInventory:
 
     def save_browser(self, ident, browser, profile='', mode='extension'):
         """只保存浏览器选择和扩展连接标识，登录在浏览器里由用户自己完成。"""
-        if browser not in ('chrome', 'edge') or mode not in ('managed', 'extension'):
+        if browser not in ('chrome', 'edge') or mode not in ('managed', 'extension', 'cws'):
             raise ValueError('请选择 Chrome 或 Edge')
         profile = str(profile).strip() if mode == 'extension' else ''
         with self.db() as db:

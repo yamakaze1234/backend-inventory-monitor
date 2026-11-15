@@ -86,6 +86,14 @@ def price_changes(data):
 
 
 def monitor(command, data):
+    if command == 'monitor.remove':
+        if data['outcome'] == 'not_monitored':
+            return ['【删除监控｜未监控】', f"ERP 商品编号 {data['goods_id']} 当前未设置监控，无需删除。"]
+        lines = ['【删除监控｜已删除】', f"{data['name']}｜ERP 商品编号 {data['goods_id']}",
+                 '已停止该商品的库存监控，历史库存和通知记录保留。']
+        if data.get('in_flight'):
+            lines.append('已有提醒正在投递，可能仍会收到；后续不再发送该商品监控提醒。')
+        return lines
     label = COMMANDS[command][0]
     result = {'created':'已保存','updated':'已保存','already_exists':'已关注','unchanged':'已是目标值'}[data['outcome']]
     lines = [f'【{label}｜{result}】', f"{data['name']}｜ERP ID {data['goods_id']}"]
@@ -234,6 +242,7 @@ HELP_GUIDE = {
         '只查某商品：查价格变化 56281',
         '每次最多显示 10 条；未发现变化与尚无完成批次会分别提示。',
     ),
+    'monitor.remove': ('示例：删除监控 56281', '按 ERP 商品编号停止监控，历史库存和通知记录保留。'),
     'monitor.add': (
         '将指定 ERP 商品加入库存监控，设置低库存阈值。若已关注，会返回现有阈值。',
         '示例：添加监控 56281 阈值 5',
@@ -291,7 +300,7 @@ def render(reply):
     command, code, data = reply['command'], reply['code'], reply['data']
     label = COMMANDS.get(command, ('指令', ''))[0]
     receipt = reply.get('request_id')
-    attach = command in ('monitor.add', 'monitor.threshold.set', 'order.match', 'order.patrol', 'task.status')
+    attach = command in ('monitor.add', 'monitor.remove', 'monitor.threshold.set', 'order.match', 'order.patrol', 'task.status')
     if code != 'OK':
         titles = dict(FORBIDDEN='权限不足', COMMAND_DISABLED='本群未启用', IDEMPOTENCY_CONFLICT='回执冲突',
                       INVALID_ARGUMENT='请补全参数', AMBIGUOUS_TARGET='请确认对象', NOT_FOUND='未找到',
@@ -309,7 +318,7 @@ def render(reply):
         lines = inventory(data)
     elif command == 'price.changes':
         lines = price_changes(data)
-    elif command in ('monitor.add', 'monitor.threshold.set'):
+    elif command in ('monitor.add', 'monitor.remove', 'monitor.threshold.set'):
         lines = monitor(command, data)
     elif command == 'order.status.get':
         lines = order_events(data)

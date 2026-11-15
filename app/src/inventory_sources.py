@@ -57,6 +57,12 @@ class InventoryRuntimeService(SqlInventoryService):
             except Exception:
                 raise ValueError('请重新输入数据库密码。') from None
         source = SqlSource(clean,password,connector)
+        with self.db() as db:
+            network=self.get(db,'sql_network_override',{})
+        # 地址仅属于原来源；切换账号或数据库不会继承另一连接的直连地址。
+        if network.get('scope')==source.scope:
+            from sql_inventory_source import direct_address
+            source.connect_server=direct_address(network.get('address',''))
         with self.sql_worker.lock:
             if self.sql_worker.busy:
                 raise ValueError('正在读取库存，请本轮完成后切换来源。')
@@ -78,6 +84,24 @@ class InventoryRuntimeService(SqlInventoryService):
                 from inventory_recycle import recycle_file
                 recycle_file(self.root/'sql_connection.dat')
             self.sql_worker.configure(source)
+
+    def configure_sql_network(self,address):
+        """保持来源、凭据和库存基线，验证后仅更改当前工作区的传输地址。"""
+        from sql_inventory_source import direct_address
+        address=direct_address(address)
+        worker=self.sql_worker
+        with worker.lock:
+            if worker.busy:raise ValueError('正在读取库存，请本轮完成后再设置直连地址')
+            previous=worker.source
+            if previous is None:raise ValueError('请先配置 SQL 连接')
+            candidate=SqlSource(previous.settings,previous.password,previous.connector,connect_server=address)
+            candidate.probe()
+            with self.db() as db:
+                if self.get(db,'scope')!=candidate.scope:raise ValueError('库存来源已变化，请重新读取配置')
+                self.put(db,'sql_network_override',dict(scope=candidate.scope,address=address))
+            worker.configure(candidate)
+            worker.retry_at=0
+            worker.failures=0
 
     def use_script(self):
         with self.sql_worker.lock:
