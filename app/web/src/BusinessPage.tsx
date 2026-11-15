@@ -22,7 +22,7 @@ type Action={action:string;title:string;fields:Field[];values:Values;confirm?:st
 type Row=Values & {id?:string;sku?:string;_forms?:Action[];_details?:{label:string;value:unknown}[]};
 type Table={title:string;compact?:boolean;widths?:Record<string,number>;columns:{key:string;label:string}[];rows:Row[]};
 type Tone="active"|"neutral"|"warning";
-type ShopPlan={id:string;name:string;summary:string;status:string;tone:Tone;action:Action};
+type ShopPlan={id:string;name:string;summary:string;status:string;tone:Tone;action:Action;windowAction?:Action};
 type Section={planLink?:string;summary?:string;status?:string;tone?:Tone;note?:string;shopRows?:ShopPlan[];id:string;title:string;description?:string;text?:string;autostart?:{available:boolean;enabled:boolean};forms:Action[];tables:Table[];links?:{label:string;url:string}[]};
 type View={module:string;filters:Field[];query:Values;sections:Section[]};
 type Result={message?:string;document?:string;filename?:string;download?:string;forms?:Action[];tables?:Table[];select?:string;nextForm?:Action};
@@ -178,8 +178,12 @@ function ScheduleCards({sections,onAction,busy}:{sections:Section[];onAction:(ac
                 <span className="text-sm text-muted-foreground tabular-nums">{shop.summary}</span>
                 <PlanBadge status={shop.status} tone={shop.tone}/>
               </div>
-              <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置巡检周期'}
-                onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置巡检周期'}
+                  onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
+                {shop.windowAction&&<Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置运行时间段'}
+                  onClick={()=>onAction(shop.windowAction!)}>{shop.windowAction.title}</Button>}
+              </div>
             </li>)}
           </ul>}
         </FramePanel>

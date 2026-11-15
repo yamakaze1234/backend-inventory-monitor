@@ -216,6 +216,7 @@ class SqlWorker:
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.refresh_requested = False
+        self.refresh_manual = False
         self.busy = False
         self.last_call = 0
         self.retry_at = 0
@@ -245,6 +246,7 @@ class SqlWorker:
             if self.source is None:
                 raise ValueError('请先填写连接设置。')
             self.refresh_requested = True
+            self.refresh_manual = True
             self.message = '已安排刷新目录（查询至少间隔 30 秒）。'
 
     def start(self):
@@ -266,15 +268,23 @@ class SqlWorker:
                 return
             with s.db() as db:
                 due = s.get(db, 'enabled', True) and now >= s.get(db, 'next_check', 0)
+                manual = s.get(db, 'manual_check_requested', False)
+                from inventory_patrol_window import allowed
+                due = due and (manual or allowed(s.root, 'inventory', now))
                 revision = s.get(db, 'config_revision', 0)
                 excluded = set(s.get(db, 'sql_excluded_goods_ids', []))
             request = s.pending_warehouse_request()
-            full = self.refresh_requested
+            full = self.refresh_requested and (self.refresh_manual or allowed(s.root, 'inventory', now))
             if not full and not due and request is None:
                 return
             source = self.source
             self.busy = True
-            self.refresh_requested = False
+            if full:
+                self.refresh_requested = False
+                self.refresh_manual = False
+            if manual and due:
+                with s.db() as db:
+                    s.put(db, 'manual_check_requested', False)
         try:
             all_products = s.products()
             products = [p for p in all_products if p['enabled'] and p.get('goods_id') not in excluded]

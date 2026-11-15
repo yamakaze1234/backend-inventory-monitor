@@ -625,6 +625,9 @@ class DouyinRuntime:
                     waiting.setdefault(key, deque()).append('online')
                 for config in self.due_stores():
                     ident = config['id']
+                    from inventory_patrol_window import allowed
+                    if not allowed(self.store.root.parent, 'douyin:' + ident):
+                        continue
                     if (not config['enabled'] or ident in active or waiting.get(ident)
                             or time.monotonic() < self.due.get(ident, 0)):
                         continue
@@ -658,6 +661,10 @@ class DouyinRuntime:
     def execute_job(self, operation, ident):
         """一家店的失败只写入本店状态；其余店铺继续执行。"""
         try:
+            if operation in ('scheduled-inspect', 'resume-inspect'):
+                from inventory_patrol_window import allowed
+                if not allowed(self.store.root.parent, 'douyin:' + ident):
+                    return
             if not self.stop_event.is_set():
                 self.execute(operation, ident)
         except Exception as error:

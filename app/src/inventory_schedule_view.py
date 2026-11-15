@@ -19,6 +19,23 @@ def plan(key,title,description,summary,state='',tone='neutral',action=None,**ext
     return card
 
 
+def window_form(root,key):
+    """所有新增计划默认全天，保存一个计划不会影响其他计划。"""
+    from inventory_patrol_window import load
+    value=load(root,key)
+    return A('patrol-window','设置运行时间段',
+             [F('allDay','全天运行','bool'),F('start','开始时间','time',when=dict(allDay=False)),
+              F('end','结束时间','time',when=dict(allDay=False))],dict(value,key=key),module='settings',
+             description='北京时间；结束早于开始表示跨午夜。仅限制自动启动，手动检查不受限。',submitLabel='保存时段')
+
+
+def window_label(root,key):
+    from inventory_patrol_window import load
+    value=load(root,key)
+    return ('时段配置异常，请重新保存' if not value['valid'] else '全天运行' if value['allDay'] else
+            value['start']+'–'+('次日 ' if value['end']<value['start'] else '')+value['end'])
+
+
 def shipping_plan(state,read_failed):
     description='扫描待发订单，提醒已超时或 48 小时内到期的订单，并汇总缺货。'
     if read_failed:
@@ -79,7 +96,7 @@ def view(b,q):
         start,end=schedule['start'],schedule['end']
         window=order_state.get('patrolWindow') or {}
         end_label=('次日 ' if end<start else '')+end
-        summary=f"{start}–{end_label} · 每 {schedule['intervalMinutes']} 分钟"
+        summary=('全天' if start==end else f'{start}–{end_label}')+f" · 每 {schedule['intervalMinutes']} 分钟"
         valid=window.get('valid',True)
         paused=order_state.get('schedulePaused',True)
         enabled=order_state.get('serviceEnabled',False)
@@ -125,6 +142,9 @@ def view(b,q):
                               action=A('interval','设置巡检周期',[F('minutes','巡检周期（分钟）','number')],
                                        dict(shop=shop['id'],minutes=minutes),module='douyin',
                                        description='仅修改「'+shop['name']+'」的周期。',submitLabel='保存周期')))
+        shop_rows[-1]['summary']+=' · '+window_label(b.service.root,'douyin:'+shop['id'])
+        shop_rows[-1]['windowAction']=window_form(b.service.root,'douyin:'+shop['id'])
+        shop_rows[-1]['windowAction']['description']='仅修改「'+shop['name']+'」；北京时间，支持跨午夜，手动检查不受限。'
     shops=plan('shops','抖店库存巡检','每个店铺独立设定周期。参与巡检与暂停开关仍在前台库存监控。',
                f'{len(shop_rows)} 家店铺' if shop_rows else '尚未添加店铺',shopRows=shop_rows)
 
@@ -133,5 +153,9 @@ def view(b,q):
                  f"每 {cache['period_days']} 天 · {cache['time']}",
                  '已启用' if cache['enabled'] else '已停用','active' if cache['enabled'] else 'neutral',
                  cache_form(cache),note=next_line(cache['state'].get('next_run')) if cache['enabled'] else '')
+    shipping=shipping_plan(order_state,order_error)
+    for card,key in [(inventory,'inventory'),(shipping,'shipping'),(price_plan,'price')]:
+        card['forms'].append(window_form(b.service.root,key))
+        card['summary']+=' · '+window_label(b.service.root,key)
     return dict(module='schedules',filters=[],query=q,
-                sections=[inventory,order,shipping_plan(order_state,order_error),shops,price_plan,report_plan,cleanup])
+                sections=[inventory,order,shipping,shops,price_plan,report_plan,cleanup])

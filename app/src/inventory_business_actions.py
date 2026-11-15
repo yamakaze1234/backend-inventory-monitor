@@ -128,6 +128,18 @@ def sql_network_save(b,v):
 @action('settings','interval')
 def interval(b,v):b.service.set_interval(v['minutes']);return dict(message='监控周期已保存')
 
+
+@action('settings','patrol-window')
+def patrol_window(b,v):
+    from inventory_patrol_window import save
+    key=str(v.get('key',''))
+    if key.startswith('douyin:'):
+        b.douyin.store.store(key.split(':',1)[1])
+    elif key not in ('inventory','shipping','price'):
+        raise ValueError('未知巡检计划')
+    value=save(b.service.root,key,v.get('allDay'),v.get('start'),v.get('end'))
+    return dict(message='已设为全天运行' if value['allDay'] else '本项巡检运行时段已保存（北京时间）')
+
 @action('settings','cache-preview')
 def cache_preview(b,v):
     from inventory_cache_schedule import preview_action

@@ -160,6 +160,7 @@ class InventoryService(WarehouseLookups):
 
     def request_check(self):
         with self.db() as db:
+            self.put(db, 'manual_check_requested', True)
             self.put(db, 'enabled', True)
             self.put(db, 'next_check', 0)
 

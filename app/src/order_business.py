@@ -43,8 +43,8 @@ def patrol_window_form(state):
     target=state.get('target') or {}
     window=state.get('patrolWindow') or patrol_window_view(None,target.get('intervalMinutes'))
     return A('patrol-window','设置自动巡检时段',
-             [F('start','开始时间','time'),F('end','结束时间','time'),F('intervalMinutes','巡检间隔（分钟）','number')],
-             dict(start=window['start'],end=window['end'],intervalMinutes=window['intervalMinutes']),
+             [F('allDay','全天运行','bool'),F('start','开始时间','time',when=dict(allDay=False)),F('end','结束时间','time',when=dict(allDay=False)),F('intervalMinutes','巡检间隔（分钟）','number')],
+             dict(allDay=window['start']==window['end'],start=window['start'],end=window['end'],intervalMinutes=window['intervalMinutes']),
              module='order-settings',
              description='北京时间。结束早于开始时按次日处理；到点后不再开始新一轮，已开始的巡检会正常完成。',
              submitLabel='保存设置')
@@ -53,7 +53,7 @@ def patrol_window_form(state):
 def save_patrol_window(b,v):
     from order_bot_config import patrol_window_tools
     tools=patrol_window_tools()
-    start,end=tools['validate'](v.get('start'),v.get('end'))
+    start,end=tools['validate']('00:00','00:00') if v.get('allDay') is True else tools['validate'](v.get('start'),v.get('end'))
     interval=tools['validate_interval'](v.get('intervalMinutes'))
     result=adapter(b).action('save-patrol-window',dict(start=start,end=end,intervalMinutes=interval))
     return dict(message=f"自动巡检设置已保存：{result['start']} 至 {('次日 ' if result['nextDay'] else '')+result['end']}（北京时间），每 {result['intervalMinutes']} 分钟")

@@ -165,6 +165,12 @@ class Bridge:
                 return dict(self.lease)
             if not status['enabled'] or max(status['next_check'], self.retry_at) > now:
                 return {'check_id':None, 'next_check':max(status['next_check'],self.retry_at)}
+            from inventory_patrol_window import allowed
+            with self.service.db() as db:
+                manual = self.service.get(db, 'manual_check_requested', False)
+                if not manual and not allowed(self.service.root, 'inventory', now):
+                    return {'check_id':None, 'next_check':now+60, 'outside_window':True}
+                self.service.put(db, 'manual_check_requested', False)
             self.lease = dict(check_id=uuid.uuid4().hex, client_id=client, scope=scope,
                               expires_at=now+300, started_at=now, config_revision=revision)
             return dict(self.lease, skus=[p['sku'] for p in status['products'] if p['enabled']],

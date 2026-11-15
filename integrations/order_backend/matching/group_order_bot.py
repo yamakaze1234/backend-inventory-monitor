@@ -21,6 +21,7 @@ from patrol_worker import BatchMatchAdapter, PatrolWorker
 from task_store import TaskStore
 from robot_config import get_config
 import order_patrol_window as patrol_window
+from patrol_time_window import allowed, department_workspace
 
 ROOT = Path(__file__).resolve().parent
 from order_department_runtime import settings as department_settings
@@ -191,6 +192,9 @@ def claim_next_job(db, at=None):
         expire_scheduled_patrols(db,at,start)
         # 暂停或时段关闭只限制订单自动巡检；发货监控和手动任务照常领取。
         can_auto = start is not None and settings.get('schedulePaused')!='1'
+        can_shipping = allowed(department_workspace(), 'shipping', at)
+        if not can_shipping:
+            db.execute("UPDATE jobs SET state='cancelled',delivery='suppressed',updated=?,evidence='已错过发货巡检时段' WHERE state='queued' AND kind='shipping' AND origin='schedule'", (at,))
         job = db.execute("""SELECT * FROM jobs WHERE state='queued'
             AND (? OR origin<>'schedule' OR kind<>'today')
             ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END,created LIMIT 1""",(can_auto,)).fetchone()
@@ -678,7 +682,7 @@ def service(root=STATE, once=False):
                 # 发货扫描使用独立开关，不因匹配巡检暂停而停止监控。
                 from shipping_monitor import config as shipping_config
                 shipping = shipping_config(root)
-                if not once and shipping['enabled'] and time.time()-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60:
+                if not once and shipping['enabled'] and allowed(department_workspace(), 'shipping', now) and time.time()-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60:
                     enqueue('shipping', origin='schedule', root=root)
                     db.execute("INSERT OR REPLACE INTO settings VALUES('lastShippingScheduled',?)", (str(time.time()),))
                 job = claim_next_job(db)

@@ -108,19 +108,40 @@ class OrderWebNumberTests(unittest.TestCase):
                 db.execute("UPDATE jobs SET state='completed'")
             self.assertEqual(self.bot.enqueue('today', origin='schedule', root=root)['jobId'], first['jobId'])
 
+    def test_shipping_window_blocks_only_automatic_queued_work(self):
+        for origin in ('schedule','manual'):
+            root=self.queue_root()
+            self.bot.enqueue('shipping',origin=origin,root=root)
+            with closing(self.bot.queue_db(root)) as db, patch.object(self.bot,'allowed',return_value=False):
+                job=self.bot.claim_next_job(db)
+                if origin=='schedule':
+                    self.assertIsNone(job)
+                    self.assertEqual(db.execute('SELECT state FROM jobs').fetchone()[0],'cancelled')
+                else:
+                    self.assertEqual(job['kind'],'shipping')
+
+    def test_order_all_day_window_includes_midnight_and_noon(self):
+        window=self.bot.patrol_window
+        self.assertEqual(window.validate('00:00','00:00'),('00:00','00:00'))
+        for clock in ('00:00','12:00','23:59'):
+            stamp=datetime.fromisoformat('2026-11-15T'+clock+':00+08:00').timestamp()
+            self.assertIsNotNone(window.slot_start(('00:00','00:00'),stamp))
+
     def test_auto_patrol_window_prevents_late_start_without_blocking_manual_or_shipping(self):
         window = self.bot.patrol_window
         at = lambda value:datetime.fromisoformat(value+'+08:00').timestamp()
         opening = at('2026-11-12T18:30:00')
         closing_at = at('2026-11-13T00:00:00')
-        self.assertFalse(window.due(window.DEFAULT,opening-1,0,240))
-        self.assertTrue(window.due(window.DEFAULT,opening,opening-1,240))
-        self.assertFalse(window.due(window.DEFAULT,opening+60,opening,240))
-        self.assertTrue(window.due(window.DEFAULT,opening+14400,opening,240))
-        self.assertFalse(window.due(window.DEFAULT,closing_at,opening,240))
+        selected=('18:30','00:00')
+        self.assertFalse(window.due(selected,opening-1,0,240))
+        self.assertTrue(window.due(selected,opening,opening-1,240))
+        self.assertFalse(window.due(selected,opening+60,opening,240))
+        self.assertTrue(window.due(selected,opening+14400,opening,240))
+        self.assertFalse(window.due(selected,closing_at,opening,240))
         self.assertEqual(window.slot_start(('18:30','01:00'),closing_at),opening)
         self.assertIsNone(window.slot_start(window.times(window.read_settings('broken')),opening))
         root = self.queue_root()
+        self.bot.save_patrol_window(root,*selected)
         with patch.object(self.bot.time,'time',return_value=opening):
             auto = self.bot.enqueue('today',origin='schedule',root=root)['jobId']
             self.bot.enqueue('shipping',origin='schedule',root=root)
