@@ -49,9 +49,9 @@ export async function routeFixed(msg, clientId, send, execute = invoke) {
     if (!isFixed(msg.text)) return false;
     const { senderCorpId: Org, conversationId: Group, senderStaffId: User,
         robotCode: Robot, sourceMsgId: Message, text: Text } = msg;
-    // 身份来自 Stream 回调；附件、私聊、其他群和伪造的 @ 都不得送进业务接口或模型。
+    // 身份来自 Stream 回调；附件、私聊、其他组织和伪造的 @ 都不得送进业务接口或模型。
     if (msg.conversationType !== 'group' || msg.isInAtList !== true || Robot !== clientId ||
-        Group !== process.env.STOCK_OPS_GROUP || Org !== process.env.STOCK_OPS_ORG ||
+        Org !== process.env.STOCK_OPS_ORG ||
         ![Org, Group, User, Robot, Message].every(value => typeof value === 'string' && value.trim()) ||
         msg.contentParts?.some(part => part.type !== 'text') || msg.imageDownloadCodes?.length) return true;
     const event = { Org, Group, User, Robot, Message, Text };

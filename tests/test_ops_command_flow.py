@@ -174,6 +174,18 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(self.request('monitor.remove',dict(goods_id='56281'),'remove')[1]['replayed'])
         self.assertEqual(self.service.products()[0]['threshold'],8)
 
+    def test_new_group_uses_own_permissions_without_changing_original_group(self):
+        actor=dict(self.actor,group_id='new-group')
+        self.assertEqual(self.request('help',ident='unbound',actor=actor)[1]['code'],'FORBIDDEN')
+        original=self.api.groups.get('org','robot','group')
+        self.api.groups.save('org','robot','new-group',['help','inventory.get'],members={
+            'member':dict(commands=['help'],shops=[],fields=[])})
+        reply=self.request('help',ident='new-help',actor=actor)[1]
+        self.assertEqual(reply['code'],'OK')
+        self.assertEqual(self.request('inventory.get',dict(goods_id='56281'),'new-denied',actor)[1]['code'],'FORBIDDEN')
+        self.assertEqual(self.request('help',ident='stranger',actor=dict(actor,user_id='stranger'))[1]['code'],'FORBIDDEN')
+        self.assertEqual(self.api.groups.get('org','robot','group'),original)
+
     def test_remove_requires_group_and_member_permission(self):
         self.request('monitor.add',dict(goods_id='56281',threshold=5),'add')
         old=[x for x in self.features if x!='monitor.remove']

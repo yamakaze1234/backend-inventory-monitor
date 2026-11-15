@@ -76,14 +76,15 @@ def patched(source):
     callback='        onMessage: async (msg) => {\n            const access = owner.authorize(msg);'
     if source.count(callback) != 1:
         raise ValueError('钉钉消息权限接入点不匹配')
-    source=source.replace(callback, callback.replace('            const access', """            if (stockRoute && msg.conversationType === 'group' && msg.conversationId !== process.env.STOCK_OPS_GROUP) return;
-            const access"""))
-    return source.replace(ROUTE, """            if (stockRoute && stockRoute.isFixed(msg.text)) {
+    # 固定业务指令先交本机群/成员权限校验；普通 AI 对话仍遵循原群限制及 Harness 授权。
+    return source.replace(callback, callback.replace('            const access', """            if (stockRoute && stockRoute.isFixed(msg.text)) {
                 await queueAccessReply(msg.conversationId, () => stockRoute.routeFixed(msg, clientId,
                     text => stockRoute.sendFixedReply(outbound, msg.sessionWebhook, config.markdownTitle, text)));
                 return;
             }
-""" + ROUTE)
+            if (stockRoute && msg.conversationType === 'group' && msg.conversationId !== process.env.STOCK_OPS_GROUP) return;
+            const access"""))
+
 
 
 def patch_stream(source):

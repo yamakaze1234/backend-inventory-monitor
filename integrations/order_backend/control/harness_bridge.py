@@ -35,7 +35,8 @@ def dispatch(raw):
     root = Path(os.environ['STOCK_OPS_WORKSPACE'])
     org, robot, client = connection(root)
     event = raw['Event']
-    if (event['Org'], event['Robot'], event['Group']) != (org, robot, os.environ['STOCK_OPS_GROUP']):
+    # 群及成员权限由本机接口实时核验，不把发货提醒目标当作唯一接收群。
+    if (event['Org'], event['Robot']) != (org, robot):
         return {}
     if any(not checked_id(event[k]) for k in ('Org', 'Group', 'User', 'Robot')) or not event['Message']:
         return {}
