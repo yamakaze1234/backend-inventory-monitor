@@ -55,7 +55,7 @@ class PatrolTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in rows], list(range(12, 2, -1)))
         self.assertEqual({r['shop'] for r in rows}, {self.store.store(i)['name'] for i in self.ids})
         self.assertEqual((rows[0]['trigger'], rows[0]['outcome']), ('手动', 'failed'))
-        self.assertEqual(rows[0]['detail'], '连接抖店：PermissionError（错误码 13）')
+        self.assertEqual(rows[0]['detail'], '连接抖店：PermissionError（错误码 13），具体原因待核查')
         self.assertEqual((rows[1]['trigger'], rows[1]['delivery']), ('定时', '未发送：同一清单已发过'))
         with reopened.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM patrol_history').fetchone()[0], 10)

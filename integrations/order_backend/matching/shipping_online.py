@@ -125,7 +125,11 @@ class Logistics:
         if not numbers:
             return dict(result, status='尚无运单，保留记录')
         # 密钥留在本机独立文件中，不写进源码、日志或在线表格。
-        auth = read_json(self.root / 'shipping-sf-auth.json', {})
+        from shipping_sf_config import load as load_sf_auth
+        try:
+            auth = load_sf_auth(self.root)
+        except ValueError:
+            return dict(result, status='顺丰认证无法读取，请重新配置；保留记录')
         token = str(auth.get('apiKey') or os.environ.get('SHIPPING_SF_API_KEY') or '')
         direct = auth.get('provider') in ('sf-open', 'sf-sdk')
         if not token and not direct:
@@ -164,6 +168,10 @@ class Logistics:
         return result
 
 
+class UnconfirmedTableResponse(RuntimeError):
+    """传输回执不可解析；只允许读后核验，不代表写入失败。"""
+
+
 class Table:
     def __init__(self, config, root):
         self.config, self.root = config, root
@@ -174,12 +182,29 @@ class Table:
                    '--profile', self.config['profile'], '--format', 'json']
         if write:
             command.append('--yes')
-        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', timeout=90,
-                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), cwd=self.root)
-        value = json.loads(result.stdout)
-        if result.returncode or value.get('success') is False or value.get('error'):
-            raise RuntimeError('钉钉操作未确认，已保留同步状态；请核对在线记录')
-        return value
+        # 只读查询遇到瞬时空响应可重查；写入永远只发一次。
+        attempts = 1 if write else 3
+        for attempt in range(attempts):
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', timeout=90,
+                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), cwd=self.root)
+                try:
+                    value = json.loads(result.stdout)
+                    if not isinstance(value, dict): raise ValueError()
+                except ValueError:
+                    # 不回显 stdout/stderr，避免将连接资料或业务内容写入群消息。
+                    raise UnconfirmedTableResponse('钉钉响应不是有效 JSON（退出码 '+str(result.returncode)+
+                                                   '，响应长度 '+str(len(result.stdout))+'）；写入状态须回读核验') from None
+            except (UnconfirmedTableResponse, subprocess.TimeoutExpired) as error:
+                if attempt + 1 < attempts:
+                    time.sleep(attempt + 1)
+                    continue
+                if isinstance(error, subprocess.TimeoutExpired):
+                    raise UnconfirmedTableResponse('钉钉接口超时；写入状态须回读核验') from None
+                raise
+            if result.returncode or value.get('success') is False or value.get('error'):
+                raise RuntimeError('钉钉操作未确认，已保留同步状态；请核对在线记录')
+            return value
 
     def records(self, ids=None):
         rows, cursor, seen = [], '', set()
@@ -220,7 +245,11 @@ class Table:
             # 上轮回执未知时先回读。已符合目标则仅确认，不重放已经成功的修改。
             if matches(self.records([record_id])):
                 return record_id
-            self.call(['record', 'update', '--records', json.dumps([{'recordId':record_id,'cells':cells}], ensure_ascii=False)], True)
+            try:
+                self.call(['record', 'update', '--records', json.dumps([{'recordId':record_id,'cells':cells}], ensure_ascii=False)], True)
+            except UnconfirmedTableResponse:
+                # 已知记录的更新回执丢失时，仅回读同一 ID；下面不再发送写入。
+                pass
         else:
             result = self.call(['record', 'create', '--records', json.dumps([{'cells':cells}], ensure_ascii=False)], True)
             ids = result.get('data', {}).get('newRecordIds', [])

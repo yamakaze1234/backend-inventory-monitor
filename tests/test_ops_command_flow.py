@@ -152,6 +152,56 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.request('monitor.threshold.set', dict(payload, threshold=0), 'same')[1]['data']['outcome'], 'unchanged')
         self.assertEqual(self.request('monitor.threshold.set', dict(payload, threshold=True), 'invalid')[0], 400)
 
+    def test_remove_preserves_history_and_replay_cannot_delete_readded_watch(self):
+        self.request('monitor.add', dict(goods_id='56281', threshold=5), 'add-remove')
+        original=self.service.products()[0]
+        with self.service.db() as db:
+            for status in ('pending','sent','sending'):
+                db.execute('INSERT INTO events(id,data,created,status) VALUES (?,?,?,?)',
+                           (status,json.dumps(dict(sku=original['sku'])),1,status))
+            before=list(db.execute('SELECT * FROM snapshots'))
+        _,reply=self.request('monitor.remove',dict(goods_id='56281'),'remove')
+        self.assertEqual(reply['data']['outcome'],'removed')
+        self.assertIn('历史库存和通知记录保留',render(reply))
+        self.assertIn('正在投递',render(reply))
+        self.assertEqual(self.service.products(),[])
+        with self.service.db() as db:
+            self.assertEqual(list(db.execute('SELECT * FROM snapshots')),before)
+            self.assertEqual(self.service.get(db,'removed_product:'+original['sku'])['product'],original)
+            self.assertEqual(dict(db.execute('SELECT id,status FROM events')),dict(pending='cancelled',sent='sent',sending='sending'))
+        self.assertEqual(self.request('monitor.remove',dict(goods_id='56281'),'absent')[1]['data']['outcome'],'not_monitored')
+        self.request('monitor.add',dict(goods_id='56281',threshold=8),'readd')
+        self.assertTrue(self.request('monitor.remove',dict(goods_id='56281'),'remove')[1]['replayed'])
+        self.assertEqual(self.service.products()[0]['threshold'],8)
+
+    def test_new_group_uses_own_permissions_without_changing_original_group(self):
+        actor=dict(self.actor,group_id='new-group')
+        self.assertEqual(self.request('help',ident='unbound',actor=actor)[1]['code'],'FORBIDDEN')
+        original=self.api.groups.get('org','robot','group')
+        self.api.groups.save('org','robot','new-group',['help','inventory.get'],members={
+            'member':dict(commands=['help'],shops=[],fields=[])})
+        reply=self.request('help',ident='new-help',actor=actor)[1]
+        self.assertEqual(reply['code'],'OK')
+        self.assertEqual(self.request('inventory.get',dict(goods_id='56281'),'new-denied',actor)[1]['code'],'FORBIDDEN')
+        self.assertEqual(self.request('help',ident='stranger',actor=dict(actor,user_id='stranger'))[1]['code'],'FORBIDDEN')
+        self.assertEqual(self.api.groups.get('org','robot','group'),original)
+
+    def test_remove_requires_group_and_member_permission(self):
+        self.request('monitor.add',dict(goods_id='56281',threshold=5),'add')
+        old=[x for x in self.features if x!='monitor.remove']
+        self.authorize(old)
+        self.assertEqual(self.request('monitor.remove',dict(goods_id='56281'),'disabled')[1]['code'],'COMMAND_DISABLED')
+        self.api.groups.save('org','robot','group',self.features,members={'member':dict(commands=old,shops=['76'],fields=[])})
+        self.assertEqual(self.request('monitor.remove',dict(goods_id='56281'),'denied')[1]['code'],'FORBIDDEN')
+        self.assertNotIn('删除监控',render(self.request('help',ident='help-remove')[1]))
+        self.assertEqual(len(self.service.products()),1)
+
+    def test_remove_rejects_ambiguous_goods(self):
+        for sku in ('one','two'):
+            self.service.save_product(dict(sku=sku,name=sku,goods_id='56281',threshold=5))
+        self.assertEqual(self.request('monitor.remove',dict(goods_id='56281'))[1]['code'],'AMBIGUOUS_TARGET')
+        self.assertEqual(len(self.service.products()),2)
+
     def test_group_settings_save_readback_and_separate_bindings(self):
         values = dict(org_id='org', robot_id='robot', group_id='group', name='样例群', help=['help'],
                       inventory=['inventory.get'], monitor=[], orders=[],

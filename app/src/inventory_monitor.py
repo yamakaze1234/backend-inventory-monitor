@@ -115,30 +115,34 @@ class InventoryService(WarehouseLookups):
             return []
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            products = {}
-            for sku in skus:
-                row = db.execute('SELECT data FROM products WHERE sku=?', (sku,)).fetchone()
-                product = json.loads(row[0]) if row else None
-                if expected is not None and (product is None or expected.get(sku) != product):
-                    raise ValueError('勾选产品的设置已变化，请刷新清单后重新勾选。')
-                if product is not None:
-                    products[sku] = product
-            results = {sku: dict(sku=sku, name=p['name'], in_flight=0) for sku, p in products.items()}
-            for sku, product in products.items():
-                self.put(db, 'removed_product:' + sku, dict(product=product, removed_at=time.time()))
-                db.execute('DELETE FROM products WHERE sku=?', (sku,))
-            if products:
-                self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
-                self.put(db, 'next_check', 0)
-                for ident, data, status in db.execute("SELECT id,data,status FROM events WHERE status IN ('pending','failed','sending')").fetchall():
-                    sku = json.loads(data).get('sku')
-                    if sku not in products:
-                        continue
-                    if status == 'sending':
-                        results[sku]['in_flight'] += 1
-                    else:
-                        db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
-            return list(results.values())
+            return self._remove_products(db, skus, expected=expected)
+
+    def _remove_products(self, db, skus, *, expected=None):
+        """复用调用方事务，使群指令的移除、归档与幂等回执一起提交。"""
+        products = {}
+        for sku in skus:
+            row = db.execute('SELECT data FROM products WHERE sku=?', (sku,)).fetchone()
+            product = json.loads(row[0]) if row else None
+            if expected is not None and (product is None or expected.get(sku) != product):
+                raise ValueError('勾选产品的设置已变化，请刷新清单后重新勾选。')
+            if product is not None:
+                products[sku] = product
+        results = {sku: dict(sku=sku, name=p['name'], in_flight=0) for sku, p in products.items()}
+        for sku, product in products.items():
+            self.put(db, 'removed_product:' + sku, dict(product=product, removed_at=time.time()))
+            db.execute('DELETE FROM products WHERE sku=?', (sku,))
+        if products:
+            self.put(db, 'config_revision', self.get(db, 'config_revision', 0) + 1)
+            self.put(db, 'next_check', 0)
+            for ident, data, status in db.execute("SELECT id,data,status FROM events WHERE status IN ('pending','failed','sending')").fetchall():
+                sku = json.loads(data).get('sku')
+                if sku not in products:
+                    continue
+                if status == 'sending':
+                    results[sku]['in_flight'] += 1
+                else:
+                    db.execute("UPDATE events SET status='cancelled',retry_at=0 WHERE id=?", (ident,))
+        return list(results.values())
 
     def set_enabled(self, enabled):
         with self.db() as db:
@@ -160,6 +164,7 @@ class InventoryService(WarehouseLookups):
 
     def request_check(self):
         with self.db() as db:
+            self.put(db, 'manual_check_requested', True)
             self.put(db, 'enabled', True)
             self.put(db, 'next_check', 0)
 

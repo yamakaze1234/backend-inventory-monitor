@@ -22,7 +22,7 @@ type Action={action:string;title:string;fields:Field[];values:Values;confirm?:st
 type Row=Values & {id?:string;sku?:string;_forms?:Action[];_details?:{label:string;value:unknown}[]};
 type Table={title:string;compact?:boolean;widths?:Record<string,number>;columns:{key:string;label:string}[];rows:Row[]};
 type Tone="active"|"neutral"|"warning";
-type ShopPlan={id:string;name:string;summary:string;status:string;tone:Tone;action:Action};
+type ShopPlan={id:string;name:string;summary:string;status:string;tone:Tone;action:Action;windowAction?:Action};
 type Section={planLink?:string;summary?:string;status?:string;tone?:Tone;note?:string;shopRows?:ShopPlan[];id:string;title:string;description?:string;text?:string;autostart?:{available:boolean;enabled:boolean};forms:Action[];tables:Table[];links?:{label:string;url:string}[]};
 type View={module:string;filters:Field[];query:Values;sections:Section[]};
 type Result={message?:string;document?:string;filename?:string;download?:string;forms?:Action[];tables?:Table[];select?:string;nextForm?:Action};
@@ -30,7 +30,7 @@ type Job={id?:string;state:string;message?:string;result?:Result};
 type Bridge={postMessage:(v:unknown)=>void;addEventListener:(name:string,callback:(event:MessageEvent)=>void)=>void;removeEventListener:(name:string,callback:(event:MessageEvent)=>void)=>void};
 function bridge(){return (window as unknown as {chrome?:{webview?:Bridge}}).chrome?.webview;}
 function text(value:unknown):string {if(value===null||value===undefined||value==='')return '—';if(typeof value==='boolean')return value?'是':'否';if(Array.isArray(value))return value.map(text).join('、');if(typeof value==='object')return Object.entries(value as Values).map(([k,v])=>`${k}：${text(v)}`).join('；');return String(value);}
-const labels:Record<string,string>={sent:'已发送',pending:'待发送',unknown:'待核实',failed:'失败',partial:'部分送达',incomplete:'部分完成',success:'成功',skipped:'已跳过',running:'处理中',paused:'已暂停',enabled:'启用',preview:'仅记录',cancelled:'已取消',webhook:'Webhook',enterprise:'企业机器人',inventory:'库存提醒',douyin_inventory:'抖店补库存',daily:'日报',messages:'货源转发',profit:'价格提醒'};
+const labels:Record<string,string>={sent:'已发送',pending:'待发送',unknown:'待核实',failed:'失败',partial:'部分送达',incomplete:'部分完成',success:'成功',skipped:'已跳过',running:'处理中',paused:'已暂停',enabled:'启用',preview:'仅记录',cancelled:'已取消',webhook:'Webhook',enterprise:'企业机器人',inventory:'库存提醒',douyin_inventory:'抖店补库存',douyin_patrol_failure:'前台库存巡检失败提醒',order_patrol:'订单巡检结果',shipping:'发货监控提醒',daily:'日报',messages:'货源转发',profit:'价格提醒'};
 function display(value:unknown):string{if(Array.isArray(value))return value.map(display).join('、');return labels[String(value)]||text(value);}
 function saveBlob(blob:Blob,name:string){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function downloadResult(result:Result){const response=await fetch('/api/business/download?key='+encodeURIComponent(result.download||''),{headers:{'X-Console-Token':location.hash.slice(1)}});if(!response.ok)throw Error('文件下载失败');saveBlob(await response.blob(),result.filename||'下载文件');}
@@ -121,7 +121,7 @@ function BusinessTable({table,onAction}:{table:Table;onAction:(a:Action)=>void})
 }
 function ResultPanel({result,onAction}:{result:Result;onAction:(a:Action)=>void}){
 
-  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void downloadResult(result).catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
+  return <Frame spacing="sm"><FrameHeader><FrameTitle>操作结果</FrameTitle><FrameDescription>{result.message||'请核对以下内容再继续。'}</FrameDescription></FrameHeader>{(result.document!==undefined||result.download||!!result.tables?.length||!!result.forms?.length||result.nextForm)&&<FramePanel><div className="flex min-w-0 flex-col gap-6">{result.document!==undefined&&<div className="flex flex-col gap-3"><Textarea aria-label="结果正文" readOnly className="min-h-48 max-h-96" value={result.document}/><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>void navigator.clipboard.writeText(result.document||'').then(()=>toast.success('已复制'))}><Copy/>复制正文</Button><Button type="button" size="sm" variant="outline" onClick={()=>saveBlob(new Blob([result.document||''],{type:'text/markdown;charset=utf-8'}),result.filename||'业务记录.md')}><Download/>下载文件</Button></div></div>}{result.download&&<Button type="button" size="sm" variant="outline" onClick={()=>void downloadResult(result).catch(e=>toast.error(e.message))}><Download/>下载{result.filename}</Button>}{result.tables?.map((t,i)=><BusinessTable key={i} table={t} onAction={onAction}/>)}<div className="flex flex-wrap gap-2">{result.nextForm&&<Button type="button" size="sm" variant="outline" onClick={()=>onAction(result.nextForm!)}>继续：{result.nextForm.title}</Button>}{result.forms?.map((a,i)=><Button type="button" key={i} size="sm" variant="outline" onClick={()=>onAction(a)}>{a.title}</Button>)}</div></div></FramePanel>}</Frame>;
 }
 
 type CatalogProduct={sku:string;goods_id:string;name:string;watched?:boolean};
@@ -178,8 +178,12 @@ function ScheduleCards({sections,onAction,busy}:{sections:Section[];onAction:(ac
                 <span className="text-sm text-muted-foreground tabular-nums">{shop.summary}</span>
                 <PlanBadge status={shop.status} tone={shop.tone}/>
               </div>
-              <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置巡检周期'}
-                onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：'+shop.action.title}
+                  onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
+                {shop.windowAction&&<Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置运行时间段'}
+                  onClick={()=>onAction(shop.windowAction!)}>{shop.windowAction.title}</Button>}
+              </div>
             </li>)}
           </ul>}
         </FramePanel>
@@ -190,8 +194,8 @@ function ScheduleCards({sections,onAction,busy}:{sections:Section[];onAction:(ac
 
 /** 数据轮询不重置正在编辑的表单。 */
 function initialValues(action:Action){const initial={...action.values};for(const f of action.fields||[]){if(initial[f.key]===undefined)initial[f.key]=f.kind==='select'?f.options[0]?.value||'':f.kind==='bool'?false:f.kind==='multi'||f.kind==='rows'||f.kind==='times'?[]:'';}return initial;}
-export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:{module:string;openAddProduct?:boolean;planTarget?:string;onPlan?:(id:string)=>void}){
-  const [query,setQuery]=useState<Values>({});const [draft,setDraft]=useState<Values>({});const [section,setSection]=useState('');
+export function BusinessPage({module,openAddProduct=false,planTarget="",initialSection="",onPlan}:{module:string;openAddProduct?:boolean;planTarget?:string;initialSection?:string;onPlan?:(id:string)=>void}){
+  const [query,setQuery]=useState<Values>({});const [draft,setDraft]=useState<Values>({});const [section,setSection]=useState(initialSection);
   const params=new URLSearchParams(Object.entries(query).map(([k,v])=>[k,String(v)]));
   const snapshot=useSnapshot<View>(`/api/business/view/${module}?${params}`);
   const [form,setForm]=useState<Action|null>(null);const [values,setValues]=useState<Values>({});const [confirmation,setConfirmation]=useState(false);
@@ -199,20 +203,25 @@ export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:
   const job=useSnapshot<Job>(jobId?'/api/business/job?id='+encodeURIComponent(jobId):'/api/business/idle',1000);
   const busy=submitting||!!jobId&&!job.error&&(job.data?.id!==jobId||job.data?.state==='running');
   const [result,setResult]=useState<Result>();
-  const openedFollowup=useRef('');
+  const pendingFollowup=useRef('');
+  const handledReceipt=useRef('');
   const pendingDownload=useRef('');
-  useEffect(()=>{if(job.data?.id!==jobId)return;if(job.data?.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}
-    // 查群成功后自动接续候选或已填好的确认表单；轮询不能重置用户已选的功能。
-    const next=job.data.result?.nextForm;if(next&&openedFollowup.current!==jobId){openedFollowup.current=jobId;setValues(initialValues(next));setForm(next);}
+  useEffect(()=>{if(!jobId||job.data?.id!==jobId||job.data.state==='running'||handledReceipt.current===jobId)return;
+    handledReceipt.current=jobId;
+    // 已处理回执不再跨页面恢复；历史在途任务仍保留结果和手动继续入口。
+    if(sessionStorage.getItem('business-job-'+module)===jobId)sessionStorage.removeItem('business-job-'+module);
+    if(job.data.state==='done'){setResult(job.data.result);if(job.data.result?.select){setSection(job.data.result.select);setQuery({});setDraft({});}
+    // 只有本次进入页面后主动提交的操作可以自动接续表单。
+    const next=job.data.result?.nextForm;if(next&&pendingFollowup.current===jobId){pendingFollowup.current='';setValues(initialValues(next));setForm(next);}
     // 模板准备好就直接下载一次，结果区仍可手动补下。
     if(pendingDownload.current===jobId&&job.data.result?.download){
       pendingDownload.current='';
       void downloadResult(job.data.result).catch(()=>toast.error('下载失败，请在操作结果里重新下载。'));
     }
-    snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,snapshot.refresh]);
+    snapshot.refresh();}else if(job.data?.state==='failed')toast.error(job.data.message||'操作失败');},[job.data,jobId,module,snapshot.refresh]);
   const openAction=(action:Action)=>{if(action.immediate){void submit(action,action.values);return;}setValues(initialValues(action));setForm(action);};
   const submit=async(selected:Action|null=form,payload:Values=values)=>{if(!selected||busy)return;setSubmitting(true);setConfirmation(false);
-    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});if(selected.action==='ops-members-template')pendingDownload.current=response.job;setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
+    try{const response=await api<{job:string}>('/api/business/action',{module:selected.module||module,action:selected.action,values:payload,requestId:crypto.randomUUID()});if(selected.action==='ops-members-template')pendingDownload.current=response.job;pendingFollowup.current=response.job;setJobId(response.job);sessionStorage.setItem('business-job-'+module,response.job);setForm(null);setValues({});setResult(undefined);}
     catch(e){toast.error(e instanceof Error?e.message:'操作未提交');}finally{setSubmitting(false);}};
   const addOpened=useRef(false);
   useEffect(()=>{
@@ -223,6 +232,8 @@ export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:
     addOpened.current=true;setSection('products');setValues(initialValues(add));setForm(add);
   },[module,openAddProduct,snapshot.data,busy]);
   const isPlans=module==='schedules';
+  // 环境分区直接展示，机器人、群聊和权限入口无需展开下拉框查找。
+  const isEnvironment=module==='environment-settings';
   const targetReady=isPlans&&!!snapshot.data;
   useEffect(()=>{
     // 从业务页进入时直接定位到对应计划，轮询刷新时不抢回焦点。
@@ -230,7 +241,8 @@ export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:
   },[targetReady,planTarget]);
   const active=snapshot.data?.sections.find(s=>s.id===section)||snapshot.data?.sections[0];
   return <div data-business-module={module} className="flex min-w-0 flex-col gap-6">
-    <div className="flex flex-wrap items-center justify-between gap-3">{isPlans&&<p className="text-sm text-muted-foreground">各功能独立保存，页面时间均为北京时间。</p>}{!isPlans&&snapshot.data&&<Select value={active?.id||''} onValueChange={v=>setSection(v||'')} items={Object.fromEntries(snapshot.data.sections.map(s=>[s.id,s.title]))}><SelectTrigger aria-label="业务分区"><SelectValue/></SelectTrigger><SelectContent>{snapshot.data.sections.map(s=><SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}</SelectContent></Select>}<Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}><RefreshCw/>刷新页面</Button></div>
+    <div className="flex flex-wrap items-center justify-between gap-3">{isPlans&&<p className="text-sm text-muted-foreground">各功能独立保存，页面时间均为北京时间。</p>}{!isPlans&&!isEnvironment&&snapshot.data&&<Select value={active?.id||''} onValueChange={v=>setSection(v||'')} items={Object.fromEntries(snapshot.data.sections.map(s=>[s.id,s.title]))}><SelectTrigger aria-label="业务分区"><SelectValue/></SelectTrigger><SelectContent>{snapshot.data.sections.map(s=><SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}</SelectContent></Select>}<Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}><RefreshCw/>刷新页面</Button></div>
+    {isEnvironment&&snapshot.data&&<nav aria-label="环境配置分区" className="flex flex-wrap gap-2">{snapshot.data.sections.map(s=><Button key={s.id} variant={active?.id===s.id?'default':'outline'} size="sm" aria-pressed={active?.id===s.id} onClick={()=>setSection(s.id)}>{s.title}</Button>)}</nav>}
     {snapshot.error&&<div role="alert" className="flex items-center gap-3"><Badge variant="destructive-light">读取失败</Badge><span>{snapshot.error}</span><Button type="button" size="sm" variant="outline" onClick={snapshot.refresh}>重试</Button></div>}
     {snapshot.loading&&!snapshot.data&&<Skeleton className="h-64 w-full"/>}
     {!!snapshot.data?.filters.length&&<Frame spacing="sm"><FramePanel><form className="flex flex-wrap items-end gap-4" onSubmit={e=>{e.preventDefault();setQuery({...snapshot.data?.query,...draft});}}>{snapshot.data.filters.map(f=><FieldInput key={f.key} field={f} value={draft[f.key]??snapshot.data?.query[f.key]} onChange={v=>setDraft(old=>({...old,[f.key]:v}))}/>)}<Button type="submit" size="sm">应用筛选</Button><Button type="button" size="sm" variant="outline" onClick={()=>{setDraft({});setQuery({});}}>重置筛选</Button></form></FramePanel></Frame>}
@@ -240,7 +252,7 @@ export function BusinessPage({module,openAddProduct=false,planTarget="",onPlan}:
     {result&&<ResultPanel result={result} onAction={openAction}/>}
     {isPlans&&snapshot.data&&<ScheduleCards sections={snapshot.data.sections} busy={busy} onAction={openAction}/>}
     {!isPlans&&active&&<Frame spacing="sm"><FrameHeader><FrameTitle>{active.title}</FrameTitle><FrameDescription>{active.description||'查看当前状态，按需执行以下操作。'}</FrameDescription></FrameHeader><FramePanel><div className="flex min-w-0 flex-col gap-6">{/* 复选框以 Windows 回读状态为准，提交期间禁止重复点击。 */}
-    {active.autostart&&<label className="flex items-center gap-2 text-sm"><Checkbox checked={active.autostart.enabled} disabled={busy||!active.autostart.available} onCheckedChange={enabled=>void submit({action:'autostart',title:'开机启动',fields:[],values:{}},{enabled:enabled===true})}/>登录 Windows 后自动启动</label>}{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.planLink&&onPlan&&<Button type="button" size="sm" variant="outline" onClick={()=>onPlan(active.planLink!)}><CalendarClock/>查看计划设置</Button>}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
+    {active.autostart&&<label className="flex items-center gap-2 text-sm"><Checkbox checked={active.autostart.enabled} disabled={busy||!active.autostart.available} onCheckedChange={enabled=>void submit({module:'settings',action:'autostart',title:'开机启动',fields:[],values:{}},{enabled:enabled===true})}/>登录 Windows 后自动启动</label>}{active.text&&<p className="whitespace-pre-wrap text-sm text-muted-foreground">{active.text}</p>}<div className="flex flex-wrap gap-2">{active.forms.map((a,i)=><Button type="button" key={i} size="sm" variant={i===0?'default':'outline'} disabled={busy} onClick={()=>openAction(a)}>{a.title}</Button>)}{active.planLink&&onPlan&&<Button type="button" size="sm" variant="outline" onClick={()=>onPlan(active.planLink!)}><CalendarClock/>查看计划设置</Button>}{active.links?.map(l=><Button type="button" key={l.url} size="sm" variant="outline" onClick={()=>external(l.url)}>{l.label}</Button>)}</div>{active.tables.map((t,i)=><BusinessTable key={active.id+i} table={t} onAction={openAction}/>)}</div></FramePanel></Frame>}
     <Dialog open={!!form} onOpenChange={open=>{if(!open&&!submitting){setForm(null);setValues({});}}}><DialogContent className={form?.wide?"max-h-[85dvh] overflow-y-auto sm:max-w-xl":"max-h-[85dvh] overflow-y-auto"}><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.description||(form?.action==='catalog-add'?'选择 ERP 商品并设置低库存预警数量。':'修改后提交生效，未提交的内容不会保存。')}</DialogDescription></DialogHeader>{form?.action==='catalog-add'?<ProductPicker initial={form.values} busy={busy} onCancel={()=>setForm(null)} onAdd={v=>void submit(form,v)}/>:<form className="flex min-w-0 flex-col gap-4" onSubmit={e=>{e.preventDefault();if(form?.confirm)setConfirmation(true);else void submit();}}>{form?.fields.filter(f=>!f.when||Object.entries(f.when).every(([k,v])=>values[k]===v)).map(f=><FieldInput key={f.key} field={f} value={values[f.key]} onChange={v=>setValues(old=>({...old,[f.key]:v}))}/>)}{module==='monitor'&&form?.action==='save'&&<Button type="button" size="sm" variant="outline" onClick={()=>setValues(old=>({...old,threshold:({'RTX 5070 及以上显卡':5,'其余显卡':20,'主板':10,'CPU':20,'内存':10} as Record<string,number>)[String(old.category)]??old.threshold}))}>使用分类建议阈值</Button>}<div className="flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>setForm(null)}>取消</Button><Button type="submit" size="sm" disabled={busy||form?.fields.some(f=>f.kind==='pick'&&!values[f.key])}>{form?.submitLabel||'提交'}</Button></div></form>}</DialogContent></Dialog>
     <AlertDialog open={confirmation} onOpenChange={setConfirmation}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{form?.title}</AlertDialogTitle><AlertDialogDescription>{form?.confirm}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction disabled={busy} onClick={()=>void submit()}>确认执行</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;

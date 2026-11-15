@@ -5,8 +5,7 @@ from tkinter import ttk, messagebox
 
 from inventory_theme import BG, INK, MUTED, button, install_theme, wrap_label, ScrollBar
 
-CHANNELS = {'inventory': '库存提醒', 'douyin_inventory': '抖店补库存（自动群发送关闭）',
-            'daily': '货源日报', 'messages': '货源消息即时转发', 'profit': 'ERP 单价累计涨跌 100 元提醒'}
+from notification_robots import CHANNELS
 STATUSES = {'pending': '待发送', 'sent': '已发送', 'failed': '发送失败', 'unknown': '结果待核实',
             'sending': '发送中', 'skipped': '已跳过', 'partial': '部分送达', 'cancelled': '已取消'}
 

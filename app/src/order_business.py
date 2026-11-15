@@ -15,11 +15,12 @@ def adapter(b):
 
 def view(b,q):
     state=adapter(b).configuration()
-    backend=S('backend','匹配服务配置')
+    backend=S('backend','AI 引擎与运行环境')
     backend['description']='为本部门连接独立匹配后端和运行队列；保存配置不会启动服务或修改 ERP。'
-    backend['forms']=[A('backend-auto','一键配置',immediate=True), backend_form(state,'手动配置'),
+    backend['forms']=[A('backend-auto','一键配置',immediate=True), backend_form(state,'配置引擎与运行路径'),
         A('backend-deploy','安装部门兼容后端',confirm='将备份并更新所选后端的兼容文件。必须先停止原订单服务并核对未完成任务；本操作不会启动匹配或发送消息。')]
-    backend['text']=state.get('message','')
+    backend['text']=state.get('message','')+'；当前引擎：'+state.get('connector_mode','codex')+'。Harness 的模型、登录和钉钉插件由其独立配置目录管理；Codex 使用自身账号/provider 配置。保存不会安装依赖或启动机器人。'
+    if state.get('deployed'):backend['forms'].append(A('engine-check','检查引擎连接',immediate=True))
     robot=S('robot','订单匹配机器人')
     robot['description']='负责群内接单与订单匹配，需要企业应用的 Stream 能力；与库存、调价通知机器人分别配置。'
     target=state.get('target') or {}
@@ -31,7 +32,8 @@ def view(b,q):
         else:
             robot['text']+='；自动巡检时段需要新版兼容后端。'
     else:robot['text']+='。请先保存匹配服务配置并安装兼容后端。'
-    return dict(module='order-settings',filters=[],query=q,sections=[backend,robot])
+    from daily_report_business import view as daily_view
+    return dict(module='order-settings',filters=[],query=q,sections=[backend,robot,daily_view(b.service.root)])
 
 
 def patrol_window_form(state):
@@ -41,8 +43,8 @@ def patrol_window_form(state):
     target=state.get('target') or {}
     window=state.get('patrolWindow') or patrol_window_view(None,target.get('intervalMinutes'))
     return A('patrol-window','设置自动巡检时段',
-             [F('start','开始时间','time'),F('end','结束时间','time'),F('intervalMinutes','巡检间隔（分钟）','number')],
-             dict(start=window['start'],end=window['end'],intervalMinutes=window['intervalMinutes']),
+             [F('allDay','全天运行','bool'),F('start','开始时间','time',when=dict(allDay=False)),F('end','结束时间','time',when=dict(allDay=False)),F('intervalMinutes','巡检间隔（分钟）','number')],
+             dict(allDay=window['start']==window['end'],start=window['start'],end=window['end'],intervalMinutes=window['intervalMinutes']),
              module='order-settings',
              description='北京时间。结束早于开始时按次日处理；到点后不再开始新一轮，已开始的巡检会正常完成。',
              submitLabel='保存设置')
@@ -51,7 +53,7 @@ def patrol_window_form(state):
 def save_patrol_window(b,v):
     from order_bot_config import patrol_window_tools
     tools=patrol_window_tools()
-    start,end=tools['validate'](v.get('start'),v.get('end'))
+    start,end=tools['validate']('00:00','00:00') if v.get('allDay') is True else tools['validate'](v.get('start'),v.get('end'))
     interval=tools['validate_interval'](v.get('intervalMinutes'))
     result=adapter(b).action('save-patrol-window',dict(start=start,end=end,intervalMinutes=interval))
     return dict(message=f"自动巡检设置已保存：{result['start']} 至 {('次日 ' if result['nextDay'] else '')+result['end']}（北京时间），每 {result['intervalMinutes']} 分钟")
@@ -83,9 +85,9 @@ def shipping_action(b, operation):
 
 
 def backend_form(state,title):
-    labels=[('match_root','匹配项目目录'),('control_root','机器人控制目录'),('state_root','本部门运行数据目录'),('python_path','Python 程序路径'),('dws_path','DWS 程序路径'),('pwsh_path','PowerShell 7 程序路径'),('node_path','Node 程序路径'),('agent_model','AI 模型标识')]
-    values={k:state.get(k,'') for k,_ in labels};values['shops']=state.get('shops') or [dict(id='',name='')]
-    return A('backend-save',title,[*[F(k,label) for k,label in labels],F('shops','本部门匹配店铺','rows',columns=[('id','ERP 店铺编号'),('name','店铺名称')])],values)
+    labels=[('match_root','匹配项目目录'),('control_root','机器人控制目录'),('state_root','本部门运行数据目录'),('python_path','Python 程序路径'),('dws_path','DWS 程序路径'),('pwsh_path','PowerShell 7 程序路径'),('node_path','Node 程序路径'),('agent_model','Codex 模型标识（留空使用自身配置）'),('harness_entry','Harness bin.js 入口'),('harness_home','Harness 独立配置目录')]
+    values={k:state.get(k,'') for k,_ in labels};values['connector_mode']=state.get('connector_mode','codex');values['shops']=state.get('shops') or [dict(id='',name='')]
+    return A('backend-save',title,[F('connector_mode','接收及 AI 引擎',options=[('harness','DeepSeek Harness'),('codex','Codex（DWS Stream）')]),*[F(k,label,**({'when':{'connector_mode':'harness'}} if k.startswith('harness_') else {'when':{'connector_mode':'codex'}} if k=='agent_model' else {})) for k,label in labels],F('shops','本部门匹配店铺','rows',columns=[('id','ERP 店铺编号'),('name','店铺名称')])],values)
 
 
 def auto_backend(b,v):
@@ -99,8 +101,8 @@ def auto_backend(b,v):
     def unique(suffixes,required):
         paths={p.resolve() for parent in parents for suffix in suffixes if (p:=parent/suffix).is_dir() and (p/required).is_file()}
         return str(next(iter(paths))) if len(paths)==1 else ''
-    match=unique(('匹配/抖店SKU查询/抖店SKU查询','matching',''),'app/src/group_order_bot.py')
-    control=unique(('数据分析/机器人日报','PythonProject/数据分析/机器人日报','control',''),'robot_desktop_control.py')
+    match=unique(('匹配/抖店SKU查询/抖店SKU查询','matching','robot/matching',''),'app/src/group_order_bot.py')
+    control=unique(('数据分析/机器人日报','PythonProject/数据分析/机器人日报','control','robot/report',''),'robot_desktop_control.py')
     def executable(name,*fallback):
         paths=[shutil.which(name),*fallback]
         return next((str(Path(p).resolve()) for p in paths if p and 'windowsapps' not in str(p).lower() and Path(p).is_file()),'')
@@ -115,6 +117,15 @@ def auto_backend(b,v):
                 shops=[dict(id=k,name=r['name']) for k,r in data['shops'].items() if r.get('name') and r.get('sheet') and Path(r.get('path','')).is_absolute()]
         except (OSError,ValueError,TypeError,AttributeError,KeyError):pass
     values['shops']=shops
+    for parent in parents:
+        entry=parent/'robot/runtime/harness/node_modules/@deepseek-ai/dsh/lib/bin.js'
+        if entry.is_file():
+            values.update(connector_mode='harness',harness_entry=str(entry),harness_home=str(parent/'robot/state/harness'))
+            for key,relative in [('python_path','python/python.exe'),('node_path','node/node.exe'),('dws_path','dws/dws.exe'),('pwsh_path','pwsh/pwsh.exe')]:
+                binary=parent/'robot/runtime'/relative
+                if binary.is_file():values[key]=str(binary)
+            values['state_root']=str(parent/'robot/state/order_matching')
+            break
     # 自动发现的店铺范围需要回显，避免在共享匹配项目中默认接管其他部门店铺。
     complete=all(values.get(key) for key in PATH_FIELDS) and bool(shops)
     message='已识别运行环境和店铺，请核对本部门范围后保存。' if complete else '已填入可识别的配置，请补齐空项并核对本部门店铺。'

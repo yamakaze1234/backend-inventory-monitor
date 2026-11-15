@@ -51,6 +51,32 @@ class SourceTests(unittest.TestCase):
         restarted=InventoryRuntimeService(self.temp.name)
         self.assertEqual(restarted.status()['connection'],'waiting')
 
+    def test_direct_address_preserves_source_credentials_and_baseline(self):
+        self.connect();self.watch();self.poll()
+        with self.service.db() as db:
+            before={k:self.service.get(db,k) for k in ('scope','sql_bound_scope','sql_connection','config_revision')}
+            snapshots=db.execute('SELECT * FROM snapshots').fetchall()
+        seen=[]
+        def connector(**kwargs):
+            seen.append(kwargs);return self.connector(**kwargs)
+        self.service.sql_worker.source.connector=connector
+        self.service.configure_sql_network('192.0.2.10')
+        self.assertEqual(seen[-1]['server'],'192.0.2.10')
+        self.assertEqual(seen[-1]['password'],'fixture-only')
+        with self.service.db() as db:
+            self.assertEqual(before,{k:self.service.get(db,k) for k in before})
+            self.assertEqual(snapshots,db.execute('SELECT * FROM snapshots').fetchall())
+        # 重新装配来源（与启动同路径）继续使用独立地址；失败校验不覆盖已生效地址。
+        self.service.configure_sql(SETTINGS,'fixture-only',connector=connector)
+        self.assertEqual(self.service.sql_worker.source.connect_server,'192.0.2.10')
+        self.connector.fail=True
+        with self.assertRaises(ValueError):self.service.configure_sql_network('192.0.2.11')
+        self.assertEqual(self.service.sql_worker.source.connect_server,'192.0.2.10')
+        self.connector.fail=False
+        self.service.configure_sql_network('')
+        self.assertEqual(seen[-1]['server'],SETTINGS['server'])
+        with self.assertRaisesRegex(ValueError,'IP'):self.service.configure_sql_network('https://example.invalid')
+
     def test_sql_events_use_existing_delivery_not_preview(self):
         self.connect();self.watch();self.poll()
         self.connector.rows[0].update(分库数=12,分库可销数=12,分库待入=5);self.poll()

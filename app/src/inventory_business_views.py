@@ -9,7 +9,7 @@ def table(title,columns,rows,**extra):
     return dict(title=title,columns=[dict(key=k,label=v) for k,v in columns],rows=rows,**extra)
 def section(key,title,**extra):return dict(id=key,title=title,forms=[],tables=[],**extra)
 F,A,T,S=field,form,table,section
-CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存（自动群发送关闭）'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
+CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存提醒'),('douyin_patrol_failure','前台库存巡检失败提醒'),('shipping','发货监控提醒'),('order_patrol','订单巡检结果'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
 
 def robot_form(row=None):
     row=row or {}
@@ -53,6 +53,20 @@ def matches_product(row,q):
 
 def build_view(b,module,q):
     sections=[];filters=[]
+    if module in ('environment-settings','cache-settings'):
+        from inventory_settings_view import view
+        return view(b,module,q)
+    if module in ('engine-settings','daily-settings'):
+        # 独立导航沿用同一业务操作，防止形成两套配置保存路径。
+        if module=='engine-settings':
+            from order_business import view
+            sections=view(b,q)['sections'][:1]
+        else:
+            from daily_report_business import view
+            sections=[view(b.service.root)]
+        for section in sections:
+            for form in section['forms']:form['module']='order-settings'
+        return dict(module=module,filters=[],query=q,sections=sections)
     if module=='shipping':
         from shipping_business import view
         return view(b,q)
@@ -61,7 +75,9 @@ def build_view(b,module,q):
         return view(b,q)
     if module=='order-settings':
         from order_business import view
-        return view(b,q)
+        result=view(b,q)
+        result['sections']=result['sections'][1:2]
+        return result
     if module=='monitor':
         all_products=b.service.products()
         rows=[p for p in all_products if matches_product(p,q)]
@@ -105,7 +121,13 @@ def build_view(b,module,q):
         source=S('source','库存数据来源');source['forms']=[A('source','保存 SQL 连接',[F('server','服务器'),F('port','端口','number'),F('database','数据库'),F('user','查询账号'),F('password','密码（留空使用已保存密码）','password'),F('remember','加密保存密码','bool')],dict({k:cfg.get(k,1433 if k=='port' else 'ERP' if k=='database' else '') for k in ('server','port','database','user')},remember=remember)),A('catalog','刷新完整 ERP 目录')]
         source['planLink']='inventory'
         source['text']='使用 SQL 查询 ERP 库存。旧来源配置可通过保存 SQL 连接切换。'
-        robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。这里仅管理通知，订单匹配机器人单独配置。';rows=b.robots().list_robots()
+        with b.service.db() as db:
+            network=b.service.get(db,'sql_network_override',{})
+            address=network.get('address','') if network.get('scope')==b.service.get(db,'scope') else ''
+        source['forms'].append(A('sql-network','设置本机直连地址',[F('address','直连 IP（留空使用原服务器地址）')],dict(address=address),
+            description='用于域名解析异常；保存前验证连接和库存视图。保留原账号、数据库、库存基线及其他工具配置；不设置代理。'))
+        source['text']+=' 当前连接地址：'+(address or str(cfg.get('server') or '未配置'))
+        robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。每个群分别勾选通知类型，支持同一类型发往多个群；群内指令回复仍回原群。订单接单与 AI 引擎在环境配置中管理。';rows=b.robots().list_robots()
         for row in rows:row['_forms']=[robot_form(row),A('robot-toggle','暂停' if row['enabled'] else '启用',[],dict(id=row['id'],enabled=not row['enabled']),confirm='确认调整该机器人的通知开关？'),A('robot-delete','移除机器人',[],dict(id=row['id']),confirm='移除机器人，历史回执保留。')]
         robots['forms']=[robot_form()];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]
         from inventory_cache_schedule import settings_section
@@ -220,7 +242,7 @@ def douyin_view(b,q):
         r['_details']=[dict(label='SKU 编号',value=r['sku_id']),dict(label='售卖状态',value=r.get('stock_state','未核对')),dict(label='维护表',value=erp.get('workbook','未配置')),dict(label='工作表 / 行',value=str(erp.get('sheet',''))+' / '+str(erp.get('row',''))),*[dict(label=p.get('name',p.get('goods_id','配件')),value=f"编号 {p.get('goods_id')} · 每台 {p.get('required')} · 可销 {p.get('available')} · 缺 {p.get('shortage','—')} · 待入 {p.get('incoming','—')}") for p in erp.get('parts',[])+erp.get('shortages',[])],*[dict(label='待核对',value=x) for x in erp.get('unknown',[])]]
     from douyin_online import status as online_status
     main['text']=(b.douyin.activity(shop) or config['status'])+'\n'+str(online_status(b.douyin.store.root,shop).get('message',''));main['tables'].append(T('整机商品与 SKU',[('product_name','链接商品'),('sku_name','SKU'),('quantity','商家库存'),('erp_state','ERP 配件'),('stock_state','售卖状态')],rows))
-    connection=S('connection','本店连接与维护表');connection['forms']=[A('browser-profiles','刷新已有扩展连接'),A('browser','保存浏览器设置',[F('browser','浏览器',options=[('chrome','Chrome'),('edge','Edge')]),F('mode','连接方式',options=[('managed','独立店铺浏览器'),('extension','已有 OpenCLI 扩展')]),F('profile','扩展配置标识'),F('open','保存后打开本店浏览器','bool')],dict(base,browser=config['browser'],mode=config.get('connection_mode','managed'),profile=config.get('browser_profile',''),open=False)),A('operation','校验本店连接',values=dict(base,operation='login')),A('operation','确认店铺并建立基线',values=dict(base,operation='confirm'),confirm='确认当前浏览器登录的店铺是“'+config['name']+'”？首次导出建立基线。'),A('maintenance-preview','选择并检查维护表',[F('path','本店维护表','file')],dict(base,path=config['maintenance_path'])),A('operation','核对 ERP 配件',values=dict(base,operation='parts')),A('remove','移除本店监控',values=base,confirm='移除当前店铺监控并同步移除在线提醒，保留历史导出。')]
+    connection=S('connection','本店连接与维护表');connection['forms']=[A('browser-profiles','刷新已有扩展连接'),A('browser','保存浏览器设置',[F('browser','浏览器',options=[('chrome','Chrome'),('edge','Edge')]),F('mode','连接方式',options=[('managed','独立店铺浏览器'),('cws','CWS 独立店铺配置'),('extension','已有 OpenCLI 扩展')]),F('profile','扩展配置标识'),F('open','保存后打开本店浏览器','bool')],dict(base,browser=config['browser'],mode=config.get('connection_mode','managed'),profile=config.get('browser_profile',''),open=False)),A('operation','校验本店连接',values=dict(base,operation='login')),A('operation','确认店铺并建立基线',values=dict(base,operation='confirm'),confirm='确认当前浏览器登录的店铺是“'+config['name']+'”？首次导出建立基线。'),A('maintenance-preview','选择并检查维护表',[F('path','本店维护表','file')],dict(base,path=config['maintenance_path'])),A('operation','核对 ERP 配件',values=dict(base,operation='parts')),A('remove','移除本店监控',values=base,confirm='移除当前店铺监控并同步移除在线提醒，保留历史导出。')]
     connection['planLink']='shops'
     low=S('rules','低库存预警');low['forms']=[A('rules','保存预警规则',[F('default','默认库存阈值','number'),F('parts','配件例外','rows',columns=[('goods_id','ERP 配件编号'),('threshold','阈值'),('muted','不预警')])],dict(base,default=rules['default'],parts=[dict(goods_id=k,threshold=v if v is not None else 1,muted=v is None) for k,v in rules['parts'].items()]))]
     excluded=S('excluded','人工排除链接');excluded['tables']=[T('已排除链接',[('product_id','商品 ID'),('product_name','商品'),('reason','备注')],b.douyin.store.excluded_products(shop))];excluded['forms']=[A('exclusions','更新排除名单',[F('products','商品链接或 ID（每行一个）','textarea'),F('reason','备注'),F('remove','从排除名单移出','bool')],dict(base,reason='手动标记下架',remove=False))]

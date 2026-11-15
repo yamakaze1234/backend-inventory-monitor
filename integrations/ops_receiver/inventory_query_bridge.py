@@ -13,15 +13,19 @@ from ops_commands import parse_command, COMMANDS
 from ops_receiver import LocalCommandClient, VerifiedMention
 from ops_replies import render
 
-def claim_error(ident):
+def claim_error(ident, journal):
     # API 执行前拒绝通常没有业务回执，单独保留本地回复去重记录。
-    with closing(sqlite3.connect(LOCAL/'rejected-reply.sqlite3',timeout=5)) as db, db:
+    with closing(sqlite3.connect(journal,timeout=5)) as db, db:
         db.execute('CREATE TABLE IF NOT EXISTS replies(id TEXT PRIMARY KEY)')
         return db.execute('INSERT OR IGNORE INTO replies VALUES (?)',(ident,)).rowcount == 1
 
 
-def run(raw):
-    client = LocalCommandClient(os.environ['INVENTORY_QUERY_URL'], os.environ.pop('INVENTORY_QUERY_AUTH'))
+def run(raw, *, client=None, journal=None):
+    # DWS 与 Harness 共用提交、回读和投递回执；调用方负责验证传输身份。
+    if client is None:
+        client = LocalCommandClient(os.environ['INVENTORY_QUERY_URL'], os.environ.pop('INVENTORY_QUERY_AUTH'))
+    if journal is None:
+        journal = LOCAL/'rejected-reply.sqlite3'
     if not isinstance(raw,dict) or set(raw) != {'Event', 'State'}:
         return {}
     payload, state = raw['Event'], raw['State']
@@ -41,7 +45,7 @@ def run(raw):
     except ValueError:
         prefix = event.text.strip().split(maxsplit=1)[0] if event.text.strip() else ''
         choices = [v[1] for v in COMMANDS.values() if v[0] == prefix]
-        if choices and claim_error(event.receipt):
+        if choices and claim_error(event.receipt, journal):
             return dict(Text='请核对参数，例如「'+choices[0]+'」。', Receipt='')
         return {}
     if 'shop_alias' in args:
@@ -53,7 +57,7 @@ def run(raw):
     if response.get('claimed') is True:
         return dict(Text=render(result), Receipt=event.receipt)
     if result.get('code') not in (None,'OK') and response.get('code') in ('NOT_FOUND','FORBIDDEN','COMMAND_DISABLED'):
-        if claim_error(event.receipt):
+        if claim_error(event.receipt, journal):
             return dict(Text=render(result), Receipt='')
     return {}
 

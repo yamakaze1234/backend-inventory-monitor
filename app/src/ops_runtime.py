@@ -14,7 +14,7 @@ class CommandBusiness:
         self.inventory, self.order, self.order_read = inventory, order, order_read
         self.reports, self.shops = reports or ReportTables(), shops or (lambda: {})
         self.order_target, self.current_order_target = order_target, current_order_target
-        self.implemented = {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'}
+        self.implemented = {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.remove', 'monitor.threshold.set'}
         if order is not None:
             self.implemented.update(('order.match', 'order.patrol', 'task.status'))
         if order_read is not None:
@@ -55,7 +55,7 @@ class CommandBusiness:
             return self.inventory.inventory(args, access)
         if command == 'price.changes':
             return self.inventory.price_changes(args)
-        if command in ('monitor.add', 'monitor.threshold.set'):
+        if command in ('monitor.add', 'monitor.remove', 'monitor.threshold.set'):
             return self.inventory.monitor(command, args, db)
         if command == 'order.status.get':
             return order_status(self.order_read, args, access)

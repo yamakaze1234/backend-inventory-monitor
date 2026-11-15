@@ -1,5 +1,6 @@
 """订单配置表单边界：合成目标，不部署后端或发送真实消息。"""
 import unittest
+import tempfile
 from unittest.mock import Mock
 from order_business import patrol_window_form,save_patrol_window, search_robot,select_robot,shipping_action,view
 
@@ -7,6 +8,7 @@ from order_business import patrol_window_form,save_patrol_window, search_robot,s
 class OrderBusinessTests(unittest.TestCase):
     def setUp(self):
         self.b=Mock()
+        self.b.service.root=tempfile.mkdtemp(prefix="order-business-test-")
         self.result=dict(profile='test-profile',robots=[dict(appId='app-A',name='接单助手')],groups=[dict(groupId='group-A',name='部门群')])
         self.b.order_bot.action.side_effect=lambda action,values:self.result if action=='discover-robots' else dict(message='已保存')
         self.b.order_bot.configuration.return_value=dict(configured=True,deployed=True,patrolWindowReady=True,

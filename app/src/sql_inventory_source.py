@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import ipaddress
 
 FIELDS = ('goods_id', '库房', '商品编码', '商品名称', '分库数', '分库可销数', '分库待入', '分库待审')
 SELECT = 'SELECT ' + ', '.join('[' + f + ']' for f in FIELDS) + ' FROM [库存].[分库库存]'
@@ -178,11 +179,21 @@ def normalize_bundle(bundle, legacy_text=None, issues=None):
     return result, details
 
 
+def direct_address(value):
+    """直连只接受明确 IP，空值恢复原服务器解析，不猜测目标地址。"""
+    if not isinstance(value,str):raise ValueError('请填写有效的直连 IP 地址')
+    value=value.strip()
+    if not value:return ''
+    try:return str(ipaddress.ip_address(value))
+    except ValueError:raise ValueError('请填写有效的直连 IP 地址') from None
+
+
 class SqlSource:
-    def __init__(self, settings, password, connector=None):
+    def __init__(self, settings, password, connector=None, *, connect_server=''):
         self.settings = dict(settings)
         self.password = password
         self.connector = connector
+        self.connect_server = direct_address(connect_server)
         self.legacy_text = None
         if not all(str(settings.get(k, '')).strip() for k in ('server', 'database', 'user')) or not password:
             raise ValueError('请填写服务器、数据库、账号和密码。')
@@ -194,6 +205,10 @@ class SqlSource:
 
     def read(self, goods_ids=None):
         return self._read_queries([SELECT], goods_ids)[0]
+
+    def probe(self):
+        # 在保存地址前验证原账号可以读取两张库存视图的字段，不抓取业务数据。
+        self._read_queries([SELECT+' WHERE 1=0',CATALOG_SELECT+' WHERE 1=0'])
 
     def read_bundle(self, goods_ids=None):
         warehouses, catalog = self._read_queries([SELECT, CATALOG_SELECT], goods_ids)
@@ -245,7 +260,7 @@ class SqlSource:
             connector = pymssql.connect
         connection = None
         try:
-            connection = connector(server=self.settings['server'], port=str(self.settings.get('port', 1433)),
+            connection = connector(server=self.connect_server or self.settings['server'], port=str(self.settings.get('port', 1433)),
                 database=self.settings['database'], user=self.settings['user'], password=self.password,
                 login_timeout=10, timeout=30, charset='UTF-8', as_dict=True, autocommit=True,
                 appname='InventoryMonitorReadonly', tds_version='7.4')

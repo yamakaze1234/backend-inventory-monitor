@@ -125,7 +125,7 @@ class OrderBotAdapter:
 
     def action(self, action, payload=None):
         """参数不进入命令字符串；超时不自动重试，避免未知写入重复入队。"""
-        if action not in {'start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status','shipping','shipping-on','shipping-off','shipping-interval'}:
+        if action not in {'engine-check','start','pause','resume','stop','finish-stop','patrol','order','spu','number','detail','config','discover-robots','save-robot','save-patrol-window','ops-enqueue','ops-order-status','shipping','shipping-on','shipping-off','shipping-interval'}:
             raise ValueError('不支持的机器人操作')
         config=self._refresh_configuration()
         from order_bot_config import deployed,config_path
@@ -176,8 +176,7 @@ elif action=='ops-enqueue':
                                    expected_route=payload['expected_route'])
 elif action=='start':
     if not control.finish_switch(root):
-        control.settings({'serviceEnabled':'1','stopRequested':'0'},root)
-        control.ensure()
+        control.start_services(root)
     result={'message':'已请求启动，请以工作进程心跳为准'}
 elif action=='detail':
     import sqlite3,contextlib

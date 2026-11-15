@@ -163,8 +163,14 @@ class Bridge:
                                   expires_at=now+180, started_at=now, job_type='warehouse_lookup',
                                   request_id=lookup['request_id'], goods_id=lookup['goods_id'])
                 return dict(self.lease)
-            if not status['enabled'] or max(status['next_check'], self.retry_at) > now:
+            if not status['enabled'] or self.retry_at > now:
                 return {'check_id':None, 'next_check':max(status['next_check'],self.retry_at)}
+            from inventory_patrol_window import ready
+            with self.service.db() as db:
+                manual = self.service.get(db, 'manual_check_requested', False)
+                if not manual and not ready(self.service.root, 'inventory', status['next_check']<=now, now, claim=True):
+                    return {'check_id':None, 'next_check':now+60, 'outside_window':True}
+                self.service.put(db, 'manual_check_requested', False)
             self.lease = dict(check_id=uuid.uuid4().hex, client_id=client, scope=scope,
                               expires_at=now+300, started_at=now, config_revision=revision)
             return dict(self.lease, skus=[p['sku'] for p in status['products'] if p['enabled']],
