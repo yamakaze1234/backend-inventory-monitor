@@ -38,7 +38,7 @@ def queue_state(root):
     if not path.is_file():return dict(active=0,online=False,enabled=False,target={})
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
         values=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('heartbeat','serviceEnabled','robotConfig','pendingRobotConfig','matchPatrolWindow','schedulePaused','shippingEnabled','shippingTarget','stopRequested','shippingIntervalMinutes')"))
-        active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown')").fetchone()[0]
+        active=db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','unknown') OR delivery IN ('pending','unknown','partial')").fetchone()[0]
     target=json.loads(values.get('robotConfig') or '{}')
     # 发货监控可以另设目标；没有独立路由时沿用订单机器人和周期。
     shipping_target=json.loads(values['shippingTarget']) if values.get('shippingTarget') else target
@@ -299,11 +299,15 @@ def describe(workspace):
     try:
         shipped=bundle_root()/'matching'
         shipping_current=shipping_ready and all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
-            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py'))
+            for name in ('shipping_monitor.py','shipping_online.py','shipping_shortage.py','shipping_sf_route.py',
+                         'patrol_notifications.py','notification_robots.py','notification_enterprise.py','monitor_secret_store.py'))
+        schedule_current=all((shipping_source/name).read_bytes()==(shipped/name).read_bytes()
+                             for name in ('group_order_bot.py','patrol_time_window.py'))
     except OSError:
         shipping_current=False
+        schedule_current=False
     return dict(configured=True,deployed=deployed(workspace,config),**config,target=state['target'],active=state['active'],online=state['online'],patrolWindow=state.get('patrolWindow'),
-                patrolWindowReady=patrol_window_ready(config),schedulePaused=state.get('schedulePaused',True),
+                patrolWindowReady=patrol_window_ready(config),patrolScheduleReady=schedule_current,schedulePaused=state.get('schedulePaused',True),
                 serviceEnabled=state['enabled'],shippingReady=shipping_ready,shippingBackendCurrent=shipping_current,shipping=state.get('shipping',{}),
                 switching=state.get('switching',False),stopRequested=state.get('stopRequested',False),
                 message='订单匹配与库存通知使用独立配置')

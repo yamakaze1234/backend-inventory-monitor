@@ -179,7 +179,7 @@ function ScheduleCards({sections,onAction,busy}:{sections:Section[];onAction:(ac
                 <PlanBadge status={shop.status} tone={shop.tone}/>
               </div>
               <div className="flex flex-wrap justify-end gap-2">
-                <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置巡检周期'}
+                <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：'+shop.action.title}
                   onClick={()=>onAction(shop.action)}>{shop.action.title}</Button>
                 {shop.windowAction&&<Button type="button" size="sm" variant="outline" disabled={busy} aria-label={shop.name+'：设置运行时间段'}
                   onClick={()=>onAction(shop.windowAction!)}>{shop.windowAction.title}</Button>}

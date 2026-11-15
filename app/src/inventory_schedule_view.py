@@ -36,6 +36,32 @@ def window_label(root,key):
             value['start']+'–'+('次日 ' if value['end']<value['start'] else '')+value['end'])
 
 
+def schedule_form(root,key):
+    from inventory_patrol_window import load_schedule
+    return A('patrol-schedule','设置运行方式',[
+        F('mode','运行方式',options=[('interval','按间隔运行'),('daily','每天固定时间点')]),
+        F('times','北京时间','times',limit=24,when=dict(mode='daily'))],
+        dict(load_schedule(root,key),key=key),module='settings',submitLabel='保存计划',
+        description='固定时间点独立于间隔和运行时段；允许五分钟启动延迟，错过不补跑。手动检查不受限制。')
+
+
+def apply_schedule(root,key,card):
+    from inventory_patrol_window import load_schedule
+    value=load_schedule(root,key)
+    card['forms'].append(schedule_form(root,key))
+    if not value['valid']:
+        card['summary']='计划配置异常，请重新保存'
+    elif value['mode']=='daily':
+        card['summary']='每天 '+'、'.join(value['times'])+'（北京时间）'
+        card['note']=(card.get('note','')+'；' if card.get('note') and key!='inventory' else '')+'固定点模式生效，原间隔与时段保留供切换使用。'
+
+
+def notification_state(b,state):
+    """显示实际勾选目标，避免新投递路由仍在界面显示旧接单群。"""
+    groups=b.robots().channel_targets('shipping')
+    return dict(state,notificationGroups=groups) if isinstance(groups,list) else state
+
+
 def shipping_plan(state,read_failed):
     description='扫描待发订单，提醒已超时或 48 小时内到期的订单，并汇总缺货。'
     if read_failed:
@@ -48,6 +74,8 @@ def shipping_plan(state,read_failed):
     online=state.get('online') and state.get('serviceEnabled') and not state.get('stopRequested')
     minutes=shipping.get('intervalMinutes')
     group=shipping.get('groupName') or '已配置的群'
+    if 'notificationGroups' in state:
+        group='、'.join(state['notificationGroups']) or '未勾选接收群（仅巡检同步）'
     if state.get('shippingBackendCurrent') is False:
         # 保留暂停入口，避免旧后端在升级期间继续发送逐单通知。
         action=A('shipping-off','暂停定时监控',immediate=True,module='order-settings') if enabled else None
@@ -86,7 +114,7 @@ def view(b,q):
     # 订单使用独立队列；暂时不可读时仍能查看和修改其他计划。
     order_error=False
     try:
-        order_state=adapter(b).configuration()
+        order_state=notification_state(b,adapter(b).configuration())
     except (OSError,ValueError,sqlite3.Error):
         order_error=True
         order_state={}
@@ -145,6 +173,14 @@ def view(b,q):
         shop_rows[-1]['summary']+=' · '+window_label(b.service.root,'douyin:'+shop['id'])
         shop_rows[-1]['windowAction']=window_form(b.service.root,'douyin:'+shop['id'])
         shop_rows[-1]['windowAction']['description']='仅修改「'+shop['name']+'」；北京时间，支持跨午夜，手动检查不受限。'
+        # 店铺行在同一表单中选择运行方式和间隔，时段仍单独保留。
+        from inventory_patrol_window import load_schedule
+        schedule=load_schedule(b.service.root,'douyin:'+shop['id'])
+        shop_rows[-1]['action']=schedule_form(b.service.root,'douyin:'+shop['id'])
+        shop_rows[-1]['action']['fields'].append(F('minutes','间隔（分钟）','number',when=dict(mode='interval')))
+        shop_rows[-1]['action']['values']['minutes']=minutes
+        if schedule['mode']=='daily':
+            shop_rows[-1]['summary']='每天 '+'、'.join(schedule['times'])
     shops=plan('shops','抖店库存巡检','每个店铺独立设定周期。参与巡检与暂停开关仍在前台库存监控。',
                f'{len(shop_rows)} 家店铺' if shop_rows else '尚未添加店铺',shopRows=shop_rows)
 
@@ -157,5 +193,7 @@ def view(b,q):
     for card,key in [(inventory,'inventory'),(shipping,'shipping'),(price_plan,'price')]:
         card['forms'].append(window_form(b.service.root,key))
         card['summary']+=' · '+window_label(b.service.root,key)
+    for card,key in [(inventory,'inventory'),(shipping,'shipping'),(order,'orders')]:
+        apply_schedule(b.service.root,key,card)
     return dict(module='schedules',filters=[],query=q,
                 sections=[inventory,order,shipping,shops,price_plan,report_plan,cleanup])

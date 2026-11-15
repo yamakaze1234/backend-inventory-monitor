@@ -9,7 +9,7 @@ def table(title,columns,rows,**extra):
     return dict(title=title,columns=[dict(key=k,label=v) for k,v in columns],rows=rows,**extra)
 def section(key,title,**extra):return dict(id=key,title=title,forms=[],tables=[],**extra)
 F,A,T,S=field,form,table,section
-CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存（自动群发送关闭）'),('douyin_patrol_failure','巡检失败提醒'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
+CHANNELS=[('inventory','库存提醒'),('douyin_inventory','抖店补库存提醒'),('douyin_patrol_failure','前台库存巡检失败提醒'),('shipping','发货监控提醒'),('order_patrol','订单巡检结果'),('daily','货源日报'),('messages','货源即时转发'),('profit','ERP 单价提醒')]
 
 def robot_form(row=None):
     row=row or {}
@@ -127,7 +127,7 @@ def build_view(b,module,q):
         source['forms'].append(A('sql-network','设置本机直连地址',[F('address','直连 IP（留空使用原服务器地址）')],dict(address=address),
             description='用于域名解析异常；保存前验证连接和库存视图。保留原账号、数据库、库存基线及其他工具配置；不设置代理。'))
         source['text']+=' 当前连接地址：'+(address or str(cfg.get('server') or '未配置'))
-        robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。这里仅管理通知，订单匹配机器人单独配置。';rows=b.robots().list_robots()
+        robots=S('robots','通知机器人');robots['description']='企业机器人只需群名称和机器人名称，账号与标识自动查询；重名时选择候选。每个群分别勾选通知类型，支持同一类型发往多个群；群内指令回复仍回原群。订单接单与 AI 引擎在环境配置中管理。';rows=b.robots().list_robots()
         for row in rows:row['_forms']=[robot_form(row),A('robot-toggle','暂停' if row['enabled'] else '启用',[],dict(id=row['id'],enabled=not row['enabled']),confirm='确认调整该机器人的通知开关？'),A('robot-delete','移除机器人',[],dict(id=row['id']),confirm='移除机器人，历史回执保留。')]
         robots['forms']=[robot_form()];robots['tables']=[T('机器人列表',[('name','名称'),('mode','类型'),('enabled','启用'),('channels','通知范围')],rows),T('近期回执',[('name','机器人'),('status','状态'),('channel','类型')],b.robots().recent_receipts())]
         from inventory_cache_schedule import settings_section

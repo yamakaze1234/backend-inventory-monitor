@@ -633,14 +633,15 @@ class DouyinRuntime:
                     waiting.setdefault(key, deque()).append('online')
                 for config in self.due_stores():
                     ident = config['id']
-                    from inventory_patrol_window import allowed
-                    if not allowed(self.store.root.parent, 'douyin:' + ident):
+                    from inventory_patrol_window import ready
+                    if not config['enabled'] or ident in active or waiting.get(ident):
                         continue
-                    if (not config['enabled'] or ident in active or waiting.get(ident)
-                            or time.monotonic() < self.due.get(ident, 0)):
-                        continue
-                    if self.reserve_collection(ident):
-                        waiting.setdefault(ident, deque()).append('scheduled-inspect')
+                    if ready(self.store.root.parent,'douyin:'+ident,time.monotonic()>=self.due.get(ident,0)) and self.reserve_collection(ident):
+                        if ready(self.store.root.parent,'douyin:'+ident,time.monotonic()>=self.due.get(ident,0),claim=True):
+                            waiting.setdefault(ident, deque()).append('scheduled-inspect')
+                        else:
+                            with self.collection_lock:
+                                self.pending_collections.discard(ident)
                 for ident in list(waiting):
                     if self.stop_event.is_set() or len(active) >= self.max_parallel:
                         break

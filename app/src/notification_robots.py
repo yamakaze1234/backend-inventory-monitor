@@ -13,7 +13,8 @@ import time
 import uuid
 
 CHANNELS = {'inventory': '库存提醒', 'douyin_inventory': '抖店补库存提醒（单独启用）',
-            'douyin_patrol_failure': '巡检失败提醒（单独启用）',
+            'douyin_patrol_failure': '前台库存巡检失败提醒',
+            'shipping': '发货监控提醒', 'order_patrol': '订单巡检结果',
             'daily': '货源日报', 'messages': '钉钉货源消息', 'profit': 'ERP 单价累计涨跌 100 元提醒'}
 
 
@@ -98,6 +99,14 @@ class RobotStore:
                     for r in db.execute('SELECT r.id,r.name,r.enabled,r.channels,e.target FROM robots r '
                                         'LEFT JOIN enterprise_robots e ON r.id=e.robot WHERE r.deleted=0 ORDER BY r.rowid')]
 
+    def channel_targets(self, channel):
+        """None 表示尚未迁移旧路由；空列表表示用户已关闭该类通知。"""
+        with self.db() as db:
+            if not db.execute('SELECT 1 FROM migrations WHERE id=?',('managed:'+channel,)).fetchone():
+                return None
+        return [r['enterprise']['group_name'] if r['enterprise'] else r['name']
+                for r in self.list_robots() if r['enabled'] and channel in r['channels']]
+
     def save(self, name, webhook='', channels=None, robot_id=None, enabled=None, *, mode='webhook', enterprise=None):
         if mode not in ('webhook', 'enterprise'):
             raise ValueError('未知机器人类型。')
@@ -144,6 +153,9 @@ class RobotStore:
                         json.dumps(channels), json.dumps(since), fingerprint))
             if mode == 'enterprise':
                 db.execute('INSERT OR REPLACE INTO enterprise_robots VALUES (?,?)', (ident, json.dumps(enterprise, ensure_ascii=False)))
+            # 一旦使用通知勾选管理，就不再退回旧单群；全部取消代表明确关闭。
+            for channel in set(channels).intersection(('shipping','order_patrol')):
+                db.execute('INSERT OR IGNORE INTO migrations VALUES (?)', ('managed:'+channel,))
         return ident
 
     def set_enabled(self, robot_id, enabled):
@@ -166,7 +178,7 @@ class RobotStore:
             return [dict(channel=r[0], name=r[1], status='unknown' if r[2] == 'sending' and time.time() - r[3] > 60 else r[2], at=r[3]) for r in db.execute(
                 'SELECT channel,name,status,updated FROM receipts ORDER BY updated DESC LIMIT ?', (limit,))]
 
-    def send(self, channel, job, payload, occurred_at, transport=None, recipient_ids=None, *, retry_failed=True):
+    def send(self, channel, job, payload, occurred_at, transport=None, recipient_ids=None, *, retry_failed=True, enterprise_transport=None):
         if channel not in CHANNELS:
             raise ValueError('未知通知类型。')
         transport = transport or send_encrypted
@@ -207,7 +219,7 @@ class RobotStore:
             try:
                 if enterprise:
                     from notification_enterprise import send_enterprise
-                    result = send_enterprise(json.loads(enterprise[0]), payload)
+                    result = (enterprise_transport or send_enterprise)(json.loads(enterprise[0]), payload)
                 else:
                     result = transport(robot[4], payload)
                 status = result.get('status', 'unknown')

@@ -21,7 +21,7 @@ from patrol_worker import BatchMatchAdapter, PatrolWorker
 from task_store import TaskStore
 from robot_config import get_config
 import order_patrol_window as patrol_window
-from patrol_time_window import allowed, department_workspace
+from patrol_time_window import allowed, department_workspace, ready, load_schedule
 
 ROOT = Path(__file__).resolve().parent
 from order_department_runtime import settings as department_settings
@@ -189,10 +189,20 @@ def claim_next_job(db, at=None):
             db.commit()
             return None
         start = patrol_window.slot_start(patrol_window.times(patrol_window.read_settings(settings.get(patrol_window.SETTING))),at)
+        order_schedule=load_schedule(department_workspace(),'orders')
+        if order_schedule['mode']=='daily':
+            # 固定点任务不被旧间隔时段取消；跨日未执行任务仍作废。
+            from patrol_time_window import CN
+            start=max(order_schedule['since'],datetime.fromtimestamp(at,CN).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())
         expire_scheduled_patrols(db,at,start)
         # 暂停或时段关闭只限制订单自动巡检；发货监控和手动任务照常领取。
-        can_auto = start is not None and settings.get('schedulePaused')!='1'
+        can_auto = start is not None and order_schedule['valid'] and settings.get('schedulePaused')!='1'
         can_shipping = allowed(department_workspace(), 'shipping', at)
+        shipping_schedule=load_schedule(department_workspace(),'shipping')
+        if shipping_schedule['mode']=='daily':
+            from patrol_time_window import CN
+            earliest=max(shipping_schedule['since'],datetime.fromtimestamp(at,CN).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())
+            db.execute("UPDATE jobs SET state='cancelled',delivery='suppressed',updated=?,evidence='固定时间点计划已变更或任务已跨日' WHERE state='queued' AND kind='shipping' AND origin='schedule' AND created<?",(at,earliest))
         if not can_shipping:
             db.execute("UPDATE jobs SET state='cancelled',delivery='suppressed',updated=?,evidence='已错过发货巡检时段' WHERE state='queued' AND kind='shipping' AND origin='schedule'", (at,))
         job = db.execute("""SELECT * FROM jobs WHERE state='queued'
@@ -613,7 +623,10 @@ def deliver(job_id, report, root=STATE, runner=subprocess.run):
             db.execute("UPDATE jobs SET delivery='ops-owned' WHERE id=?", (job_id,))
             return
         # 定时巡检无新增成功且异常未变化时保持静默；手动任务仍返回结果。
+        from patrol_notifications import audience, deliver as deliver_notifications
+        recipients=audience('order_patrol') if job['origin']=='schedule' else None
         signature = hashlib.sha256(json.dumps({
+            'recipients': recipients,
             'error': report.get('error'), 'shops': [{
                 'shopId': s['shopId'], 'verified': s['verified'], 'exceptions': s['exceptions'],
                 'scanComplete': s['scan']['complete'], 'scanError': s['scan'].get('error')
@@ -623,6 +636,10 @@ def deliver(job_id, report, root=STATE, runner=subprocess.run):
         actionable = report.get('error') or any(s['exceptions'] or not s['scan']['complete'] for s in report.get('shops', []))
         if job['origin'] == 'schedule' and not verified and (not actionable or (previous and previous[0] == signature)):
             db.execute("UPDATE jobs SET delivery='suppressed' WHERE id=?", (job_id,))
+            return
+        if job['origin']=='schedule' and deliver_notifications(db,job,'order_patrol',message,DWS,runner,job_id if verified else signature):
+            if db.execute('SELECT delivery FROM jobs WHERE id=?',(job_id,)).fetchone()[0]=='sent':
+                db.execute("INSERT OR REPLACE INTO settings VALUES('lastNotification',?)",(signature,))
             return
         # 发送前将投递状态落盘为 unknown；发送超时不自动重发，避免重复通知。
         if db.execute("UPDATE jobs SET delivery='unknown' WHERE id=? AND delivery='pending'", (job_id,)).rowcount != 1:
@@ -671,18 +688,19 @@ def service(root=STATE, once=False):
                 db.execute("INSERT OR REPLACE INTO settings VALUES('heartbeat',?)",(str(now),))
                 schedule = patrol_window.read_settings(settings.get(patrol_window.SETTING))
                 window = patrol_window.times(schedule)
-                if not once and settings.get('schedulePaused')!='1' and patrol_window.slot_start(window,now) is not None:
+                if not once and settings.get('schedulePaused')!='1':
                     # 订单间隔独立设置；不改变发货监控可能沿用的机器人路由间隔。
-                    minutes = schedule.get('intervalMinutes') or get_config(root)['intervalMinutes']
-                    if patrol_window.due(window,now,float(settings.get('lastScheduled','0')),minutes):
+                    minutes = (schedule or {}).get('intervalMinutes') or get_config(root)['intervalMinutes']
+                    if ready(department_workspace(),'orders',patrol_window.due(window,now,float(settings.get('lastScheduled','0')),minutes),now,claim=True):
                         # 上个窗口遗留的任务不能被当成今天已安排的巡检。
-                        expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
+                        if load_schedule(department_workspace(),'orders')['mode']=='interval':
+                            expire_scheduled_patrols(db,now,patrol_window.slot_start(window,now))
                         enqueue('today',origin='schedule',root=root)
                         db.execute("INSERT OR REPLACE INTO settings VALUES('lastScheduled',?)",(str(now),))
                 # 发货扫描使用独立开关，不因匹配巡检暂停而停止监控。
                 from shipping_monitor import config as shipping_config
                 shipping = shipping_config(root)
-                if not once and shipping['enabled'] and allowed(department_workspace(), 'shipping', now) and time.time()-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60:
+                if not once and shipping['enabled'] and ready(department_workspace(), 'shipping', now-float(settings.get('lastShippingScheduled', '0')) >= shipping['target']['intervalMinutes']*60, now, claim=True):
                     enqueue('shipping', origin='schedule', root=root)
                     db.execute("INSERT OR REPLACE INTO settings VALUES('lastShippingScheduled',?)", (str(time.time()),))
                 job = claim_next_job(db)

@@ -140,6 +140,29 @@ def patrol_window(b,v):
     value=save(b.service.root,key,v.get('allDay'),v.get('start'),v.get('end'))
     return dict(message='已设为全天运行' if value['allDay'] else '本项巡检运行时段已保存（北京时间）')
 
+
+@action('settings','patrol-schedule')
+def patrol_schedule(b,v):
+    from inventory_patrol_window import save_schedule
+    key=str(v.get('key',''))
+    if key.startswith('douyin:'):
+        b.douyin.store.store(key.split(':',1)[1])
+        if v.get('mode')=='interval':
+            minutes=v.get('minutes')
+            if isinstance(minutes,bool) or not str(minutes).isdigit() or not 15<=int(minutes)<=1440:
+                raise ValueError('巡检周期须为 15–1440 分钟')
+            minutes=int(minutes)
+            # 沿用店铺工作队列，避免设置与正在导出的同店任务互相覆盖。
+            shop_interval(b,dict(shop=key.split(':',1)[1],minutes=minutes))
+    elif key not in ('inventory','shipping','orders'):
+        raise ValueError('未知巡检计划')
+    if key in ('shipping','orders'):
+        from order_business import adapter
+        if not adapter(b).configuration().get('patrolScheduleReady'):
+            raise ValueError('请先停止订单服务并安装新版兼容后端，再修改订单或发货的运行方式')
+    save_schedule(b.service.root,key,v.get('mode'),v.get('times'))
+    return dict(message='运行方式已保存；固定时间点按北京时间执行，错过超过五分钟不补跑')
+
 @action('settings','cache-preview')
 def cache_preview(b,v):
     from inventory_cache_schedule import preview_action

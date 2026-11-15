@@ -313,7 +313,8 @@ def deliver(job_id, report, root, runner=subprocess.run):
     stable = {k: v for k, v in report.items() if k not in ('jobId', 'checkedAt')}
     stable['missingDeadlineCount'] = sum(x['level'] == '截止时间待核实' for x in report.get('orders', []))
     stable['orders'] = [{k: v for k, v in x.items() if k != 'hours'} for x in report.get('orders', []) if x['level'] != '截止时间待核实']
-    signature = hashlib.sha256(json.dumps([target, stable], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    from patrol_notifications import audience, deliver as deliver_notifications
+    signature = hashlib.sha256(json.dumps([target, audience('shipping'), stable], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with contextlib.closing(queue_db(root)) as db:
         job = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not job or job['delivery'] != 'pending':
@@ -323,6 +324,10 @@ def deliver(job_id, report, root, runner=subprocess.run):
             db.execute("UPDATE jobs SET delivery='suppressed' WHERE id=?", (job_id,))
             return
         text = message(report, notification=True)
+        if job['origin']!='ops-command' and deliver_notifications(db,job,'shipping',text,DWS,runner,signature if job['origin']=='schedule' else job_id):
+            if db.execute('SELECT delivery FROM jobs WHERE id=?',(job_id,)).fetchone()[0]=='sent':
+                db.execute("INSERT OR REPLACE INTO settings VALUES('shippingNotification',?)",(signature,))
+            return
         # 按字符切段，保留所有订单；每段控制在钉钉文本大小范围内。
         chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
         if db.execute("UPDATE jobs SET delivery='unknown' WHERE id=? AND delivery='pending'", (job_id,)).rowcount != 1:

@@ -269,12 +269,14 @@ class SqlWorker:
             with s.db() as db:
                 due = s.get(db, 'enabled', True) and now >= s.get(db, 'next_check', 0)
                 manual = s.get(db, 'manual_check_requested', False)
-                from inventory_patrol_window import allowed
-                due = due and (manual or allowed(s.root, 'inventory', now))
+                from inventory_patrol_window import allowed, ready, load_schedule
+                due = s.get(db, 'enabled', True) and (manual or ready(s.root, 'inventory', due, now, claim=True))
                 revision = s.get(db, 'config_revision', 0)
                 excluded = set(s.get(db, 'sql_excluded_goods_ids', []))
             request = s.pending_warehouse_request()
-            full = self.refresh_requested and (self.refresh_manual or allowed(s.root, 'inventory', now))
+            # 固定点模式不能被启动时的自动目录刷新绕过；手动刷新保持可用。
+            full = self.refresh_requested and (self.refresh_manual or
+                (due if load_schedule(s.root,'inventory')['mode']=='daily' else allowed(s.root,'inventory',now)))
             if not full and not due and request is None:
                 return
             source = self.source

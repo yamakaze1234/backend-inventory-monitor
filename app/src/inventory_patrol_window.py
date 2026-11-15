@@ -19,3 +19,15 @@ def load(root, key):
 
 def save(root, key, all_day, start=None, end=None):
     return tools()['save'](root, key, all_day, start, end)
+
+
+def load_schedule(root, key):
+    return tools()['load_schedule'](root, key)
+
+
+def save_schedule(root, key, mode, times=None, at=None):
+    return tools()['save_schedule'](root, key, mode, times, at)
+
+
+def ready(root, key, interval_due, at=None, *, claim=False):
+    return tools()['ready'](root, key, interval_due, at, claim=claim)

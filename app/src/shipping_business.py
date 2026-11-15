@@ -5,12 +5,14 @@ import sqlite3
 from pathlib import Path
 from inventory_business_views import A,F,S,T
 from order_business import adapter
-from inventory_schedule_view import shipping_plan
+from inventory_schedule_view import shipping_plan, notification_state, apply_schedule
 
 
 def view(b,q):
-    state=adapter(b).configuration()
+    state=notification_state(b,adapter(b).configuration())
     card=shipping_plan(state,False)
+    if isinstance(getattr(b.service,'root',None),(str,Path)):
+        apply_schedule(b.service.root,'shipping',card)
     card['text']='；'.join(str(card.get(k) or '') for k in ('summary','status','note'))
     if state.get('deployed') and state.get('shippingReady') and state.get('shippingBackendCurrent') is not False:
         card['forms'].append(A('interval','设置监控周期',[F('minutes','监控周期（分钟）','number')],
