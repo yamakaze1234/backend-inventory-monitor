@@ -307,7 +307,7 @@ def section(b):
             grants = b.service.get(db, key, {})
             identity = dict(org_id=org, robot_id=robot, group_id=group)
             name = b.service.get(db,key+':name','')
-            rows.append(dict(id=json.dumps([org,robot,group]), name=name, member_count=len(grants),
+            rows.append(dict(id=json.dumps([org,robot,group]), name=name, robot_id=robot, group_id=group, member_count=len(grants),
                              features='、'.join(COMMANDS[k][0] for k in selected) or '未开启',
                              _forms=[binding_form(b,identity,name,commands=selected),
                                      A('ops-members-search','添加成员',[F('query','成员姓名或群昵称')],
@@ -318,13 +318,13 @@ def section(b):
                                      A('ops-members-import-preview','导入权限表格',
                                        [F('path','权限表格（.xlsx）','file',pickOnly=True)],identity,submitLabel='预览权限变更',
                                        description=f'{name} · 选择填写好的模板，确认预览后生效。')]))
-    result = S('ops-commands','运营机器人指令')
+    result = S('ops-commands','群聊与成员权限')
     status = ('机器人指令已接入。' if api else '运营指令接入配置无效，请核对本机配置。' if
               getattr(b,'ops_command_config_error',False) else '机器人指令尚未接入。')
     result['description'] = status+' 先为群开启功能，再给成员勾选权限。'
     result['forms'] = [A('ops-group-discover','绑定钉钉群',[F('name','群名称')],submitLabel='识别群信息',
                          description='输入钉钉群名，选择要绑定的群。')]
-    result['tables'] = [T('已绑定的群',[('name','群名称'),('features','已开启功能'),('member_count','授权成员')],rows,
+    result['tables'] = [T('群聊与成员权限',[('name','群名称'),('robot_id','接收机器人标识'),('features','已开启功能'),('member_count','授权成员')],rows,
                           widths=dict(name=140,features=235,member_count=85))]
     from ops_tax_cost_settings import panel as cost_panel
     cost_forms,cost_tables = cost_panel(b)

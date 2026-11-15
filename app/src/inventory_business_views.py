@@ -53,6 +53,9 @@ def matches_product(row,q):
 
 def build_view(b,module,q):
     sections=[];filters=[]
+    if module in ('environment-settings','cache-settings'):
+        from inventory_settings_view import view
+        return view(b,module,q)
     if module in ('engine-settings','daily-settings'):
         # 独立导航沿用同一业务操作，防止形成两套配置保存路径。
         if module=='engine-settings':
