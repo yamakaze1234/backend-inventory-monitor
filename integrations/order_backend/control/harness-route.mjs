@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const fixed = new Set('帮助 查询商品 查库存 查价格变化 添加监控 修改监控阈值 查订单状态 匹配订单 巡检订单 查看任务进度 发货监控汇总 前台库存监控'.split(' '));
+const fixed = new Set('帮助 查询商品 查库存 查价格变化 添加监控 删除监控 修改监控阈值 查订单状态 匹配订单 巡检订单 查看任务进度 发货监控汇总 前台库存监控'.split(' '));
 const natural = /^(?:查询|帮我查(?:询|一下)?|查一下|查)\s*([^;。?!]+?)\s*(?:的\s*)?(?:库存(?:\s*(?:和|及|与|、|以及|\/)\s*ERP\s*(?:库存成本|成本价|价格|单价|成本))?|ERP\s*(?:库存成本|成本价|价格|单价|成本))[?。]?$/iu;
 
 export function isFixed(text) {

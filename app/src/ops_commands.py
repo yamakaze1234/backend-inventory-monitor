@@ -8,6 +8,7 @@ COMMANDS = {
     'help': ('帮助', '帮助'),
     'inventory.get': ('查询商品', '查询商品 56281'),
     'price.changes': ('查价格变化', '查价格变化 56281'),
+    'monitor.remove': ('删除监控', '删除监控 56281'),
     'monitor.add': ('添加监控', '添加监控 56281 阈值 5'),
     'monitor.threshold.set': ('修改监控阈值', '修改监控阈值 56281 为 10'),
     'order.status.get': ('查订单状态', '查订单状态 123456789012345A-1'),
@@ -57,6 +58,9 @@ def parse_command(text):
     m = re.fullmatch(r'查价格变化(?: ([0-9]+))?', text)
     if m:
         return 'price.changes', ({'goods_id': m[1]} if m[1] else {})
+    m = re.fullmatch(r'删除监控 ([0-9]+)', text)
+    if m:
+        return 'monitor.remove', {'goods_id': m[1]}
     m = re.fullmatch(r'添加监控 ([0-9]+) 阈值 ([0-9]+)(?: 仓库 (\S+))?', text)
     if m:
         scope = dict(stock_basis='warehouse_stock', warehouse_id=m[3]) if m[3] else {}

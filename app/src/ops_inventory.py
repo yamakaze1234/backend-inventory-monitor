@@ -253,12 +253,22 @@ class InventoryCommands:
         return dict(items=rows[:10], total=len(rows), batch_id=batch[0], checked_at=batch[1] or info['checked_at'])
 
     def monitor(self, command, args, db):
-        gid, threshold = args['goods_id'], args['threshold']
+        gid, threshold = args['goods_id'], args.get('threshold')
         matches = [json.loads(p) for p, c in db.execute('SELECT p.data,c.data FROM products p LEFT JOIN catalog c ON p.sku=c.sku')
                    if gid in {str(json.loads(p).get('goods_id')), str(json.loads(c).get('goods_id')) if c else ''}]
         if len(matches) > 1:
             raise CommandError(409, 'AMBIGUOUS_TARGET', '存在多条监控配置，请在管理界面核对')
         previous = matches[0] if matches else None
+        if command == 'monitor.remove':
+            # 精确 ERP 编号，歧义或目录冲突一律不删除；沿用界面的归档和提醒取消规则。
+            if not previous:
+                return dict(outcome='not_monitored', goods_id=gid)
+            if previous.get('goods_id') not in ('', None, gid):
+                raise CommandError(409, 'AMBIGUOUS_TARGET', '目录身份与监控配置不一致')
+            removed, = self.service._remove_products(db, [previous['sku']], expected={previous['sku']:previous})
+            if db.execute('SELECT 1 FROM products WHERE sku=?', (previous['sku'],)).fetchone():
+                raise RuntimeError('删除监控读回不一致')
+            return dict(removed, goods_id=gid, outcome='removed')
         if command == 'monitor.threshold.set':
             if not previous:
                 raise CommandError(404, 'NOT_FOUND', '该商品尚未关注')

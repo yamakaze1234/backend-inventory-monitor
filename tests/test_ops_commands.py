@@ -8,6 +8,11 @@ from ops_commands import COMMANDS, GroupCommands, parse_command, render_help
 
 
 class CommandTests(unittest.TestCase):
+    def test_remove_accepts_only_one_goods_id(self):
+        self.assertEqual(parse_command('删除监控 56281'),('monitor.remove',dict(goods_id='56281')))
+        for text in ('删除监控','删除监控 全部','删除监控 56281 56282','删除监控 显卡','删除监控 -1'):
+            with self.assertRaises(ValueError):parse_command(text)
+
     def test_fixed_commands_and_full_order_numbers(self):
         self.assertEqual(parse_command(' 查库存  56281 '), ('inventory.get', {'goods_id': '56281'}))
         self.assertEqual(parse_command('查库存 5060 Ti 白色')[1], {'keyword': '5060 Ti 白色'})

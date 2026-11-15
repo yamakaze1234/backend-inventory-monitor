@@ -11,7 +11,7 @@ from ops_permission_import import FIELDS, LIMIT, inspect, read_rows, shop_labels
 SECTIONS = {
     'help': ('帮助', ('help',)),
     'inventory': ('库存与价格', ('inventory.get', 'price.changes')),
-    'monitor': ('监控设置', ('monitor.add', 'monitor.threshold.set')),
+    'monitor': ('监控设置', ('monitor.add', 'monitor.remove', 'monitor.threshold.set')),
     'orders': ('订单与发货', ('order.status.get', 'order.match', 'order.patrol', 'task.status', 'shipping.summary', 'front_stock.summary')),
 }
 
@@ -269,7 +269,7 @@ def binding_form(b, identity, name, *, robot_name='', token=None, commands=None)
     if commands is None:
         api = getattr(b, 'ops_command_api', None)
         commands = (getattr(api.business, 'available', api.business.implemented) if api else
-                    {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.threshold.set'})
+                    {'help', 'inventory.get', 'price.changes', 'monitor.add', 'monitor.remove', 'monitor.threshold.set'})
     values = dict(identity, name=name)
     if token:
         values['token'] = token

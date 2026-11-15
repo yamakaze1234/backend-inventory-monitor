@@ -9,3 +9,5 @@ test('假@和其他群不进入执行器',async()=>{let calls=0;for(const change
 test('单次执行投递并记回执',async()=>{const states=[];const execute=async(e,s)=>{states.push(s);return {Text:'fixture',Receipt:true};};await routeFixed(msg,'robot',async()=>true,execute);assert.deepEqual(states,['prepare','sent']);});
 test('投递异常只记未知不重试',async()=>{const states=[];await routeFixed(msg,'robot',async()=>{throw Error('timeout');},async(e,s)=>{states.push(s);return {Text:'fixture',Receipt:true};});assert.deepEqual(states,['prepare','unknown']);});
 test('拒绝非钉钉地址发送',async()=>{assert.equal(await sendFixedReply({},'https://example.com/send','fixture','text'),false);});
+
+ test("remove watch stays on fixed routing", () => { assert.equal(isFixed("删除监控 56281"), true); assert.equal(isFixed("删除监控 全部"), true); });

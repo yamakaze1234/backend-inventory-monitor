@@ -9,12 +9,13 @@ from urllib.parse import unquote
 from ops_commands import COMMANDS, GroupCommands
 
 PREFIX = '/api/commands/v1/'
-WRITES = frozenset(('monitor.add', 'monitor.threshold.set', 'order.match', 'order.patrol'))
+WRITES = frozenset(('monitor.add', 'monitor.remove', 'monitor.threshold.set', 'order.match', 'order.patrol'))
 PRICE_ACCESS = frozenset(('erp_cost', 'maintenance_price', 'tax_cost', 'operator', 'table_links'))
 ARGS = {
     'help': ({}, {}),
     'inventory.get': ({}, dict(goods_id='goods', keyword='text', warehouse_id='id', shop_id='id')),
     'price.changes': ({}, dict(goods_id='goods')),
+    'monitor.remove': (dict(goods_id='goods'), {}),
     'monitor.add': (dict(goods_id='goods', threshold='threshold'), dict(stock_basis='basis', warehouse_id='id')),
     'monitor.threshold.set': (dict(goods_id='goods', threshold='threshold'), {}),
     'order.status.get': (dict(number='id'), dict(number_type='number_type', shop_id='id')),
@@ -211,8 +212,8 @@ class CommandAPI:
         actor = checked_actor(body['actor'])
         args = validated_args(command, body['args'])
         fingerprint = hashlib.sha256(canonical((command, args)).encode()).hexdigest()
-        # 两种库存写操作和回执共用一个 SQLite 事务；外部动作先落未知占位，再调用一次。
-        local_write = command in ('monitor.add', 'monitor.threshold.set')
+        # 库存写操作和回执共用一个 SQLite 事务；外部动作先落未知占位，再调用一次。
+        local_write = command in ('monitor.add', 'monitor.remove', 'monitor.threshold.set')
         with self.service.db() as db:
             db.execute('BEGIN IMMEDIATE')
             access = self._access(db, actor, command)
